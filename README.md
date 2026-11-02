@@ -1,61 +1,88 @@
 # NineVoxel Launcher
 
-NineVoxel Launcher 是面向 Minecraft Java Edition 的跨平台桌面启动器。本仓库当前处于 P0「工程基础与技术验证」，尚未进入业务功能开发。
+NineVoxel Launcher 是面向 Minecraft Java Edition 的跨平台桌面启动器，基于 Wails v3（Go 后端 + WebView 前端）构建。
 
-## 当前成果
+当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；部分前端界面仍使用演示数据，账号认证、实例管理、插件/模组市场尚未实现，部分前后端链路仍在接线中，具体以代码为准。
 
-- Wails v3、Go、Vue 3、TypeScript、Vite、Pinia 与 Vue Router 的桌面工程骨架。
-- Go `AppService.PublishRuntimeInfo` 返回运行时诊断信息，并发布 `app:runtime` 事件，供前端验证 Wails Services、Bindings 与 Events 通信。
-- SQLite 驱动评估与 Wazero 技术冒烟记录；驱动尚未集成到应用。
-- WebView 隔离评估结论：P0 禁用 Custom Web UI，仅保留 Schema UI 的后续方向。
+## 技术栈
 
-## 当前边界
+| 层 | 技术 |
+| --- | --- |
+| 桌面壳 | Wails v3.0.0 |
+| 后端 | Go 1.26（`go.mod` toolchain `go1.27.3`）、modernc.org/sqlite |
+| 前端 | React 19、TypeScript、Tailwind CSS 4 |
+| 前端构建 | Vite 8、pnpm（锁文件 `frontend/pnpm-lock.yaml`） |
 
-此阶段不实现 Minecraft 启动、下载、账号认证、实例管理、插件运行时或插件市场。没有固定 localhost HTTP 服务。开发模式使用 Wails 管理的 Vite 预览服务。SQLite 接入应用前需满足 [ADR-002](docs/decisions/ADR-002-database.md) 的用户确认门槛；Custom Web UI 按 [ADR-009](docs/decisions/ADR-009-custom-web-ui-isolation.md) 保持关闭。
+版本锁定：`go.mod` / `go.sum`、`.node-version`（Node 22.16.0）、`frontend/pnpm-lock.yaml`、CI 变量（`.gitlab-ci.yml`）。
 
-## 固定工具链
+Vite 只用于前端构建与开发调试，**运行期不参与**：前端产物 `frontend/dist` 通过 `//go:embed` 嵌入二进制，由 Wails 资源服务器直接提供。
 
-- Go `1.27.3`（模块最低语言版本 `1.26.0`）
-- Wails CLI 与 `@wailsio/runtime` `3.0.0`
-- Node.js `22.16.0`、pnpm `10.33.0`
-- Vue `3.5.44`、Vue Router `5.4.0`、Pinia `4.1.0`
-- TypeScript `5.9.3`、Vite `8.3.5`、`@vitejs/plugin-vue` `6.0.10`、`vue-tsc` `3.3.14`
+## 仓库结构
 
-详见 [工具链锁定](docs/development/toolchain.md)。
+```text
+.                     Go 模块根：Wails 应用入口（main.go / appservice.go / logservice.go）
+internal/app          Wails 装配、窗口与启动/退出钩子
+internal/artifact     数据根、制品路径、内容寻址与路径边界校验
+internal/database     SQLite 打开、迁移与 checksum 校验
+internal/download     下载队列、断点续传、校验、隔离与启动恢复
+internal/events       事件信封、事件名与载荷类型注册
+internal/launch       游戏目录检查、版本解析、启动计划、进程监督、游戏日志
+internal/logging      结构化日志、脱敏、文件轮转与查询
+internal/platform     用户目录、WebView2 目录、主题与窗口的平台差异
+internal/runtime      Java 运行时探测、Adoptium/官方来源安装与选择
+internal/settings     设置 schema、SQLite 持久化与变更事件
+internal/version      版本清单、版本详情、安装计划与兼容报告
+frontend/             React 前端（bindings/ 与 dist/ 为生成目录，不入库）
+build/                Wails 构建配置与各平台打包脚本
+```
 
-## 本地工程命令
+## 本地开发
 
-在 `launcher/` 目录执行：
+前置工具：Go（按 `go.mod` 的 toolchain）、Node 22.16.0、pnpm、Wails CLI v3.0.0：
 
-```powershell
+```bash
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
+```
+
+首次开发：
+
+```bash
 pnpm --dir frontend install --frozen-lockfile
-wails3 generate bindings -clean=true -ts -i -d frontend/bindings .
-wails3 dev
+wails3 generate bindings -clean=true -ts -i   # 生成 frontend/bindings（构建任务也会自动执行）
+wails3 dev                                    # 开发模式：Vite dev server + 热重载
 ```
 
-前端静态构建与 Go 静态检查：
+`wails3 dev` 依赖 Vite dev server（默认 `127.0.0.1:9245`）。若只想运行构建产物，可执行 `wails3 task build` 后直接运行 `bin/ninevoxel-launcher`。
 
-```powershell
-pnpm --dir frontend run build
+## 检查与构建
+
+```bash
+pnpm --dir frontend run lint      # tsc --noEmit 类型检查
+pnpm --dir frontend run build     # 生产前端资源 → frontend/dist
 go vet ./...
+go test ./...
+wails3 task build                 # 当前平台构建（产物在 bin/）
+wails3 task package               # 当前平台安装包
 ```
 
-以上是工程检查，不代表用户功能验收。桌面开发运行需安装 Wails v3 所需的平台工具与 Windows WebView2 Runtime。
+注意：`main.go` 使用 `//go:embed all:frontend/dist` 引用前端产物。干净 checkout 下直接执行 `go build` / `go vet` / `go test` 会因 `frontend/dist` 不存在而失败，需先完成前端构建（CI 中通过写入占位文件规避）。`frontend/bindings`、`frontend/dist`、`bin` 均为生成目录，已加入忽略列表。
 
-## Windows 构建说明
+## 数据与日志位置
 
-Windows 构建使用标准 wails v3.0.0 依赖，不需要额外的本地补丁或 `WebView2Loader.dll`。
+应用数据根（SQLite `app.db`、`versions/`、`artifacts/`、`downloads/`、`runtimes/`）：
 
-```powershell
-wails3 task build
-```
+- macOS：`~/Library/Application Support/NineVoxel-Launcher/data`
+- Windows：`%AppData%\NineVoxel-Launcher\data`
+- 兜底：可执行文件同级 `data/`；便携版以该目录已存在为判定依据
 
-启动器会按 [ADR-011](docs/decisions/ADR-011-webview2-user-data-directory.md) 显式选择 WebView2 用户数据目录：
-优先 `<exe 目录>\webview`，该目录不可写时回退到 `%LocalAppData%\NineVoxel-Launcher\webview`。
-启动日志同样优先用户目录，不可写时回退到 `<exe 目录>\logs`。`webview/` 与 `logs/` 都是运行时数据，已加入忽略列表。
+日志目录（`launcher.log`、`app-YYYYMMDD[-序号].log`、`game-<launchId>-YYYYMMDD[-序号].log`）：
 
-安装包需要保证安装目录可写；安装到 `Program Files` 等只读目录时，WebView2 数据会自动落在用户目录。
+- macOS：`~/Library/Application Support/NineVoxel-Launcher/logs`
+- Windows：`%LocalAppData%\NineVoxel-Launcher\logs`
+- 兜底：可执行文件同级 `logs/`
 
-## P0 验收边界
+`webview/`（WebView2 用户数据目录）只对 Windows 有意义：优先 `<exe 目录>\webview`，不可写时回退 `%LocalAppData%\NineVoxel-Launcher\webview`；macOS 使用系统 WKWebView 的数据目录，应用不再创建该目录。
 
-Agent 只执行格式、静态检查、类型检查、绑定生成和构建。桌面窗口启动、前后端事件显示与真实用户体验由用户本人验收；未执行的检查会在 [开发进度](docs/development/progress.md) 中标明。
+## 验收边界
+
+Agent 与 CI 只执行格式检查、静态检查、类型检查、单元测试、绑定生成与构建；桌面窗口、前后端事件与真实交互由人工验收。设计文档（ADR、任务卡、开发进度等）未随本仓库分发，本文档不引用仓库中不存在的路径。
