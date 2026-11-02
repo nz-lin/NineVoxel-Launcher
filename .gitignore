@@ -2,6 +2,8 @@
 bin
 frontend/dist
 frontend/node_modules
+# pnpm 在仓库根创建的本地 store（store-dir 回退时的下载缓存，非源码）。
+.pnpm-store
 # Wails CLI 生成的绑定由构建任务和 CI 重新生成。
 frontend/bindings
 build/linux/appimage/build
