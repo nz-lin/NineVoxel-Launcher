@@ -118,6 +118,8 @@ func main() {
 	// （`LaunchStateChangedPayload` 在 supervisor.go、`LaunchLogAppendedPayload` 在 events 包）。
 	application.RegisterEvent[events.AppEvent[launch.LaunchStateChangedPayload]](launch.EventLaunchStateChanged)
 	application.RegisterEvent[events.AppEvent[events.LaunchLogAppendedPayload]](events.EventLaunchLogAppended)
+	// 账号 SPI 首期：注册账号变更事件载荷类型（账号子系统由 internal/account 发射）。
+	application.RegisterEvent[events.AppEvent[events.AccountChangedPayload]](events.EventAccountChanged)
 
 	// 启动早期读一次主题偏好：设置服务尚未启动，但窗口背景色必须当场确定。
 	initialTheme := settings.LoadThemePreference(context.Background())

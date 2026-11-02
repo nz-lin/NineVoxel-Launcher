@@ -9,6 +9,9 @@
 package app
 
 import (
+	"context"
+
+	"example.com/ninevoxel/launcher/internal/account"
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/download"
 	"example.com/ninevoxel/launcher/internal/launch"
@@ -121,6 +124,19 @@ func RegisterRuntimeService(in Bootstrap) Bootstrap {
 	return in
 }
 
+// RegisterAccountService 把账号服务追加到装配输入并返回扩充后的输入。
+//
+// 账号子系统（账号 SPI 首期）在运行时服务之后注册：登录/持久化/事件都由
+// internal/account 包内自行惰性初始化（存储路径与加密密钥都在包内解析），
+// 装配层只追加一行注册，不持有任何账号状态。
+//
+// 参数 in 为 package main 构造的装配输入；返回值为追加账号服务后的副本。
+func RegisterAccountService(in Bootstrap) Bootstrap {
+	// 追加而不是替换：已有服务注册顺序保持不变（Wails 按注册顺序调用 ServiceStartup）。
+	in.Services = append(in.Services, account.NewWailsService())
+	return in
+}
+
 // Options 把装配输入转换为 Wails 应用启动选项。
 //
 // 装配职责集中在本函数：
@@ -148,6 +164,13 @@ func Options(in Bootstrap) application.Options {
 	in = RegisterDownloadService(in)
 	// P3-08：在下载服务之后追加运行时探测服务（只追加注册，不改变已有顺序）。
 	in = RegisterRuntimeService(in)
+	// 账号 SPI 首期：在运行时服务之后追加账号服务（只追加注册，不改变已有顺序）。
+	in = RegisterAccountService(in)
+
+	// 账号子系统与启动链路的唯一衔接点：把「账号 id → 启动身份」的解析器注入
+	// internal/launch。注入必须在任何启动发生之前完成；解析器本身是只读的，
+	// 凭证只在本进程内流转，不经过前端。
+	launch.SetAccountIdentityResolver(accountIdentityResolver{})
 
 	return application.Options{
 		// 应用名与描述沿用 P0 文案，不随阶段变化。
@@ -283,4 +306,30 @@ func NewMainWindow(wailsApp *application.App, initialTheme string) *application.
 	AttachCloseBehaviour(window)
 
 	return window
+}
+
+// accountIdentityResolver 把账号子系统的查询能力适配成启动链路需要的身份解析器。
+//
+// 为什么适配器放在装配层而不是 internal/account：
+//   - internal/launch 只定义「身份解析器」接口，不依赖账号包，保持下层不反向依赖；
+//   - internal/account 也不需要知道启动 DTO 的形状；
+//   - 装配层同时 import 两者，是唯一合理的粘合点。
+//
+// 凭证不落任何字段、不写日志：ResolveIdentity 每次调用都从账号服务重新读取
+// （必要时先续期），调用方拿到后只用于构造本次启动命令行。
+type accountIdentityResolver struct{}
+
+// ResolveIdentity 实现 launch.AccountIdentityResolver。
+func (accountIdentityResolver) ResolveIdentity(ctx context.Context, accountID string) (launch.AccountIdentity, error) {
+	profile, credentials, resolveErr := account.ResolveAccountIdentity(ctx, accountID)
+	if resolveErr != nil {
+		return launch.AccountIdentity{}, resolveErr
+	}
+	return launch.AccountIdentity{
+		Username:    profile.Name,
+		UUID:        profile.ID,
+		AccessToken: credentials.AccessToken,
+		UserType:    credentials.UserType,
+		XUID:        credentials.XUID,
+	}, nil
 }

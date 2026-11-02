@@ -344,3 +344,44 @@ type DownloadTaskChangedPayload struct {
 	// ErrorCode 为失败时的稳定错误码，其余情况为空。
 	ErrorCode string `json:"errorCode,omitempty"`
 }
+
+// ===== 账号子系统事件（账号 SPI 首期追加，不修改上方内容）=====
+
+// EventAccountChanged 表示账号集合或当前选中账号发生变化。
+//
+// 命名遵循 `domain.resource.action.v1`。载荷刻意只带 id/动作/数量：
+// 账号资料由前端在收到事件后调 ListAccounts 重新拉取，避免把皮肤地址等
+// 可变数据塞进事件造成「事件与快照不一致」。
+//
+// **载荷绝不包含任何凭证**（AccessToken/RefreshToken/密码/设备码）。
+const EventAccountChanged = "account.changed.v1"
+
+// 账号变更动作的稳定取值。
+const (
+	// AccountActionCreated 表示新增账号。
+	AccountActionCreated = "created"
+
+	// AccountActionUpdated 表示账号资料或凭证被刷新。
+	AccountActionUpdated = "updated"
+
+	// AccountActionDeleted 表示账号被删除。
+	AccountActionDeleted = "deleted"
+
+	// AccountActionSelected 表示当前选中账号发生变化。
+	AccountActionSelected = "selected"
+)
+
+// AccountChangedPayload 是 `account.changed.v1` 的载荷。
+type AccountChangedPayload struct {
+	// AccountID 为发生变化的账号标识；仅 selected 动作时也可能指向新选中账号。
+	AccountID string `json:"accountId"`
+
+	// Action 为变更动作，取值见 AccountAction* 常量。
+	Action string `json:"action"`
+
+	// AccountCount 为变更后的账号总数，供界面直接更新徽标。
+	AccountCount int `json:"accountCount"`
+
+	// SelectedAccountID 为变更后的当前账号标识；没有选中账号时为空字符串。
+	SelectedAccountID string `json:"selectedAccountId,omitempty"`
+}
