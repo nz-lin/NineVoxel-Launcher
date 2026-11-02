@@ -204,21 +204,15 @@ func TestCipherOpenPersistsKeyFile(t *testing.T) {
 		t.Fatalf("首次 OpenCipher 失败: %v", cryptoErr)
 	}
 
-	// 密钥文件权限：文件 0600、目录 0700。
-	fileInfo, err := os.Stat(keyPath)
-	if err != nil {
+	// 密钥文件权限：Windows 上 0600/0700 位不生效，改由平台助手直接读回 DACL
+	// 校验受托者集合（仅当前用户 + SYSTEM）；非 Windows 保留原权限位断言。
+	if _, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("密钥文件未创建: %v", err)
 	}
-	if perm := fileInfo.Mode().Perm(); perm != cipherKeyFileMode {
-		t.Fatalf("密钥文件权限期望 %o，实际 %o", cipherKeyFileMode, perm)
-	}
-	dirInfo, err := os.Stat(filepath.Dir(keyPath))
-	if err != nil {
+	if _, err := os.Stat(filepath.Dir(keyPath)); err != nil {
 		t.Fatalf("密钥目录未创建: %v", err)
 	}
-	if perm := dirInfo.Mode().Perm(); perm != cipherKeyDirMode {
-		t.Fatalf("密钥目录权限期望 %o，实际 %o", cipherKeyDirMode, perm)
-	}
+	assertCipherKeyPermissions(t, keyPath)
 
 	keyBefore, err := os.ReadFile(keyPath)
 	if err != nil {

@@ -2,6 +2,9 @@
 //
 // 设计要点：
 //   - 密钥是 32 字节随机数，保存在独立密钥文件中（目录 0700、文件 0600）；
+//   - 权限收紧由 secureCipherKeyPath 负责：POSIX 上 0600/0700 权限位即生效，
+//     Windows 忽略这些位，必须显式设置只含当前用户与 SYSTEM 的受保护 DACL；
+//     加载已存在的密钥时也会幂等收敛 ACL，而不是只在首次创建时设置；
 //   - 密钥文件不存在时用 O_CREATE|O_EXCL|O_WRONLY 创建：并发启动时只有一个
 //     进程能创建成功，另一个读到同一把密钥，不会出现「两个进程各写一半」；
 //   - 密文布局为 nonce || ciphertext+tag，nonce 每次加密随机生成并随密文保存；
@@ -153,11 +156,21 @@ func loadOrCreateCipherKey(path string) ([]byte, *Error) {
 		if err := os.MkdirAll(dir, cipherKeyDirMode); err != nil {
 			return nil, newSystemError(ErrorCodeCrypto, "无法创建凭证密钥目录，请检查数据目录权限")
 		}
+		// 目录已存在（含本次刚创建）时都收敛一次 DACL：Windows 上 0700 位不生效，
+		// 且父目录的 ACE 可能已被外部放宽，必须显式收紧而不是只依赖创建时机。
+		if err := secureCipherKeyPath(dir, true); err != nil {
+			return nil, newSystemError(ErrorCodeCrypto, "无法收紧凭证密钥目录权限，请检查数据目录权限")
+		}
 	}
 
 	key, err := os.ReadFile(path)
 	switch {
 	case err == nil:
+		// 已存在的密钥文件同样要收敛 ACL：历史版本或外部工具可能留下宽泛 ACE，
+		// 只在首次创建时收紧会让旧密钥一直对同机其他用户可读。
+		if secureErr := secureCipherKeyPath(path, false); secureErr != nil {
+			return nil, newSystemError(ErrorCodeCrypto, "无法收紧凭证密钥文件权限，请检查数据目录权限")
+		}
 		if len(key) != cipherKeyBytes {
 			// 已有密钥长度非法时不能覆盖：覆盖会让历史密文永久不可解，
 			// 正确处置是报错让用户确认后手工处理密钥文件。
@@ -177,6 +190,10 @@ func loadOrCreateCipherKey(path string) ([]byte, *Error) {
 //
 // 使用 O_CREATE|O_EXCL 而不是「先判断存在再写」：多进程同时首次启动时，
 // 只有一个进程创建成功，其余进程走 ErrExist 分支读取同一份密钥。
+//
+// 创建成功后立即调用 secureCipherKeyPath 收紧 DACL：Windows 上新文件会继承
+// 父目录 ACE，仅靠创建模式无法保证只对当前用户可读。收紧失败时保留文件不删除——
+// 并发的另一个进程可能已经读到这把密钥并加密了凭证，删除会造成永久数据丢失。
 func createCipherKeyFile(path string) ([]byte, *Error) {
 	key := make([]byte, cipherKeyBytes)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
@@ -190,6 +207,9 @@ func createCipherKeyFile(path string) ([]byte, *Error) {
 			existing, readErr := os.ReadFile(path)
 			if readErr != nil {
 				return nil, newSystemError(ErrorCodeCrypto, "无法读取凭证密钥文件，请检查数据目录权限")
+			}
+			if secureErr := secureCipherKeyPath(path, false); secureErr != nil {
+				return nil, newSystemError(ErrorCodeCrypto, "无法收紧凭证密钥文件权限，请检查数据目录权限")
 			}
 			if len(existing) != cipherKeyBytes {
 				return nil, newSystemError(ErrorCodeCrypto, "凭证密钥文件内容不合法，无法解密已有凭证")
@@ -206,6 +226,10 @@ func createCipherKeyFile(path string) ([]byte, *Error) {
 	if writeErr != nil || closeErr != nil || written != len(key) {
 		_ = os.Remove(path)
 		return nil, newSystemError(ErrorCodeCrypto, "无法写入凭证密钥文件，请检查磁盘空间")
+	}
+
+	if secureErr := secureCipherKeyPath(path, false); secureErr != nil {
+		return nil, newSystemError(ErrorCodeCrypto, "无法收紧凭证密钥文件权限，请检查数据目录权限")
 	}
 
 	return key, nil
