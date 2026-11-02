@@ -58,8 +58,20 @@ func (s *RuntimeService) ListRuntimes() (RuntimeList, error) {
 	return list, nil
 }
 
-// ResolveRuntimeRequirement 按版本元数据解析 Java 需求。
+// UninstallRuntime 卸载启动器自己安装的 Java 运行时。
 //
+// 返回卸载后的最新列表，调用方不需要再调一次 ListRuntimes。
+// 只接受 `kind = downloaded` 的记录：本机探测到的 Java 由用户自行管理，
+// 启动器不会去删用户环境里的东西。
+func (s *RuntimeService) UninstallRuntime(req UninstallRuntimeRequest) (RuntimeList, error) {
+	list, appErr := UninstallRuntime(req)
+	if appErr != nil {
+		return RuntimeList{}, appErr
+	}
+	return list, nil
+}
+
+// ResolveRuntimeRequirement 按版本元数据解析 Java 需求。//
 // 只读本地版本 JSON，不联网、不安装。元数据未声明 Java 版本时返回
 // `source=unknown`（不是错误），界面必须提示用户手动选择。
 // 版本 id 为空、元数据不可读或非法时返回 `VERSION_METADATA_001`。

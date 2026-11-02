@@ -214,6 +214,15 @@ type SelectRuntimeRequest struct {
 	Force bool `json:"force"`
 }
 
+// UninstallRuntimeRequest 是卸载启动器自管理 Runtime 的请求。
+type UninstallRuntimeRequest struct {
+	// RuntimeID 为要卸载的 Runtime 标识。
+	//
+	// 只接受 `kind = downloaded` 的记录：本机 Java（kind = local）不归启动器删除，
+	// 传本机 id 会被明确拒绝而不是静默忽略。
+	RuntimeID string `json:"runtimeId"`
+}
+
 // InstallRuntimeSourceRequest 是从第三方来源安装 Runtime 的请求（P3-14）。
 type InstallRuntimeSourceRequest struct {
 	// MajorVersion 为要安装的 Java 大版本（必须 > 0）。

@@ -11,11 +11,14 @@ package runtime
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/logging"
 	"example.com/ninevoxel/launcher/internal/settings"
@@ -186,6 +189,38 @@ ON CONFLICT(id) DO UPDATE SET
 		return newSystemError(ErrorCodeRuntimeInstall, messageRuntimeWriteFailed, false)
 	}
 	return nil
+}
+
+// deleteRuntimeRow 删除一条 Runtime 记录。
+//
+// 幂等：记录不存在时视为成功。用于「卸载」以及「清理磁盘上已不存在的记录」。
+func deleteRuntimeRow(ctx context.Context, runtimeID string) *AppError {
+	db, dbErr := runtimeDatabase()
+	if dbErr != nil {
+		return dbErr
+	}
+	if _, execErr := db.ExecContext(ctx, `DELETE FROM java_runtimes WHERE id = ?`, runtimeID); execErr != nil {
+		runtimeLog().Warn("删除 Runtime 记录失败", logging.Fields{
+			Event:      "runtime.registry.delete_failed",
+			ErrorCode:  ErrorCodeRuntimeInstall,
+			Attributes: map[string]string{"runtimeId": runtimeID},
+		})
+		return newSystemError(ErrorCodeRuntimeInstall, messageRuntimeWriteFailed, false)
+	}
+	return nil
+}
+
+// managedRuntimeDir 返回启动器自管理 Runtime 的安装目录（绝对路径）。
+func managedRuntimeDir(row runtimeRow) (string, *AppError) {
+	root, rootErr := runtimeDataRoot()
+	if rootErr != nil {
+		return "", rootErr
+	}
+	rel := strings.TrimSpace(row.LocalRelPath)
+	if rel == "" {
+		rel = artifact.DirRuntimes + "/" + row.ID
+	}
+	return filepath.Join(root, filepath.FromSlash(rel)), nil
 }
 
 // installedRuntimeRows 读取全部已安装 Runtime 记录。
@@ -469,13 +504,30 @@ func listRuntimesWithInstalled() (RuntimeList, *AppError) {
 		return RuntimeList{}, listErr
 	}
 	for index := range rows {
-		summary := summaryOfRow(rows[index])
+		row := rows[index]
+		// 目录被外部删除时记录已失效：跳过并从库里清理。
+		// 否则用户手动删掉 runtimes/<id> 之后，列表（即使重启）会一直显示它。
+		if row.Kind == SourceDownloaded {
+			if dir, dirErr := managedRuntimeDir(row); dirErr == nil {
+				if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+					if cleanErr := deleteRuntimeRow(context.Background(), row.ID); cleanErr != nil {
+						runtimeLog().Warn("清理失效的 Runtime 记录失败", logging.Fields{
+							Event:      "runtime.registry.stale_cleanup_failed",
+							ErrorCode:  cleanErr.Code,
+							Attributes: map[string]string{"runtimeId": row.ID},
+						})
+					}
+					continue
+				}
+			}
+		}
+		summary := summaryOfRow(row)
 		if _, exists := byID[summary.RuntimeID]; !exists {
 			order = append(order, summary.RuntimeID)
 		}
 		byID[summary.RuntimeID] = summary
-		if rows[index].Selected {
-			result.SelectedRuntimeID = rows[index].ID
+		if row.Selected {
+			result.SelectedRuntimeID = row.ID
 		}
 	}
 
@@ -485,6 +537,56 @@ func listRuntimesWithInstalled() (RuntimeList, *AppError) {
 	}
 	sortRuntimeSummaries(result.Items)
 	return result, nil
+}
+
+// UninstallRuntime 卸载启动器自己安装的 Runtime。
+//
+// 只处理 `kind = downloaded`：本机 Java（`kind = local`）属于用户环境，
+// 启动器无权删除，传本机 id 会明确拒绝而不是静默忽略。
+//
+// 顺序是「先删目录，再删记录」：反过来的话目录删除失败会留下一个看不见的
+// 孤儿目录，用户既删不掉也看不到它占了多少空间。
+//
+// 记录不存在时按幂等处理，直接返回当前列表——重复点删除不应该报错。
+func UninstallRuntime(req UninstallRuntimeRequest) (RuntimeList, *AppError) {
+	ctx := context.Background()
+	runtimeID := strings.TrimSpace(req.RuntimeID)
+	if runtimeID == "" {
+		return RuntimeList{}, newInputError(ErrorCodeRuntimeInstall, messageRuntimeUninstallIDRequired)
+	}
+
+	row, findErr := findRuntimeRow(ctx, runtimeID)
+	if findErr != nil {
+		return RuntimeList{}, findErr
+	}
+	if row == nil {
+		return listRuntimesWithInstalled()
+	}
+	if row.Kind != SourceDownloaded {
+		return RuntimeList{}, newInputError(ErrorCodeRuntimeInstall, messageRuntimeUninstallLocalRejected)
+	}
+
+	dir, dirErr := managedRuntimeDir(*row)
+	if dirErr != nil {
+		return RuntimeList{}, dirErr
+	}
+	if rmErr := os.RemoveAll(dir); rmErr != nil {
+		runtimeLog().Warn("删除 Runtime 目录失败", logging.Fields{
+			Event:      "runtime.uninstall.remove_failed",
+			ErrorCode:  ErrorCodeRuntimeInstall,
+			Attributes: map[string]string{"runtimeId": runtimeID},
+		})
+		return RuntimeList{}, newSystemError(ErrorCodeRuntimeInstall, messageRuntimeUninstallFailed, false)
+	}
+	if delErr := deleteRuntimeRow(ctx, runtimeID); delErr != nil {
+		return RuntimeList{}, delErr
+	}
+
+	runtimeLog().Info("已卸载 Runtime", logging.Fields{
+		Event:      "runtime.uninstall.completed",
+		Attributes: map[string]string{"runtimeId": runtimeID},
+	})
+	return listRuntimesWithInstalled()
 }
 
 // SelectRuntime 选择要使用的 Runtime。

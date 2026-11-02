@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/download"
 )
 
@@ -70,6 +71,19 @@ type runtimeInstallFixture struct {
 	oldTransfer     func(stagingRoot string) download.TransferFunc
 	oldProgressSink func(taskID, state string, progress float64, errorCode string)
 	oldProbeList    func() (RuntimeList, *AppError)
+}
+
+// createRuntimeInstallDir 在 fixture 的数据根下创建 runtimes/<id>。
+//
+// 列表现在会校验 downloaded 记录对应的目录是否存在，目录不在就不显示。
+// 这些只测选择逻辑的用例必须补一个真实目录，否则记录会被当成失效数据跳过，
+// 表现就是「写进去了却选不中」。
+func createRuntimeInstallDir(t *testing.T, fixture *runtimeInstallFixture, runtimeID string) {
+	t.Helper()
+	dir := filepath.Join(fixture.dataRoot, artifact.DirRuntimes, runtimeID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("创建运行时目录失败：%v", err)
+	}
 }
 
 // newRuntimeInstallFixture 搭建隔离的安装环境并返回 fixture。
@@ -947,6 +961,7 @@ func TestSelectRuntimeKeepsSingleSelected(t *testing.T) {
 		{ID: firstID, Kind: SourceDownloaded, Component: "", MajorVersion: 17, FullVersion: "17.0.9", Platform: "windows", Arch: "x64", Bitness: 64, Vendor: VendorOpenJDK, CreatedAtMs: nowMs},
 		{ID: secondID, Kind: SourceDownloaded, Component: "", MajorVersion: 21, FullVersion: "21.0.5", Platform: "windows", Arch: "x64", Bitness: 64, Vendor: VendorOpenJDK, CreatedAtMs: nowMs},
 	} {
+		createRuntimeInstallDir(t, fixture, row.ID)
 		if saveErr := saveRuntime(ctx, row); saveErr != nil {
 			t.Fatalf("写入记录失败：%v", saveErr)
 		}
@@ -999,12 +1014,13 @@ func TestSelectRuntimeRejectsInvalidRequests(t *testing.T) {
 
 // TestSelectRuntimeRejectsIncompatibleUnlessForced 验证不兼容时需 force。
 func TestSelectRuntimeRejectsIncompatibleUnlessForced(t *testing.T) {
-	newRuntimeInstallFixture(t, defaultRuntimeFiles())
+	fixture := newRuntimeInstallFixture(t, defaultRuntimeFiles())
 	ctx := context.Background()
 	incompatibleArch := ArchAarch64
 	if currentArch() == ArchAarch64 {
 		incompatibleArch = ArchX64
 	}
+	createRuntimeInstallDir(t, fixture, "local-other-arch-21.0.5")
 	if saveErr := saveRuntime(ctx, runtimeRow{
 		ID:           "local-other-arch-21.0.5",
 		Kind:         SourceDownloaded,

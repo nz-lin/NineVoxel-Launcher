@@ -60,6 +60,9 @@ export interface RuntimeBindingsApi {
 
   /** 对应 RuntimeService.InstallRuntimeSource（P3-16，会联网下载）。 */
   InstallRuntimeSource: (request: RuntimeSourceInstallRequest) => Promise<unknown>
+
+  /** 对应 RuntimeService.UninstallRuntime。 */
+  UninstallRuntime: (request: { runtimeId: string }) => Promise<unknown>
 }
 
 /** 运行时服务门面。 */
@@ -90,6 +93,9 @@ export interface RuntimeService {
 
   /** 从第三方来源安装某个大版本的最新构建（真实联网，必须由用户勾选许可后调用）。 */
   installSource: (request: RuntimeSourceInstallRequest) => Promise<RuntimeInstallAccepted>
+
+  /** 卸载启动器自己安装的运行时；本机 Java 会被后端拒绝。返回最新列表。 */
+  uninstall: (runtimeId: string) => Promise<RuntimeList>
 }
 
 /** 字符串兜底：非字符串一律按空串处理。 */
@@ -393,6 +399,18 @@ export function createRuntimeService(api: RuntimeBindingsApi): RuntimeService {
       )
     },
 
+    /** 卸载启动器自己安装的运行时；返回卸载后的最新列表。 */
+    async uninstall(runtimeId: string): Promise<RuntimeList> {
+      if (runtimeId.trim() === '') {
+        throw toAppError({
+          code: RUNTIME_ERROR_CODE.requirementUnmet,
+          message: '请先选择要卸载的 Java 运行时。',
+          retryable: false,
+        })
+      }
+      return call(() => api.UninstallRuntime({ runtimeId }), normalizeRuntimeList)
+    },
+
     /** 查询第三方来源上的最新构建（只查元数据，不下载、不安装）。 */
     async getSourceInfo(majorVersion: number): Promise<RuntimeSourceInfo> {
       if (!Number.isFinite(majorVersion) || majorVersion <= 0) {
@@ -504,6 +522,10 @@ const runtimeBindingsApi: RuntimeBindingsApi = {
       majorVersion: request.majorVersion,
       acceptLicense: request.acceptLicense === true,
     }),
+
+  /** 对应 RuntimeService.UninstallRuntime；只搬运 runtimeId，不额外拼参数。 */
+  UninstallRuntime: (request: { runtimeId: string }) =>
+    RuntimeService.UninstallRuntime({ runtimeId: request.runtimeId }),
 }
 
 /** 已装配的运行时服务实例：页面与 composable 只依赖它，不直接 import bindings。 */

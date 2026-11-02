@@ -193,6 +193,12 @@ const (
 	messageRuntimeNotFound = "未找到该运行时，它可能已被删除，请重新检测。"
 	// messageRuntimeSelectionRequired 用于选择时未给出 runtimeId。
 	messageRuntimeSelectionRequired = "请先选择一个 Java 运行时。"
+	// messageRuntimeUninstallIDRequired 用于卸载时未给出 runtimeId。
+	messageRuntimeUninstallIDRequired = "请先选择要卸载的 Java 运行时。"
+	// messageRuntimeUninstallLocalRejected 用于尝试删除本机探测到的 Java。
+	messageRuntimeUninstallLocalRejected = "只能删除由启动器安装的运行时；本机 Java 请手动处理。"
+	// messageRuntimeUninstallFailed 用于删除安装目录失败。
+	messageRuntimeUninstallFailed = "删除运行时目录失败，可能仍被其他进程占用。"
 	// messageRuntimeIncompatible 用于选择与当前系统不兼容的 Runtime。
 	messageRuntimeIncompatible = "该 Java 与当前系统架构不匹配，如需强制使用请确认后再试。"
 	// messageRuntimeLicenseRequired 用于未接受许可就发起安装。

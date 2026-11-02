@@ -315,9 +315,19 @@ export default function App() {
     })();
   };
 
-  // 后端目前没有「删除运行时」的接口，这里如实拒绝而不是假装删掉。
-  const handleDeleteRuntime = (_id: string) => {
-    showToast('暂不支持在启动器内删除 Java 运行时，请手动删除对应目录后重新探测');
+  // 卸载启动器自己安装的运行时：后端先删目录再删记录，返回最新列表。
+  // 本机探测到的 Java 会被后端明确拒绝（不属于启动器管理）。
+  const handleDeleteRuntime = (id: string) => {
+    void (async () => {
+      try {
+        await runtimeService.uninstall(id);
+        showToast('已删除该 Java 运行时');
+        void javaRuntimesState.reload(false);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        showToast(`删除失败：${message}`);
+      }
+    })();
   };
 
   // Downloads drawer：操作全部走后端，不再本地改状态。
