@@ -8,12 +8,13 @@ import (
 	"testing"
 )
 
-// TestSchemaHasSevenWhitelistedKeys 验证白名单恰好包含冻结的七个 key。
+// TestSchemaHasNineWhitelistedKeys 验证白名单恰好包含冻结的九个 key。
 //
 // 前六个 key 的数量与名字是冻结契约（接口冻结清单 §8.7）；第七个
-// `download.mirrorEnabled` 由 D-57 追加。多一个或少一个都会
-// 让前端设置页与后端校验不一致。
-func TestSchemaHasSevenWhitelistedKeys(t *testing.T) {
+// `download.mirrorEnabled` 由 D-57 追加；第八个 `launch.javaPath` 用于
+// 用户显式指定 Java 路径；第九个 `launch.maxMemoryMb` 持久化默认分配内存。
+// 多一个或少一个都会让前端设置页与后端校验不一致。
+func TestSchemaHasNineWhitelistedKeys(t *testing.T) {
 	expected := []string{
 		KeyAppearanceTheme,
 		KeyAppearanceLanguage,
@@ -22,6 +23,8 @@ func TestSchemaHasSevenWhitelistedKeys(t *testing.T) {
 		KeyWindowMaximized,
 		KeyUpdateChannel,
 		KeyDownloadMirrorEnabled,
+		KeyLaunchJavaPath,
+		KeyLaunchMaxMemoryMb,
 	}
 
 	schemas := AllSchemas()
@@ -51,6 +54,8 @@ func TestDefaultsMatchFrozenValues(t *testing.T) {
 		{KeyWindowMaximized, false},
 		{KeyUpdateChannel, ChannelStable},
 		{KeyDownloadMirrorEnabled, false},
+		{KeyLaunchJavaPath, ""},
+		{KeyLaunchMaxMemoryMb, 8192},
 	}
 
 	for _, tc := range cases {
@@ -303,5 +308,67 @@ func TestMirrorEnabledSettingPersistsThroughSQLiteStore(t *testing.T) {
 	// 快照收敛必须保留它：白名单外的 key 会在这里被静默丢弃。
 	if NormalizeSnapshot(values)[KeyDownloadMirrorEnabled] != true {
 		t.Fatal("NormalizeSnapshot 丢弃了镜像开关，说明该 key 未真正进入白名单")
+	}
+}
+
+// TestValidateChangeAcceptsLaunchJavaPath 验证 `launch.javaPath` 的类型与长度约束。
+//
+// 该 key 用的是新增的 KindPath：不受 allowed 列表约束，且**空串必须合法**——
+// 空串是「未指定」的正式语义，此时启动器只使用自己安装的运行时。
+func TestValidateChangeAcceptsLaunchJavaPath(t *testing.T) {
+	// 空串表示「未指定」，必须被接受，否则「清除路径」会被后端拒绝。
+	if err := ValidateChange(KeyLaunchJavaPath, ""); err != nil {
+		t.Fatalf("空路径应被接受：%v", err)
+	}
+
+	// 常见 Windows 与 POSIX 路径都原样接受：后端不解析、不校验存在性，
+	// 只负责持久化；有效性由 internal/runtime 的探测负责。
+	paths := []string{
+		`C:\Program Files\Java\jdk-21\bin\java.exe`,
+		`D:\NineVoxel\javaruntime\java-21\bin\java.exe`,
+		"/usr/lib/jvm/java-21-openjdk/bin/java",
+	}
+	for _, path := range paths {
+		if err := ValidateChange(KeyLaunchJavaPath, path); err != nil {
+			t.Fatalf("路径 %q 应被接受：%v", path, err)
+		}
+	}
+
+	// 非字符串类型必须拒绝：前端传入的 any 可能被伪造。
+	if err := ValidateChange(KeyLaunchJavaPath, 42); err == nil {
+		t.Fatal("非字符串值应被拒绝")
+	}
+
+	// 超长内容必须拒绝，避免把垃圾写进设置表。
+	if err := ValidateChange(KeyLaunchJavaPath, strings.Repeat("a", maxPathLen+1)); err == nil {
+		t.Fatal("超长路径应被拒绝")
+	}
+}
+
+// TestValidateChangeAcceptsLaunchMaxMemoryMb 验证 `launch.maxMemoryMb` 的区间约束。
+//
+// 存储层只保证闭区间：下限是 Minecraft 能启动的门槛，上限 1 TiB 只用于挡住
+// 垃圾输入。真实可用上限由界面按本机物理内存计算，不在这一层校验。
+func TestValidateChangeAcceptsLaunchMaxMemoryMb(t *testing.T) {
+	// 默认值与常见取值都必须被接受。
+	for _, mb := range []int{MinLaunchMemoryMb, 4096, 8192, 16384, 32768, 65536} {
+		if err := ValidateChange(KeyLaunchMaxMemoryMb, mb); err != nil {
+			t.Fatalf("%d MiB 应被接受：%v", mb, err)
+		}
+	}
+
+	// 低于下限必须拒绝：2 GB 以下的堆无法启动现代 Minecraft。
+	if err := ValidateChange(KeyLaunchMaxMemoryMb, MinLaunchMemoryMb-1); err == nil {
+		t.Fatal("低于下限的值应被拒绝")
+	}
+
+	// 高于存储层上限必须拒绝。
+	if err := ValidateChange(KeyLaunchMaxMemoryMb, MaxLaunchMemoryMb+1); err == nil {
+		t.Fatal("超过存储层上限的值应被拒绝")
+	}
+
+	// 非数值类型必须拒绝：前端传入的 any 可能被伪造。
+	if err := ValidateChange(KeyLaunchMaxMemoryMb, "8192"); err == nil {
+		t.Fatal("字符串应被拒绝")
 	}
 }

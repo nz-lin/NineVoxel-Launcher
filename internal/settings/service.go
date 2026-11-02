@@ -78,6 +78,18 @@ type SettingsSnapshot struct {
 	// 否则「保存后刷新回到关闭」会让用户误以为没生效，而下载其实已走镜像。
 	DownloadMirrorEnabled bool `json:"downloadMirrorEnabled"`
 
+	// LaunchJavaPath 对应 `launch.javaPath`：用户显式指定的 Java 可执行文件路径。
+	//
+	// 空串表示「未指定」——此时启动器只使用自己下载安装的运行时，不探测本机
+	// 任何 Java。非空时是 internal/runtime 探测的唯一候选来源。
+	LaunchJavaPath string `json:"launchJavaPath"`
+
+	// LaunchMaxMemoryMb 对应 `launch.maxMemoryMb`：全局默认最大分配内存（MiB）。
+	//
+	// 存储层只保证 2048 MiB .. 1 TiB 的闭区间；真实可用上限由界面按本机
+	// 物理内存动态计算，因此该值可能大于当前机器的内存（换机器后回显旧值）。
+	LaunchMaxMemoryMb int `json:"launchMaxMemoryMb"`
+
 	// UpdatedAtMs 为最近一次写入时间（UTC Unix 毫秒）；从未写入时为 0。
 	UpdatedAtMs int64 `json:"updatedAtMs"`
 
@@ -233,6 +245,8 @@ func (s *Service) buildSnapshotLocked() SettingsSnapshot {
 		WindowMaximized:       boolValue(s.snapshot, KeyWindowMaximized, false),
 		UpdateChannel:         stringValue(s.snapshot, KeyUpdateChannel, ChannelStable),
 		DownloadMirrorEnabled: boolValue(s.snapshot, KeyDownloadMirrorEnabled, false),
+		LaunchJavaPath:        stringValue(s.snapshot, KeyLaunchJavaPath, ""),
+		LaunchMaxMemoryMb:     intValue(s.snapshot, KeyLaunchMaxMemoryMb, 8192),
 		Enabled:               s.enabled,
 		PathKind:              s.pathStatus,
 		InitErrorCode:         s.initErr,
@@ -334,15 +348,17 @@ func (s *Service) emitSettingsChanged(keys []string, updatedAtMs int64) {
 // 而不是把「服务不可用」渲染成整页失败。
 func SnapshotOrDefault() SettingsSnapshot {
 	return SettingsSnapshot{
-		Theme:           ThemeSystem,
-		Language:        LocaleZhHans,
-		WindowWidth:     1120,
-		WindowHeight:    760,
-		WindowMaximized: false,
-		UpdateChannel:   ChannelStable,
-		Enabled:         false,
-		StorageKind:     StorageKindMemory,
-		PathKind:        PathKindUnavailable,
+		Theme:             ThemeSystem,
+		Language:          LocaleZhHans,
+		WindowWidth:       1120,
+		WindowHeight:      760,
+		WindowMaximized:   false,
+		UpdateChannel:     ChannelStable,
+		LaunchJavaPath:    "",
+		LaunchMaxMemoryMb: 8192,
+		Enabled:           false,
+		StorageKind:       StorageKindMemory,
+		PathKind:          PathKindUnavailable,
 	}
 }
 
@@ -361,6 +377,23 @@ func (s *Service) BoolSetting(key string, fallback bool) bool {
 	defer s.mu.RUnlock()
 
 	return boolValue(s.snapshot, key, fallback)
+}
+
+// StringSetting 读取当前设置快照中的字符串项。
+//
+// 参数 key 为设置项标识，fallback 为缺失、未初始化或类型不符时的回退值。
+// 用途与 BoolSetting 相同：装配层把它包成 Provider 注入其它模块
+// （例如用户显式指定的 Java 路径），使那些模块无需 import settings。
+// 返回值为内存缓存读取，不做磁盘 IO。
+func (s *Service) StringSetting(key, fallback string) string {
+	if s == nil {
+		return fallback
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return stringValue(s.snapshot, key, fallback)
 }
 
 // Enabled 返回当前是否处于持久化模式。

@@ -22,7 +22,9 @@ import (
 // 设置项 key 常量：集中定义，禁止业务代码手写 key 字符串。
 //
 // 前六个 key 由接口冻结清单 §8.7 冻结；第七个 `download.mirrorEnabled`
-// 由决策记录 D-57 追加（P3-15），用于真正启用下载镜像。
+// 由决策记录 D-57 追加（P3-15），用于真正启用下载镜像；第八、第九个
+// `launch.javaPath` / `launch.maxMemoryMb` 由「只管理自己的运行时」与
+// 「内存上限按物理内存动态计算」两项需求追加。
 const (
 	// KeyAppearanceTheme 为界面主题，取值 light / dark / system，由 P1-08 消费。
 	KeyAppearanceTheme = "appearance.theme"
@@ -48,6 +50,23 @@ const (
 	// 打开后仍受下载模块的 host 白名单约束。该值由 internal/download 的
 	// provider 读取（装配层注入），设置存储本身不感知它的业务含义。
 	KeyDownloadMirrorEnabled = "download.mirrorEnabled"
+
+	// KeyLaunchJavaPath 为用户显式指定的 Java 可执行文件路径。
+	//
+	// 空串表示「未指定」：此时启动器只使用自己下载安装的运行时，**不探测本机
+	// 任何 Java**（不读 JAVA_HOME、不扫 PATH、不遍历常见安装根）。非空时才把
+	// 它作为唯一候选交给 internal/runtime 校验并执行 `java -version`。
+	//
+	// 设置存储不感知路径的业务含义与有效性，只负责原样持久化；
+	// 路径校验、可执行性判断与版本解析全部由 internal/runtime 负责。
+	KeyLaunchJavaPath = "launch.javaPath"
+
+	// KeyLaunchMaxMemoryMb 为全局默认最大分配内存（MiB）。
+	//
+	// 这里只做存储与类型校验：2048 MiB 下限是「现代 Minecraft 能启动」的实际门槛，
+	// 上限给到 1 TiB 只是防垃圾输入——**真实可用上限由界面按本机物理内存动态计算**，
+	// 存储层不知道也不该知道运行它的是哪台机器。
+	KeyLaunchMaxMemoryMb = "launch.maxMemoryMb"
 )
 
 // 各设置项的合法取值。
@@ -82,6 +101,16 @@ const (
 	MaxWindowHeight = 4320
 )
 
+// 全局默认最大分配内存的存储层范围（MiB）。
+//
+// 下限 2048 是 Minecraft 能启动的实际门槛；上限 1 TiB 只用于挡住垃圾输入，
+// 真实的可用上限由界面按物理内存计算——存储层不感知运行机器的容量。
+const (
+	// MinLaunchMemoryMb 与 MaxLaunchMemoryMb 为 launch.maxMemoryMb 的闭区间。
+	MinLaunchMemoryMb = 2048
+	MaxLaunchMemoryMb = 1024 * 1024
+)
+
 // ===== 设置项错误码（接口冻结清单 §8.3）=====
 
 // ErrorCodeConfigInvalid 表示设置项不在白名单内或值类型/取值不符。
@@ -114,6 +143,12 @@ const (
 
 	// KindBool 表示取值为布尔值。
 	KindBool
+
+	// KindPath 表示取值为任意字符串（例如文件路径）。
+	//
+	// 与 KindString 的区别：不受 allowed 列表约束；空串是合法值，表示「未设置」。
+	// 长度受 maxPathLen 约束，避免超长内容写进设置表。
+	KindPath
 )
 
 // String 返回类型的中文说明，便于错误信息可读。
@@ -125,6 +160,8 @@ func (k SettingKind) String() string {
 		return "整数"
 	case KindBool:
 		return "布尔值"
+	case KindPath:
+		return "路径"
 	default:
 		return "未知类型"
 	}
@@ -157,7 +194,7 @@ type Schema struct {
 	Description string `json:"description"`
 }
 
-// schemaDefinitions 是七个设置项的完整定义，顺序即展示顺序。
+// schemaDefinitions 是九个设置项的完整定义，顺序即展示顺序。
 //
 // 该列表是**唯一的真相来源**：白名单、默认值、取值校验全部从这里派生，
 // 不允许在其他文件里再写一遍同样的约束。
@@ -212,6 +249,20 @@ var schemaDefinitions = []Schema{
 		Default:     false,
 		Description: "下载镜像开关（D-57）：默认关闭；打开后下载优先尝试镜像，失败回退官方源，校验不降级。",
 	},
+	{
+		Key:         KeyLaunchJavaPath,
+		Kind:        KindPath,
+		Default:     "",
+		Description: "用户显式指定的 Java 可执行文件路径；空串表示只用启动器自己安装的运行时。",
+	},
+	{
+		Key:         KeyLaunchMaxMemoryMb,
+		Kind:        KindInt,
+		Default:     8192,
+		MinInt:      MinLaunchMemoryMb,
+		MaxInt:      MaxLaunchMemoryMb,
+		Description: "全局默认最大分配内存（MiB）；真实上限由界面按物理内存动态计算。",
+	},
 }
 
 // SchemaByKey 返回指定 key 的契约定义。
@@ -229,7 +280,7 @@ func SchemaByKey(key string) (Schema, bool) {
 
 // AllSchemas 返回全部设置项的契约定义（副本，调用方修改不影响内部状态）。
 //
-// 前端设置页据此渲染七个分组并读取默认值，避免前端再维护一份默认值表。
+// 前端设置页据此渲染九个分组并读取默认值，避免前端再维护一份默认值表。
 func AllSchemas() []Schema {
 	result := make([]Schema, len(schemaDefinitions))
 	copy(result, schemaDefinitions)
@@ -263,6 +314,15 @@ const (
 
 	// messageOutOfRange 用于整数越界的错误说明。
 	messageOutOfRange = "设置项的取值超出范围 %d–%d，实际 %d"
+
+	// maxPathLen 是路径型设置项的长度上限。
+	//
+	// 4096 字节远超任何真实可执行文件路径，只用于挡住明显的垃圾输入，
+	// 不承担「路径是否有效」的判断——那是 internal/runtime 的职责。
+	maxPathLen = 4096
+
+	// messageTextTooLong 用于字符串超长的错误说明。
+	messageTextTooLong = "设置项的内容过长，上限 %d 字节"
 )
 
 // ValidationError 表示一次设置项校验失败。
@@ -341,6 +401,23 @@ func ValidateChange(key string, value any) error {
 		}
 		return nil
 
+	case KindPath:
+		text, ok := value.(string)
+		if !ok {
+			return ValidationError{
+				Key:    key,
+				Reason: fmt.Sprintf(messageTypeMismatch, definition.Kind.String(), value),
+			}
+		}
+		// 空串表示「未指定」，是合法值：此时启动器只用自己安装的运行时。
+		if len(text) > maxPathLen {
+			return ValidationError{
+				Key:    key,
+				Reason: fmt.Sprintf(messageTextTooLong, maxPathLen),
+			}
+		}
+		return nil
+
 	default:
 		return ValidationError{Key: key, Reason: "设置项类型定义无效"}
 	}
@@ -380,7 +457,7 @@ func toInt(value any) (int, bool) {
 //
 // 规则：逐 key 取白名单定义，缺失或类型/取值不合法的项一律回退默认值。
 // 这样即使数据库里存在历史脏数据（旧版本写入、手工改动），
-// 前端拿到的快照也永远是七个合法值，不需要在界面里再写一套兜底。
+// 前端拿到的快照也永远是九个合法值，不需要在界面里再写一套兜底。
 //
 // 参数 stored 为从存储读取到的原始键值对。
 func NormalizeSnapshot(stored map[string]any) map[string]any {

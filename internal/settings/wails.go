@@ -106,6 +106,15 @@ type SnapshotDTO struct {
 	// 用户勾选保存后刷新会回到「关闭」，而下载其实已走镜像。
 	DownloadMirrorEnabled bool `json:"downloadMirrorEnabled"`
 
+	// LaunchJavaPath 对应 `launch.javaPath`：用户显式指定的 Java 可执行文件路径。
+	//
+	// 空串表示未指定，此时启动器只用自己下载安装的运行时，不探测本机 Java。
+	// 该字段是设置页与 Java 管理中心回显「当前指定了哪个 Java」的唯一来源。
+	LaunchJavaPath string `json:"launchJavaPath"`
+
+	// LaunchMaxMemoryMb 对应 `launch.maxMemoryMb`：全局默认最大分配内存（MiB）。
+	LaunchMaxMemoryMb int `json:"launchMaxMemoryMb"`
+
 	// UpdatedAtMs 为最近一次写入时间（UTC Unix 毫秒）；从未写入时为 0。
 	UpdatedAtMs int64 `json:"updatedAtMs"`
 
@@ -175,6 +184,8 @@ func toDTO(source SettingsSnapshot) SnapshotDTO {
 		WindowMaximized:       source.WindowMaximized,
 		UpdateChannel:         source.UpdateChannel,
 		DownloadMirrorEnabled: source.DownloadMirrorEnabled,
+		LaunchJavaPath:        source.LaunchJavaPath,
+		LaunchMaxMemoryMb:     source.LaunchMaxMemoryMb,
 		UpdatedAtMs:           source.UpdatedAtMs,
 		Enabled:               source.Enabled,
 		StorageKind:           source.StorageKind,
@@ -193,6 +204,18 @@ func toDTO(source SettingsSnapshot) SnapshotDTO {
 func BoolSetting(key string, fallback bool) bool {
 	if service := Svc(); service != nil {
 		return service.BoolSetting(key, fallback)
+	}
+	return fallback
+}
+
+// StringSetting 读取进程内设置快照里的字符串项，供装配层注入为 Provider。
+//
+// 与 BoolSetting 同一用途与同一约束：业务模块不 import settings，
+// 也不自己开数据库读 key。参数 fallback 为服务未初始化、key 缺失或
+// 类型不符时的回退值。
+func StringSetting(key, fallback string) string {
+	if service := Svc(); service != nil {
+		return service.StringSetting(key, fallback)
 	}
 	return fallback
 }
