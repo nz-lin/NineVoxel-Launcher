@@ -264,6 +264,12 @@ type gameLogChannel struct {
 	// file 为当前打开的文件句柄；nil 表示尚未打开。
 	file *os.File
 
+	// closed 表示通道已停止写入、文件句柄已释放；此后不再打开新文件。
+	//
+	// 为什么要这个标记：若只把 file 置 nil，停止之后到达的尾部行仍会通过
+	// writeLine 重新打开文件，句柄就再次泄漏（Windows 上目录无法删除）。
+	closed bool
+
 	// fileSize 为当前文件已写入字节数，用于轮转判断。
 	fileSize int64
 
@@ -357,6 +363,33 @@ func CurrentGameLogChannel() *gameLogChannel {
 	return gameLogManager.current
 }
 
+// closeFile 关闭当前日志文件句柄，并禁止后续写入重新打开文件。
+//
+// 幂等、并发安全；未打开文件时为空操作。
+//
+// 为什么独立成方法：日志文件句柄必须在三个地方关闭——通道停止（`stop`）、
+// 落盘 goroutine 退出（`drainAndClose`）、以及只使用 channel 内存缓冲的测试。
+// 三者共用同一个关闭点，才能保证 Windows 上不会出现「关闭后又被重开」的句柄泄漏。
+func (c *gameLogChannel) closeFile() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeFileLocked()
+}
+
+// closeFileLocked 关闭句柄；调用前提：已持有 c.mu。
+func (c *gameLogChannel) closeFileLocked() error {
+	c.closed = true
+	if c.file == nil {
+		return nil
+	}
+	err := c.file.Close()
+	c.file = nil
+	return err
+}
+
 // stop 关闭通道。
 //
 // 顺序：先停 writer（让它把队列剩余行写完），再关闭文件。
@@ -377,12 +410,10 @@ func (c *gameLogChannel) stop() {
 			// 超时不阻止返回：宁可丢掉尾部几行，也不阻塞应用退出。
 		}
 
-		c.mu.Lock()
-		if c.file != nil {
-			_ = c.file.Close()
-			c.file = nil
-		}
-		c.mu.Unlock()
+		// 关闭句柄走与 drainAndClose 相同的幂等出口：
+		// 若 writer 已在超时前关闭文件，这里是空操作；若 writer 卡到超时，
+		// 这里关闭后置 closed，writer 恢复也不会重新打开文件。
+		_ = c.closeFile()
 	})
 }
 
@@ -481,12 +512,7 @@ func (c *gameLogChannel) drainAndClose() {
 			c.writeLine(line)
 		default:
 			// 队列已空：关闭文件后返回。
-			c.mu.Lock()
-			if c.file != nil {
-				_ = c.file.Close()
-				c.file = nil
-			}
-			c.mu.Unlock()
+			_ = c.closeFile()
 			return
 		}
 	}
@@ -549,6 +575,11 @@ func (c *gameLogChannel) writeLine(line events.GameLogLine) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// 通道已停止：丢弃该行，不重新打开文件（否则停止后又会泄漏一个句柄）。
+	if c.closed {
+		return
+	}
 
 	if err := c.ensureFileLocked(time.Now()); err != nil {
 		c.warnOnce.Do(func() {

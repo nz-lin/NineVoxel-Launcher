@@ -104,6 +104,12 @@ type writer struct {
 	// file 为当前打开的文件句柄；nil 表示尚未打开或已关闭。
 	file *os.File
 
+	// closed 表示写入器已被显式关闭；此后 write 不再打开新文件。
+	//
+	// 为什么要这个标记：仅把 file 置 nil 不够——下一次 write 会重新打开文件，
+	// 关闭动作形同虚设，Windows 上仍会因句柄占用无法删除日志文件。
+	closed bool
+
 	// fileDate 为当前文件对应的日期（YYYYMMDD），用于判断是否跨天。
 	fileDate string
 
@@ -180,6 +186,12 @@ func (w *writer) write(record *Record) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// 已显式关闭：后续写入静默丢弃，绝不重新打开文件。
+	// 否则 Close 只关掉当前句柄，下一条日志又把它打开，关闭就没有实际效果。
+	if w.closed {
+		return
+	}
+
 	if err := w.ensureFileLocked(time.Now()); err != nil {
 		// 打不开文件时保持静默：记录一条 stderr 提示即可，不改变业务结果。
 		w.warnSelfLocked("日志文件不可写，已降级为仅控制台输出")
@@ -235,7 +247,8 @@ func (w *writer) ensureFileLocked(now time.Time) error {
 		return nil
 	}
 
-	w.closeFileLocked()
+	// 轮转时关闭旧句柄：关闭失败也继续打开新文件，不能因为旧句柄不可用就放弃写入。
+	_ = w.closeFileLocked()
 
 	// 从当天已有的最大序号开始：既避免覆盖历史文件，也让进程重启后
 	// 能继续追加未写满的最后一个文件。
@@ -292,18 +305,39 @@ func (w *writer) highestSeqLocked(date string) int {
 	return highest
 }
 
+// Close 关闭写入器并释放日志文件句柄。
+//
+// 幂等：可重复调用，也可在从未打开文件时调用；关闭后写入变为空操作，
+// 不会重新打开文件。并发安全。
+//
+// 为什么需要显式关闭：Windows 不允许删除仍被进程打开的文件，
+// 测试的 TempDir 清理、以及用户迁移/删除日志目录都会因句柄占用而失败。
+// Linux 上 unlink 允许已打开文件，因此这一点只在 Windows 暴露。
+func (w *writer) Close() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.closed = true
+	return w.closeFileLocked()
+}
+
 // closeFileLocked 关闭当前文件句柄并清空当前文件名。
 //
 // 调用前提：已持有 w.mu。句柄为 nil 时为空操作，可安全重复调用。
-func (w *writer) closeFileLocked() {
+// 返回 Close 的错误：显式 Close 需要把「句柄没关掉」这个事实报告给调用方；
+// 轮转路径可以忽略该错误（旧句柄不可用时仍要继续写新文件）。
+func (w *writer) closeFileLocked() error {
 	if w.file == nil {
-		return
+		return nil
 	}
-	// 忽略 Close 的错误：句柄已经不可用时关闭失败也无需上报。
-	_ = w.file.Close()
+	err := w.file.Close()
 	w.file = nil
 	w.fileName = ""
 	w.fileSize = 0
+	return err
 }
 
 // maybeMaintainLocked 按节流条件执行轮转清理。

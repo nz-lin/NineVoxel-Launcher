@@ -21,12 +21,56 @@ func testRecord(message string) *Record {
 // newRotationTestWriter 构造指向临时目录、单文件上限很小的写入器。
 //
 // 把上限注入为字段而不是常量，测试才能在毫秒级内触发多次轮转。
+// 注册清理：测试结束前必须关闭句柄，否则 Windows 上 TempDir 的 RemoveAll
+// 会因「文件正被另一进程使用」失败（Linux 的 unlink 允许打开中的文件）。
 func newRotationTestWriter(t *testing.T, maxFileSize, maxDirBytes int64) *writer {
 	t.Helper()
 	w := newWriter(t.TempDir(), LevelInfo)
 	w.maxFileSize = maxFileSize
 	w.maxDirectoryBytes = maxDirBytes
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("关闭写入器失败: %v", err)
+		}
+	})
 	return w
+}
+
+// TestWriterCloseIsIdempotentAndStopsWrites 验证显式 Close 释放句柄且幂等。
+//
+// 回归目标：writer 原先没有任何关闭出口，测试或调用方无法释放日志文件句柄；
+// Windows 上文件被占用便无法删除。Close 还必须阻止后续 write 重新打开文件，
+// 否则「关闭」只是暂时的。
+func TestWriterCloseIsIdempotentAndStopsWrites(t *testing.T) {
+	w := newWriter(t.TempDir(), LevelInfo)
+
+	w.write(testRecord("close-前"))
+	if w.file == nil {
+		t.Fatal("写入后应持有已打开的文件句柄")
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("首次关闭失败: %v", err)
+	}
+	if w.file != nil {
+		t.Fatal("关闭后不应仍持有文件句柄")
+	}
+
+	// 幂等：重复关闭不得 panic 或报错。
+	if err := w.Close(); err != nil {
+		t.Fatalf("重复关闭失败: %v", err)
+	}
+
+	// 关闭后的写入必须被丢弃，不得重新打开文件。
+	w.write(testRecord("close-后"))
+	if w.file != nil {
+		t.Fatal("关闭后的写入重新打开了文件句柄")
+	}
+
+	// 关键断言：句柄已释放，目录可以被完整删除（Windows 上会因占用失败）。
+	if err := os.RemoveAll(w.dir); err != nil {
+		t.Fatalf("关闭后仍无法删除日志目录，说明句柄未释放: %v", err)
+	}
 }
 
 // TestLogFileNameForAndParse 验证两种文件名形态的生成与解析。

@@ -81,6 +81,23 @@ func newLogger(dir string, level Level, component string) *Logger {
 	return logger
 }
 
+// Close 关闭 Logger 持有的日志文件句柄，并停止后续文件写入。
+//
+// 幂等：可重复调用；关闭后 Debug/Info/Warn/Error 变为空操作（不会重新打开文件）。
+//
+// 进程级 Default 通常不必调用：进程退出时由操作系统回收句柄。但在测试、
+// 目录迁移或需要删除日志文件的场景下必须显式调用——Windows 会拒绝删除
+// 仍被进程打开的文件。
+//
+// 注意：WithComponent 派生出的实例与原实例共享同一个底层写入器，
+// 因此任一实例 Close 后，同组的其他实例也不再写入文件。
+func (l *Logger) Close() error {
+	if l == nil || l.w == nil {
+		return nil
+	}
+	return l.w.Close()
+}
+
 // SetLevel 运行时调整最低写入级别。
 //
 // 参数 level 为新的阈值；非法值回退到 info（见 ParseLevel）。

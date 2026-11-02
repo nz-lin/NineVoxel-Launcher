@@ -84,6 +84,13 @@ func TestGameLogRotatesWithinSameDay(t *testing.T) {
 
 	dir := t.TempDir()
 	channel := &gameLogChannel{launchID: "rotation-test", dir: dir, maxFileSize: maxFileSize}
+	// 测试直接构造通道（不启动 writer goroutine），因此必须显式关闭句柄：
+	// 否则 Windows 上 TempDir 的 RemoveAll 会因文件被占用而失败。
+	t.Cleanup(func() {
+		if err := channel.closeFile(); err != nil {
+			t.Errorf("关闭游戏日志文件失败: %v", err)
+		}
+	})
 	line := events.GameLogLine{
 		TimestampMs: time.Now().UnixMilli(),
 		Stream:      streamStdout,
@@ -111,5 +118,49 @@ func TestGameLogRotatesWithinSameDay(t *testing.T) {
 
 	if channel.fileSize > maxFileSize*2 {
 		t.Fatalf("当前游戏日志文件大小 %d 远超上限 %d，轮转未生效", channel.fileSize, maxFileSize)
+	}
+}
+
+// TestGameLogCloseFileIsIdempotentAndStopsWrites 验证显式关闭释放句柄且幂等。
+//
+// 回归目标：文件句柄原先只能在 stop()（依赖已启动的 writer goroutine）
+// 或 drainAndClose() 内关闭；直接构造通道的测试与「仅用内存缓冲」的场景
+// 没有任何关闭出口，Windows 上目录便无法删除。关闭还必须阻止后续 writeLine
+// 重新打开文件，否则句柄会再次泄漏。
+func TestGameLogCloseFileIsIdempotentAndStopsWrites(t *testing.T) {
+	dir := t.TempDir()
+	channel := &gameLogChannel{launchID: "close-test", dir: dir, maxFileSize: 1 << 20}
+
+	line := events.GameLogLine{
+		TimestampMs: time.Now().UnixMilli(),
+		Stream:      streamStdout,
+		Text:        "close-test",
+	}
+	channel.writeLine(line)
+	if channel.file == nil {
+		t.Fatal("写入后应持有已打开的文件句柄")
+	}
+
+	if err := channel.closeFile(); err != nil {
+		t.Fatalf("首次关闭失败: %v", err)
+	}
+	if channel.file != nil {
+		t.Fatal("关闭后不应仍持有文件句柄")
+	}
+
+	// 幂等：重复关闭不得 panic 或报错。
+	if err := channel.closeFile(); err != nil {
+		t.Fatalf("重复关闭失败: %v", err)
+	}
+
+	// 关闭后的写入必须被丢弃，不得重新打开文件。
+	channel.writeLine(line)
+	if channel.file != nil {
+		t.Fatal("关闭后的写入重新打开了文件句柄")
+	}
+
+	// 关键断言：句柄已释放，目录可以被完整删除（Windows 上会因占用失败）。
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("关闭后仍无法删除日志目录，说明句柄未释放: %v", err)
 	}
 }
