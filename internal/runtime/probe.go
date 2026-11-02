@@ -54,15 +54,9 @@ const (
 
 	// probeMaxCandidates 是单次探测的候选上限。
 	//
-	// 32 个：即使每台机器都装了几个 JDK，也远低于这个数；
-	// 上限存在的意义是「目录异常膨胀时不至于启动几十个子进程」。
+	// 候选来源现在只剩「用户显式指定的路径」，正常情况下恒为 0 或 1；
+	// 上限保留为防御性约束，避免将来新增来源时失控地启动多个子进程。
 	probeMaxCandidates = 32
-
-	// probeMaxScanDepth 是常见安装根的扫描深度（2 层）。
-	//
-	// 例：`<ProgramFiles>\Java\jdk-21\bin\java.exe` 只需两层，
-	// 再加一层就会开始扫到无关目录。
-	probeMaxScanDepth = 2
 
 	// javaExecutableNameWindows 是 Windows 下 Java 可执行文件名。
 	javaExecutableNameWindows = "java.exe"
@@ -337,13 +331,24 @@ func SetPreferredJavaPathProvider(provider func() string) {
 // nowFunc 返回当前时间；测试可替换。
 var nowFunc = time.Now
 
-// enumerateJavaCandidates 按优先级枚举候选 Java 路径（已去重、有数量上限）。
+// enumerateJavaCandidates 返回候选 Java 路径：只有「用户显式指定的路径」一个来源。
 //
-// 顺序：显式配置 → JAVA_HOME → PATH → 平台常见安装根。
-// 不修改任何环境变量，只读取。
+// 本启动器只管理自己下载安装的运行时。外部 JDK 不自动发现：
+//   - 不读 `JAVA_HOME`；
+//   - 不扫 `PATH`；
+//   - 不遍历 `%ProgramFiles%\Java`、`/usr/lib/jvm` 这类常见安装根。
+//
+// 这样界面上的 Java 列表只反映「启动器装了什么」与「用户明确指定了什么」，
+// 不会因为机器上碰巧装了别的 JDK 就多出几项、也不会让启动参数悄悄指向
+// 一个用户没有选择过的运行时。用户要复用外部 JDK 时，必须在设置里显式填路径。
+//
+// 未注入 preferredJavaPathProvider 时返回空列表——「没有可用 Java」是正常状态，
+// 由 runProbeSession 转成引导性告警，而不是伪造一个默认值。
+//
+// 不修改任何环境变量；本函数只读取显式配置，连环境变量都不读。
 func enumerateJavaCandidates() []javaCandidate {
-	candidates := make([]javaCandidate, 0, probeMaxCandidates)
-	seen := make(map[string]bool, probeMaxCandidates)
+	candidates := make([]javaCandidate, 0, 1)
+	seen := make(map[string]bool, 1)
 
 	add := func(path, origin string) {
 		if path == "" || len(candidates) >= probeMaxCandidates {
@@ -367,18 +372,6 @@ func enumerateJavaCandidates() []javaCandidate {
 		add(preferredJavaPathProvider(), "preferred")
 	}
 
-	if home := os.Getenv("JAVA_HOME"); home != "" {
-		add(filepath.Join(home, "bin", javaExecutableName()), "java_home")
-	}
-
-	if found, err := exec.LookPath(javaExecutableName()); err == nil {
-		add(found, "path")
-	}
-
-	for _, root := range platformJavaRoots() {
-		scanJavaRoot(root, 0, add)
-	}
-
 	return candidates
 }
 
@@ -388,67 +381,6 @@ func javaExecutableName() string {
 		return javaExecutableNameWindows
 	}
 	return javaExecutableNameUnix
-}
-
-// platformJavaRoots 返回当前平台的常见 Java 安装根目录。
-//
-// 只包含卡面列出的位置：不扫描磁盘、不读取注册表、不调用
-// `/usr/libexec/java_home`（留给后续卡决定）。
-func platformJavaRoots() []string {
-	switch goruntime.GOOS {
-	case "windows":
-		roots := make([]string, 0, 2)
-		if programFiles := os.Getenv("ProgramFiles"); programFiles != "" {
-			roots = append(roots,
-				filepath.Join(programFiles, "Java"),
-				filepath.Join(programFiles, "Eclipse Adoptium"),
-			)
-		}
-		return roots
-	case "darwin":
-		return []string{"/Library/Java/JavaVirtualMachines"}
-	default:
-		return []string{"/usr/lib/jvm"}
-	}
-}
-
-// scanJavaRoot 在常见安装根下按有限深度查找 `bin/java`。
-//
-// 规则：
-//   - 只看目录，忽略文件；
-//   - 每个子目录先看 `<dir>/bin/java`（Windows/Linux 形态），
-//     再看 `<dir>/Contents/Home/bin/java`（macOS 形态）；
-//   - 递归深度最多 probeMaxScanDepth 层；读取失败直接返回，不 panic。
-func scanJavaRoot(root string, depth int, add func(string, string)) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, entry.Name())
-		if found := lookJavaIn(dir); found != "" {
-			add(found, "scan")
-		}
-		if found := lookJavaIn(filepath.Join(dir, "Contents", "Home")); found != "" {
-			add(found, "scan")
-		}
-		if depth+1 < probeMaxScanDepth {
-			scanJavaRoot(dir, depth+1, add)
-		}
-	}
-}
-
-// lookJavaIn 返回目录下 `bin/java` 的路径；不存在时返回空串。
-func lookJavaIn(dir string) string {
-	candidate := filepath.Join(dir, "bin", javaExecutableName())
-	info, err := os.Stat(candidate)
-	if err != nil || info.IsDir() {
-		return ""
-	}
-	return candidate
 }
 
 // probeJavaExecutable 对单个候选做完整探测。
@@ -798,7 +730,7 @@ func runProbeSession(now time.Time) RuntimeProbeResult {
 	if len(candidates) == 0 {
 		warnings = append(warnings, RuntimeProbeWarning{
 			Code:    ErrorCodeRuntimeNotFound,
-			Message: "本机没有发现可用的 Java，请安装或手动指定 Java 路径。",
+			Message: "启动器尚未安装任何运行时，也没有在设置中指定 Java 路径。请先下载运行时，或在设置里显式指定外部 Java。",
 		})
 	}
 

@@ -493,39 +493,12 @@ func TestCappedBufferLimits(t *testing.T) {
 	}
 }
 
-// TestScanJavaRootDepthAndDedup 覆盖常见安装根扫描的深度上限与去重。
-func TestScanJavaRootDepthAndDedup(t *testing.T) {
-	root := t.TempDir()
-	makeJava := func(relative string) {
-		dir := filepath.Join(root, filepath.FromSlash(relative))
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("创建目录失败：%v", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, javaExecutableName()), []byte("stub"), 0o755); err != nil {
-			t.Fatalf("创建占位文件失败：%v", err)
-		}
-	}
-	makeJava("jdk-21/bin")
-	makeJava("nested/deeper/skip-this/bin") // 第 3 层，应被深度上限挡住
-
-	found := make([]string, 0, 4)
-	add := func(path, origin string) {
-		found = append(found, path)
-	}
-	scanJavaRoot(root, 0, add)
-
-	if len(found) != 1 {
-		t.Fatalf("扫描结果 = %v，应只有 1 个（第 3 层被深度上限挡住）", found)
-	}
-	if !strings.Contains(strings.ToLower(found[0]), "jdk-21") {
-		t.Fatalf("扫描结果应指向 jdk-21：%v", found)
-	}
-}
-
-// TestEnumerateJavaCandidatesDedupAndLimit 覆盖候选去重与数量上限。
+// TestEnumerateJavaCandidatesOnlyUsesExplicitPath 覆盖候选来源只有显式配置。
 //
-// 只做只读枚举：不执行 java，也不依赖机器上真的装了 Java。
-func TestEnumerateJavaCandidatesDedupAndLimit(t *testing.T) {
+// 回归目标：探测曾按「显式配置 → JAVA_HOME → PATH → 常见安装根」枚举，
+// 会让界面列出用户从未选择过的外部 JDK，甚至让启动参数悄悄指向它。
+// 现在只允许显式配置，即使环境变量与常见安装根都指向真实可执行文件也必须忽略。
+func TestEnumerateJavaCandidatesOnlyUsesExplicitPath(t *testing.T) {
 	root := t.TempDir()
 	javaPath := filepath.Join(root, "bin", javaExecutableName())
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
@@ -535,32 +508,30 @@ func TestEnumerateJavaCandidatesDedupAndLimit(t *testing.T) {
 		t.Fatalf("创建占位文件失败：%v", err)
 	}
 
-	// 把三个来源都指向同一个文件：去重后只应出现一次。
 	previous := preferredJavaPathProvider
-	SetPreferredJavaPathProvider(func() string { return javaPath })
 	t.Cleanup(func() { SetPreferredJavaPathProvider(previous) })
 
+	// 三个自动来源都指向含 java 的目录：若仍被读取，候选数必然大于 1。
 	t.Setenv("JAVA_HOME", root)
-	t.Setenv("PATH", root)
+	t.Setenv("PATH", filepath.Join(root, "bin"))
 	t.Setenv("ProgramFiles", root)
 
+	SetPreferredJavaPathProvider(func() string { return javaPath })
+
 	candidates := enumerateJavaCandidates()
-	if len(candidates) == 0 {
-		t.Fatal("至少应枚举到显式配置的候选")
+	if len(candidates) != 1 {
+		t.Fatalf("候选数 = %d，期望只有显式配置的 1 个：%v", len(candidates), candidates)
 	}
-	if len(candidates) > probeMaxCandidates {
-		t.Fatalf("候选数 = %d，超过上限 %d", len(candidates), probeMaxCandidates)
+	if candidates[0].origin != "preferred" {
+		t.Fatalf("候选来源 = %q，期望 preferred", candidates[0].origin)
+	}
+	if !filepath.IsAbs(candidates[0].path) {
+		t.Fatalf("候选必须是绝对路径：%s", candidates[0].path)
 	}
 
-	seen := make(map[string]bool, len(candidates))
-	for _, candidate := range candidates {
-		key := strings.ToLower(candidate.path)
-		if seen[key] {
-			t.Fatalf("候选重复：%s", candidate.path)
-		}
-		seen[key] = true
-		if !filepath.IsAbs(candidate.path) {
-			t.Fatalf("候选必须是绝对路径：%s", candidate.path)
-		}
+	// 未注入 provider 时不应产生任何候选：没有可用的 Java 是正常状态。
+	SetPreferredJavaPathProvider(nil)
+	if got := enumerateJavaCandidates(); len(got) != 0 {
+		t.Fatalf("未指定路径时候选数 = %d，期望 0：%v", len(got), got)
 	}
 }
