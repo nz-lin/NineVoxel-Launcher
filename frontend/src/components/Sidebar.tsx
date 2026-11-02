@@ -1,4 +1,5 @@
 import React from 'react';
+import { AccountAvatar } from './AccountAvatar';
 import {
   PlayCircle,
   Layers,
@@ -113,20 +114,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           onClick={onOpenAccountModal}
           className="w-full flex items-center gap-2.5 p-2 rounded-lg bg-white/70 dark:bg-neutral-950/40 hover:bg-slate-200/60 dark:hover:bg-neutral-800/70 border border-slate-200 dark:border-neutral-800/50 hover:border-slate-300 dark:hover:border-neutral-700 transition-all text-left group cursor-pointer shadow-xs"
         >
-          {/* Avatar simulation */}
-          <div className="relative w-8 h-8 rounded bg-slate-200 dark:bg-neutral-800 overflow-hidden border border-slate-300 dark:border-neutral-700/80 shrink-0">
-            {currentAccount.skinUrl ? (
-              <img
-                src={currentAccount.skinUrl}
-                alt={currentAccount.username}
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-emerald-600 to-teal-500 text-white font-bold text-xs">
-                {currentAccount.username.slice(0, 1).toUpperCase()}
-              </div>
-            )}
+          {/* 账号头像：从皮肤纹理裁剪头部 */}
+          <div className="relative w-8 h-8 shrink-0">
+            <AccountAvatar
+              name={currentAccount.username}
+              skinUrl={currentAccount.skinUrl}
+              size={32}
+              className="rounded border border-slate-300 dark:border-neutral-700/80"
+            />
             <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-white dark:border-neutral-900" />
           </div>
 

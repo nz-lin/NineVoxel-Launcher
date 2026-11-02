@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { TitleBar } from './components/TitleBar';
 import { Sidebar, NavTab } from './components/Sidebar';
 import { LaunchView } from './components/LaunchView';
@@ -18,7 +18,6 @@ import { JavaRuntimeManagerModal } from './components/JavaRuntimeManagerModal';
 import { DownloadsDrawer } from './components/DownloadsDrawer';
 import {
   INITIAL_INSTANCES,
-  INITIAL_ACCOUNTS,
   INITIAL_SETTINGS
 } from './data/mockData';
 import {
@@ -28,12 +27,56 @@ import {
   LauncherSettings,
   ModItem
 } from './types/launcher';
+import type { AccountView } from './types/account';
+import { ACCOUNT_KIND_LABELS } from './types/account';
 import { CheckCircle2, Coffee } from 'lucide-react';
 import { useAppRuntime } from './hooks/useAppRuntime';
 import { useLauncherSettings } from './hooks/useLauncherSettings';
 import { useJavaRuntimes } from './hooks/useJavaRuntimes';
 import { useDownloadTasks } from './hooks/useDownloadTasks';
+import { useAccounts } from './hooks/useAccounts';
 import { runtimeService } from './services/runtime';
+
+/** 未登录时的展示占位：只用于顶栏/侧栏文案，不参与任何启动逻辑。 */
+const GUEST_ACCOUNT: Account = {
+  id: '',
+  username: '未登录',
+  uuid: '',
+  type: 'offline',
+  skinUrl: '',
+  active: true,
+  createdDate: ''
+};
+
+/**
+ * 把账号子系统的 AccountView 映射成旧展示组件使用的 Account 模型。
+ *
+ * 展示组件（顶栏/侧栏/启动页）目前仍消费 `types/launcher` 的 Account；
+ * 真实账号数据来自后端，凭证不在此结构中。等这些组件迁移到
+ * `AccountView` 后即可删除本函数。
+ *
+ * @param view 后端账号摘要；null 表示当前没有账号
+ * @returns 展示用账号模型
+ */
+function toDisplayAccount(view: AccountView | null): Account {
+  if (!view) {
+    return GUEST_ACCOUNT;
+  }
+  const type: Account['type'] =
+    view.kind === 'microsoft' ? 'microsoft' : view.kind === 'offline' ? 'offline' : 'third_party';
+  return {
+    id: view.id,
+    username: view.displayName || view.profile.name,
+    uuid: view.profile.id,
+    type,
+    authServerName: view.kind === 'yggdrasil' ? view.providerId : undefined,
+    authServerUrl: view.kind === 'yggdrasil' ? view.providerId : undefined,
+    skinUrl: view.profile.skinUrl ?? '',
+    capeUrl: view.profile.capeUrl ?? '',
+    active: view.selected,
+    createdDate: ''
+  };
+}
 
 export default function App() {
   // 真实运行时信息：顶栏版本号与侧栏下载源状态都来自这里（读不到时如实显示「—」/「未知」）。
@@ -41,8 +84,8 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState<NavTab>('launch');
   const [instances, setInstances] = useState<Instance[]>(INITIAL_INSTANCES);
   const [currentInstanceId, setCurrentInstanceId] = useState<string>('inst-1');
-  const [accounts, setAccounts] = useState<Account[]>(INITIAL_ACCOUNTS);
-  const [currentAccountId, setCurrentAccountId] = useState<string>('acc-1');
+  // 账号改为真实后端：列表、当前账号、登录流程全部来自 AccountService（凭证不出后端）。
+  const accountsState = useAccounts();
   // 设置改为走后端持久化：主题与下载线路会真正写进设置库，其余字段仅本次运行有效。
   const launcherSettings = useLauncherSettings({
     // 保存成功后立刻让顶栏与侧栏重新拉快照，不依赖事件通道是否可用。
@@ -93,7 +136,11 @@ export default function App() {
   };
 
   const currentInstance = instances.find((i) => i.id === currentInstanceId) || instances[0];
-  const currentAccount = accounts.find((a) => a.id === currentAccountId) || accounts[0];
+  // 真实账号 → 旧展示模型；没有账号时显示「未登录」占位（不参与启动逻辑）。
+  const currentAccount = useMemo(
+    () => toDisplayAccount(accountsState.currentAccount),
+    [accountsState.currentAccount],
+  );
 
   // Game launch simulation
   const handleLaunchGame = () => {
@@ -184,32 +231,6 @@ export default function App() {
     );
 
     showToast(`模组安装需要模组源服务（P5/P6），当前仅记录在实例信息里：${mod.name}`);
-  };
-
-  // Manage Accounts
-  const handleSelectAccount = (acc: Account) => {
-    setCurrentAccountId(acc.id);
-    setAccounts((prev) =>
-      prev.map((a) => ({ ...a, active: a.id === acc.id }))
-    );
-    showToast(`已切换身份至: ${acc.username} (${acc.type === 'microsoft' ? '微软正版' : acc.type === 'offline' ? '离线' : '第三方皮肤站'})`);
-  };
-
-  const handleAddAccount = (acc: Account) => {
-    setAccounts((prev) => [acc, ...prev.map((a) => ({ ...a, active: false }))]);
-    setCurrentAccountId(acc.id);
-    showToast(`已成功添加账号: ${acc.username}`);
-  };
-
-  const handleDeleteAccount = (id: string) => {
-    setAccounts((prev) => prev.filter((a) => a.id !== id));
-    if (currentAccountId === id) {
-      const remaining = accounts.filter((a) => a.id !== id);
-      if (remaining.length > 0) {
-        setCurrentAccountId(remaining[0].id);
-      }
-    }
-    showToast('已移除账号');
   };
 
   // Manage Java Runtimes：安装走真实下载（Adoptium 元数据 + SHA-256 校验），
@@ -342,10 +363,22 @@ export default function App() {
                   👤
                 </div>
                 <div>
-                  <h2 className="text-base font-bold text-slate-900 dark:text-neutral-100">账号档案与皮肤外披中心</h2>
+                  <h2 className="text-base font-bold text-slate-900 dark:text-neutral-100">账号档案中心</h2>
                   <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1">
-                    当前选用账户: <strong className="text-slate-800 dark:text-neutral-200">{currentAccount.username}</strong> ({currentAccount.type === 'microsoft' ? '微软正版' : currentAccount.type === 'offline' ? '离线' : currentAccount.authServerName || '第三方皮肤站'})
+                    当前选用账户: <strong className="text-slate-800 dark:text-neutral-200">{currentAccount.username}</strong>
+                    {accountsState.currentAccount && ` (${ACCOUNT_KIND_LABELS[accountsState.currentAccount.kind as keyof typeof ACCOUNT_KIND_LABELS] ?? accountsState.currentAccount.kind})`}
                   </p>
+                  <p className="text-[11px] text-slate-500 dark:text-neutral-500 mt-1">
+                    已保存 {accountsState.accounts.length} 个账号 · 支持微软、离线与自定 Yggdrasil
+                  </p>
+                  {accountsState.loading && (
+                    <p className="text-[11px] text-slate-500 dark:text-neutral-500 mt-1">正在读取账号…</p>
+                  )}
+                  {accountsState.error && (
+                    <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1">
+                      账号服务错误：{accountsState.error.message}
+                    </p>
+                  )}
                 </div>
                 <button
                   onClick={() => setAccountModalOpen(true)}
@@ -391,11 +424,7 @@ export default function App() {
       <AccountManagerModal
         isOpen={accountModalOpen}
         onClose={() => setAccountModalOpen(false)}
-        accounts={accounts}
-        currentAccountId={currentAccountId}
-        onSelectAccount={handleSelectAccount}
-        onAddAccount={handleAddAccount}
-        onDeleteAccount={handleDeleteAccount}
+        controller={accountsState}
       />
 
       <JavaRuntimeManagerModal
