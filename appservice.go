@@ -4,8 +4,8 @@ import (
 	"log"
 	"runtime"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/events"
-	"example.com/ninevoxel/launcher/internal/platform"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -117,24 +117,28 @@ func (s *AppService) Snapshot() (AppInfo, error) {
 	}, nil
 }
 
-// resolveDataDirectoryStatus 把数据目录的可写性映射为可枚举的状态摘要。
+// resolveDataDirectoryStatus 把数据目录的可用性映射为可枚举的状态摘要。
 //
 // 取值规则（与 events 包中的常量一一对应）：
-//   - 日志/数据目录解析为空 → unavailable（两处候选目录都不可写）；
-//   - 目录可写 → ok；
-//   - 目录存在但写入探测失败 → read-only。
+//   - 数据根未配置或路径非法 → unavailable；
+//   - 数据根不可写 → read-only；
+//   - 数据根可用 → ok。
+//
+// 这里必须探测真正的数据根（artifact.DataRoot），而不是日志目录：
+// 日志可以落在用户缓存/配置目录，制品缓存与 app.db 落在数据根，
+// 两者可写性并不总是一致（例如便携版 data 目录只读、用户目录可写）。
+// DataRoot 内部已做过真实写入探测（不创建目录），因此无需再探测一次。
 //
 // 目录**路径本身不进入返回值**：前端只需要知道状态
 // （《错误码与日志规范》禁止把未脱敏绝对路径带到前端或事件载荷中）。
 func resolveDataDirectoryStatus() string {
-	dir := platform.LogDirectory()
-	if dir == "" {
+	if _, rootErr := artifact.DataRoot(); rootErr != nil {
+		if rootErr.Reason == artifact.DataRootReasonNotWritable {
+			return events.DataDirectoryStatusReadOnly
+		}
 		return events.DataDirectoryStatusUnavailable
 	}
-	if platform.ProbeWritable(dir) {
-		return events.DataDirectoryStatusOK
-	}
-	return events.DataDirectoryStatusReadOnly
+	return events.DataDirectoryStatusOK
 }
 
 // emitAppReady 发射一次 `app.lifecycle.ready.v1` 事件。

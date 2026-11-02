@@ -6,7 +6,8 @@
 // 设计约束：
 //   - 写入失败不得影响主业务：本文件所有导出函数都不把错误抛给业务调用方；
 //   - 目录容量检查不得在每条日志时同步全目录扫描：用写入计数 + 时间间隔节流；
-//   - 文件名模式固定为 app-<YYYYMMDD>.log，便于按日期排序与人工定位。
+//   - 文件名模式为 app-<YYYYMMDD>.log 与 app-<YYYYMMDD>-<序号>.log，
+//     同一天内超过单文件上限时改用下一个序号，保证每个文件都真正有界。
 package logging
 
 import (
@@ -14,9 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 // 轮转与容量参数。三个数值为 P1 初始值，未经真实运行验证（用户验收后按实际调整）。
@@ -51,6 +55,13 @@ const (
 	// 避免「短时间内写满 50 MiB 但还没到 1 分钟」的窗口。
 	capacityCheckEveryWrites = 200
 
+	// maxRotationAttempts 是同一天内寻找可写序号文件的最大尝试次数。
+	//
+	// 目录容量上限 50 MiB、单文件上限 5 MiB，理论最多 10 个文件；取 64 留足余量。
+	// 超过该次数说明目录状态异常（例如残留大量同名文件），此时接受当前序号，
+	// 保证日志写入不会无限循环。
+	maxRotationAttempts = 64
+
 	// logFilePrefix 是结构化日志文件的名称前缀。
 	logFilePrefix = "app-"
 
@@ -76,7 +87,7 @@ const entryTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
 // writer 是结构化日志的写入器。
 //
 // 一个 writer 对应一个日志目录；内部持有一个已打开的文件句柄，
-// 当日期变化或文件超限时切换到新文件。
+// 当日期变化或文件超限时切换到下一个文件（同一天用序号区分）。
 type writer struct {
 	// dir 为日志目录；为空表示目录不可用，此时只写 stderr。
 	dir string
@@ -96,8 +107,21 @@ type writer struct {
 	// fileDate 为当前文件对应的日期（YYYYMMDD），用于判断是否跨天。
 	fileDate string
 
+	// fileName 为当前文件的文件名（不含目录），用于轮转清理时保护当前文件。
+	//
+	// 不能像旧实现那样用 fileDate 反推文件名：同一天内会有多个序号文件，
+	// 反推得到的是「首个文件」，会把正在写的序号文件误判为可删除。
+	fileName string
+
 	// fileSize 为当前文件已写入的字节数，用于判断是否超过单文件上限。
 	fileSize int64
+
+	// maxFileSize 为单文件大小上限；默认取 maxFileSizeBytes，测试可注入更小值。
+	maxFileSize int64
+
+	// maxDirectoryBytes 为日志目录容量上限；默认取 maxDirectoryBytes 常量，
+	// 测试可注入更小值。
+	maxDirectoryBytes int64
 
 	// writeCount 为自上次容量检查以来的写入条数。
 	writeCount int
@@ -116,8 +140,10 @@ type writer struct {
 // 参数 threshold 为最低写入级别，debug 是否开启由 threshold 直接决定。
 func newWriter(dir string, threshold Level) *writer {
 	return &writer{
-		dir:       dir,
-		threshold: threshold,
+		dir:               dir,
+		threshold:         threshold,
+		maxFileSize:       maxFileSizeBytes,
+		maxDirectoryBytes: maxDirectoryBytes,
 		// debug 是否生效完全由阈值决定：阈值设为 debug 时 debug 记录才会被写入。
 		allowDebug: threshold.severity() <= LevelDebug.severity(),
 	}
@@ -175,11 +201,9 @@ func (w *writer) write(record *Record) {
 	w.fileSize += int64(n)
 	w.writeCount++
 
-	// 单文件超限：立即切换文件，避免单个文件无限增长。
-	if w.fileSize >= maxFileSizeBytes {
-		w.closeFileLocked()
-		w.fileDate = ""
-	}
+	// 单文件超限时不在本次写入里关闭句柄：下一次 ensureFileLocked 会切换到
+	// 当天下一个序号文件。保持句柄打开可以让轮转清理始终知道「当前文件是谁」，
+	// 避免像旧实现那样在 fileDate 清空后误删正在写入的文件。
 
 	// 目录容量与保留天数检查：按时间或写入计步触发，避免每条日志都扫描目录。
 	w.maybeMaintainLocked(time.Now())
@@ -187,35 +211,88 @@ func (w *writer) write(record *Record) {
 
 // ensureFileLocked 确保当前有可写的文件句柄，必要时切换到新文件。
 //
-// 调用前提：已持有 w.mu。跨天时切换到当天的文件；文件被外部删除后新建同名文件。
+// 调用前提：已持有 w.mu。
+//
+// 轮转规则：
+//   - 仍可写（同一天、未超单文件上限）→ 直接复用；
+//   - 跨天 → 使用新日期的文件；
+//   - 同一天但已超上限 → 使用 <date>-<下一个序号>.log。
+//
+// 打开文件后还会再 stat 一次：进程重启时可能已有当天文件且恰好在重启前写满，
+// 此时继续往满文件追加就突破了单文件上限，必须顺延到下一个序号。
 func (w *writer) ensureFileLocked(now time.Time) error {
+	// 手动构造 writer（测试）时字段可能为零值，这里兜底到生产默认值。
+	if w.maxFileSize <= 0 {
+		w.maxFileSize = maxFileSizeBytes
+	}
+	if w.maxDirectoryBytes <= 0 {
+		w.maxDirectoryBytes = maxDirectoryBytes
+	}
+
 	date := now.UTC().Format(logFileDateLayout)
 
-	if w.file != nil && w.fileDate == date && w.fileSize < maxFileSizeBytes {
+	if w.file != nil && w.fileDate == date && w.fileSize < w.maxFileSize {
 		return nil
 	}
 
 	w.closeFileLocked()
 
-	path := filepath.Join(w.dir, logFileName(date))
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
-	if err != nil {
-		return err
+	// 从当天已有的最大序号开始：既避免覆盖历史文件，也让进程重启后
+	// 能继续追加未写满的最后一个文件。
+	seq := w.highestSeqLocked(date)
+
+	for attempt := 0; attempt < maxRotationAttempts; attempt++ {
+		path := filepath.Join(w.dir, logFileNameFor(date, seq))
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePerm)
+		if err != nil {
+			return err
+		}
+
+		info, statErr := file.Stat()
+		if statErr != nil {
+			file.Close()
+			return statErr
+		}
+
+		if info.Size() >= w.maxFileSize && attempt < maxRotationAttempts-1 {
+			file.Close()
+			seq++
+			continue
+		}
+
+		w.file = file
+		w.fileDate = date
+		w.fileName = filepath.Base(path)
+		w.fileSize = info.Size()
+		return nil
 	}
 
-	info, statErr := file.Stat()
-	if statErr != nil {
-		file.Close()
-		return statErr
-	}
-
-	w.file = file
-	w.fileDate = date
-	w.fileSize = info.Size()
-	return nil
+	// 理论上不可达：每个尝试都会打开文件，除非目录里存在大量写满的序号文件。
+	return fmt.Errorf("logging: 同一天日志文件轮转次数超过上限（%d）", maxRotationAttempts)
 }
 
-// closeFileLocked 关闭当前文件句柄并把大小计数清零。
+// highestSeqLocked 返回指定日期已存在的最大文件序号。
+//
+// 序号 0 对应 app-<date>.log，1 及以上对应 app-<date>-<seq>.log。
+// 目录扫描失败时按 0 处理：最坏情况是接着首个文件写，不影响日志可用性。
+// 调用前提：已持有 w.mu。
+func (w *writer) highestSeqLocked(date string) int {
+	files, err := listLogFiles(w.dir)
+	if err != nil {
+		return 0
+	}
+
+	highest := 0
+	for _, file := range files {
+		fileDate, seq, ok := parseLogFileSeq(file.Name())
+		if ok && fileDate == date && seq > highest {
+			highest = seq
+		}
+	}
+	return highest
+}
+
+// closeFileLocked 关闭当前文件句柄并清空当前文件名。
 //
 // 调用前提：已持有 w.mu。句柄为 nil 时为空操作，可安全重复调用。
 func (w *writer) closeFileLocked() {
@@ -225,6 +302,7 @@ func (w *writer) closeFileLocked() {
 	// 忽略 Close 的错误：句柄已经不可用时关闭失败也无需上报。
 	_ = w.file.Close()
 	w.file = nil
+	w.fileName = ""
 	w.fileSize = 0
 }
 
@@ -260,10 +338,7 @@ func (w *writer) maintainLocked(now time.Time) {
 		return
 	}
 
-	currentName := ""
-	if w.fileDate != "" {
-		currentName = logFileName(w.fileDate)
-	}
+	currentName := w.fileName
 
 	// 第一步：按保留天数删除过期文件（按修改时间判断，避免依赖文件名格式）。
 	cutoff := now.Add(-retentionDays * 24 * time.Hour)
@@ -285,11 +360,16 @@ func (w *writer) maintainLocked(now time.Time) {
 		return
 	}
 
+	limit := w.maxDirectoryBytes
+	if limit <= 0 {
+		limit = maxDirectoryBytes
+	}
+
 	var total int64
 	for _, file := range files {
 		total += file.Size()
 	}
-	if total <= maxDirectoryBytes {
+	if total <= limit {
 		return
 	}
 
@@ -298,7 +378,7 @@ func (w *writer) maintainLocked(now time.Time) {
 	})
 
 	for _, file := range files {
-		if total <= maxDirectoryBytes {
+		if total <= limit {
 			return
 		}
 		if file.Name() == currentName {
@@ -330,8 +410,8 @@ func (w *writer) warnSelfLocked(message string) {
 
 // listLogFiles 列出日志目录下符合命名规则的文件。
 //
-// 只认可 app-<YYYYMMDD>.log 形式的文件：目录里可能存在 P0 的 launcher.log
-// 或其他无关文件，这些不属于本模块的轮转范围，必须排除。
+// 只认可 app-<YYYYMMDD>.log 与 app-<YYYYMMDD>-<序号>.log 形式的文件：
+// 目录里可能存在 P0 的 launcher.log 或其他无关文件，这些不属于本模块的轮转范围，必须排除。
 func listLogFiles(dir string) ([]os.FileInfo, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -356,21 +436,67 @@ func listLogFiles(dir string) ([]os.FileInfo, error) {
 }
 
 // isLogFileName 判断文件名是否为结构化日志文件。
+//
+// 认可两种形态：app-<YYYYMMDD>.log 与 app-<YYYYMMDD>-<序号>.log。
 func isLogFileName(name string) bool {
-	if !strings.HasPrefix(name, logFilePrefix) || !strings.HasSuffix(name, logFileSuffix) {
-		return false
-	}
-	middle := strings.TrimSuffix(strings.TrimPrefix(name, logFilePrefix), logFileSuffix)
-	if len(middle) != len(logFileDateLayout) {
-		return false
-	}
-	_, err := time.Parse(logFileDateLayout, middle)
-	return err == nil
+	_, _, ok := parseLogFileSeq(name)
+	return ok
 }
 
-// logFileName 按日期生成日志文件名，形如 app-20261101.log。
-func logFileName(date string) string {
-	return logFilePrefix + date + logFileSuffix
+// parseLogFileSeq 解析结构化日志文件名中的日期与序号。
+//
+// 形态：app-<YYYYMMDD>.log（序号 0）或 app-<YYYYMMDD>-<序号>.log（序号 ≥ 1）。
+// 返回 false 表示不是本模块的日志文件。
+func parseLogFileSeq(name string) (string, int, bool) {
+	if !strings.HasPrefix(name, logFilePrefix) || !strings.HasSuffix(name, logFileSuffix) {
+		return "", 0, false
+	}
+
+	middle := strings.TrimSuffix(strings.TrimPrefix(name, logFilePrefix), logFileSuffix)
+
+	// 形态一：只有日期。
+	if len(middle) == len(logFileDateLayout) {
+		if _, err := time.Parse(logFileDateLayout, middle); err != nil {
+			return "", 0, false
+		}
+		return middle, 0, true
+	}
+
+	// 形态二：日期 + `-` + 十进制序号。
+	if len(middle) <= len(logFileDateLayout)+1 {
+		return "", 0, false
+	}
+
+	date := middle[:len(logFileDateLayout)]
+	if middle[len(logFileDateLayout)] != '-' {
+		return "", 0, false
+	}
+	if _, err := time.Parse(logFileDateLayout, date); err != nil {
+		return "", 0, false
+	}
+
+	seqText := middle[len(logFileDateLayout)+1:]
+	for _, char := range seqText {
+		if char < '0' || char > '9' {
+			return "", 0, false
+		}
+	}
+
+	seq, err := strconv.Atoi(seqText)
+	if err != nil || seq <= 0 {
+		return "", 0, false
+	}
+	return date, seq, true
+}
+
+// logFileNameFor 按日期与序号生成日志文件名。
+//
+// 序号 0 为 app-<YYYYMMDD>.log；序号 ≥ 1 为 app-<YYYYMMDD>-<序号>.log。
+func logFileNameFor(date string, seq int) string {
+	if seq <= 0 {
+		return logFilePrefix + date + logFileSuffix
+	}
+	return logFilePrefix + date + "-" + strconv.Itoa(seq) + logFileSuffix
 }
 
 // DirectoryStatus 汇总日志目录的可读状态，供 LogService.Status 使用。
@@ -381,7 +507,7 @@ type DirectoryStatus struct {
 	// Enabled 表示日志目录是否可用；false 时本次运行只能输出到控制台。
 	Enabled bool `json:"enabled"`
 
-	// DirectoryKind 表示目录来源类别：userCache / exeDir / unavailable。
+	// DirectoryKind 表示目录来源类别：userConfig / userCache / exeDir / unavailable。
 	DirectoryKind string `json:"directoryKind"`
 
 	// FileCount 为目录中结构化日志文件的数量。
@@ -394,13 +520,18 @@ type DirectoryStatus struct {
 	TotalBytes int64 `json:"totalBytes"`
 }
 
-// 目录来源类别常量：与 P1-05 D 节给出的取值逐字一致。
+// 目录来源类别常量：取值由 platform 包定义（日志目录的解析归 platform 所有）。
+//
+// userConfig 为新增取值（macOS 使用 Application Support），其余与 P1-05 D 节一致。
 const (
-	// DirectoryKindUserCache 表示日志落在用户缓存目录。
-	DirectoryKindUserCache = "userCache"
+	// DirectoryKindUserConfig 表示日志落在用户配置目录（macOS：Application Support）。
+	DirectoryKindUserConfig = platform.LogDirectoryKindUserConfig
+
+	// DirectoryKindUserCache 表示日志落在用户缓存目录（Windows：%LocalAppData%）。
+	DirectoryKindUserCache = platform.LogDirectoryKindUserCache
 
 	// DirectoryKindExeDir 表示日志回退到可执行文件同级目录。
-	DirectoryKindExeDir = "exeDir"
+	DirectoryKindExeDir = platform.LogDirectoryKindExeDir
 
 	// DirectoryKindUnavailable 表示两处目录都不可写。
 	DirectoryKindUnavailable = "unavailable"

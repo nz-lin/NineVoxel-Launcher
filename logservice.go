@@ -94,7 +94,8 @@ type LogStatus struct {
 	// Enabled 表示日志目录是否可写；false 时本次运行仅输出到控制台。
 	Enabled bool `json:"enabled"`
 
-	// DirectoryKind 为目录来源类别：userCache / exeDir / unavailable。
+	// DirectoryKind 为目录来源类别：userConfig / userCache / exeDir / unavailable。
+	// userConfig 为 macOS（Application Support），userCache 为 Windows（%LocalAppData%）。
 	DirectoryKind string `json:"directoryKind"`
 
 	// FileCount 为结构化日志文件数量。

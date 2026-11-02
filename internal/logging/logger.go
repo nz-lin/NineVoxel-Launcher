@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -52,23 +51,18 @@ func newDefaultLogger() *Logger {
 
 // resolveDirectoryKind 判断日志目录来自哪一条回退链，返回用于状态展示的类别。
 //
-// 该函数只做路径前缀比较，不重新探测可写性：实际可写性已由 platform 保证。
+// 目录来源的判断归 platform 所有：只有它同时知道各候选基目录与平台差异
+// （macOS 用 Application Support、Windows 用 %LocalAppData%），
+// 本模块若自行拼路径比较，会在平台策略变化后出现误报。
+// 该函数只做路径比较，不重新探测可写性：实际可写性已由 platform 保证。
 func resolveDirectoryKind(dir string) string {
 	if dir == "" {
 		return DirectoryKindUnavailable
 	}
 
-	cacheDir, err := os.UserCacheDir()
-	if err == nil && cacheDir != "" {
-		expected := filepath.Join(cacheDir, appDirSegment, logDirSegment)
-		// 用 filepath.Clean 归一化后比较：platform 包返回的路径与这里拼出的路径
-		// 可能只差分隔符形式，Clean 能消除这类差异。
-		if filepath.Clean(dir) == filepath.Clean(expected) {
-			return DirectoryKindUserCache
-		}
+	if kind := platform.LogDirectoryKind(dir); kind != "" {
+		return kind
 	}
-
-	// 非用户缓存目录即视为可执行文件同级目录回退。
 	return DirectoryKindExeDir
 }
 
@@ -267,15 +261,3 @@ func formatTimestamp(t time.Time) string {
 func RedactMessage(message string) string {
 	return Redact(message)
 }
-
-// 目录名常量：与 platform 包中的实现保持同名同值。
-//
-// 这里重复声明是为了让 resolveDirectoryKind 在不引入循环依赖的前提下比较路径；
-// platform 包已经保证目录结构一致，本常量只用于字符串比对。
-const (
-	// appDirSegment 是应用在用户缓存目录下的数据目录名。
-	appDirSegment = "NineVoxel-Launcher"
-
-	// logDirSegment 是日志目录的子目录名。
-	logDirSegment = "logs"
-)

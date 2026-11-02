@@ -49,6 +49,12 @@ const (
 	// 同时仍限制在可人工打开与传输的范围内。
 	gameLogFileMaxBytes int64 = 10 * 1024 * 1024
 
+	// gameLogRotationAttempts 是同一天内寻找可写序号文件的最大尝试次数。
+	//
+	// 与 internal/logging 的设计一致：单文件 10 MiB、保留 3 个，正常不会超过
+	// 少量序号；取 64 只是防止「目录里残留大量写满文件」时无限循环。
+	gameLogRotationAttempts = 64
+
 	// gameLogRetainFiles 是保留的 game-*.log 文件数量。
 	//
 	// 取 3：覆盖「最近几次启动」的排查需求；配合 10 MiB 上限，
@@ -260,6 +266,9 @@ type gameLogChannel struct {
 
 	// fileSize 为当前文件已写入字节数，用于轮转判断。
 	fileSize int64
+
+	// maxFileSize 为单文件大小上限；默认取 gameLogFileMaxBytes，测试可注入更小值。
+	maxFileSize int64
 
 	// currentDate 为当前文件对应的日期（YYYYMMDD）。
 	currentDate string
@@ -569,20 +578,25 @@ func (c *gameLogChannel) writeLine(line events.GameLogLine) {
 
 	c.fileSize += int64(n)
 
-	// 单文件超限：关闭句柄，下次写入自动切到新文件（当日文件已存在时追加）。
-	if c.fileSize >= gameLogFileMaxBytes {
-		_ = c.file.Close()
-		c.file = nil
-	}
+	// 单文件超限时不在本次写入里关句柄：下一次 ensureFileLocked 会切到
+	// 当天下一个序号文件（game-<id>-<date>-<seq>.log），保证单文件真正有界。
 }
 
 // ensureFileLocked 确保当前有可写的文件句柄。
 //
-// 调用前提：已持有 c.mu。跨天或超限后重新打开当日文件。
+// 调用前提：已持有 c.mu。
+//
+// 轮转规则：
+//   - 同一天且未超单文件上限 → 复用当前句柄；
+//   - 跨天或超限 → 选择该日期下最大序号文件；若它也已写满则顺延到下一个序号。
 func (c *gameLogChannel) ensureFileLocked(now time.Time) error {
+	if c.maxFileSize <= 0 {
+		c.maxFileSize = gameLogFileMaxBytes
+	}
+
 	date := now.Format(gameLogDateLayout)
 
-	if c.file != nil && c.currentDate == date {
+	if c.file != nil && c.currentDate == date && c.fileSize < c.maxFileSize {
 		return nil
 	}
 
@@ -591,23 +605,59 @@ func (c *gameLogChannel) ensureFileLocked(now time.Time) error {
 		c.file = nil
 	}
 
-	path := filepath.Join(c.dir, gameLogFileName(c.launchID, date))
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, gameLogFilePerm)
+	seq := c.highestSeqLocked(date)
+
+	for attempt := 0; attempt < gameLogRotationAttempts; attempt++ {
+		path := filepath.Join(c.dir, gameLogFileNameFor(c.launchID, date, seq))
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, gameLogFilePerm)
+		if err != nil {
+			return err
+		}
+
+		info, statErr := file.Stat()
+		if statErr != nil {
+			_ = file.Close()
+			return statErr
+		}
+
+		if info.Size() >= c.maxFileSize && attempt < gameLogRotationAttempts-1 {
+			_ = file.Close()
+			seq++
+			continue
+		}
+
+		c.file = file
+		c.currentDate = date
+		c.filePath = path
+		c.fileSize = info.Size()
+		return nil
+	}
+
+	return fmt.Errorf("launch: 游戏日志轮转次数超过上限（%d）", gameLogRotationAttempts)
+}
+
+// highestSeqLocked 返回指定日期已存在的最大文件序号。
+//
+// 序号 0 对应 game-<id>-<date>.log；1 及以上对应 game-<id>-<date>-<seq>.log。
+// 调用前提：已持有 c.mu。
+func (c *gameLogChannel) highestSeqLocked(date string) int {
+	files, err := listGameLogFiles(c.dir)
 	if err != nil {
-		return err
+		return 0
 	}
 
-	info, statErr := file.Stat()
-	if statErr != nil {
-		_ = file.Close()
-		return statErr
+	launchPart := gameLogLaunchPart(c.launchID)
+	highest := 0
+	for _, file := range files {
+		fileLaunch, fileDate, seq, ok := parseGameLogFileName(file.Name())
+		if !ok || fileDate != date || fileLaunch != launchPart {
+			continue
+		}
+		if seq > highest {
+			highest = seq
+		}
 	}
-
-	c.file = file
-	c.currentDate = date
-	c.filePath = path
-	c.fileSize = info.Size()
-	return nil
+	return highest
 }
 
 // emitBatch 发出一条批量增量事件。
@@ -670,8 +720,8 @@ func (c *gameLogChannel) pruneOldFiles() {
 
 // listGameLogFiles 列出目录下符合本通道命名规则的文件。
 //
-// 只认 `game-<8 位>-<8 位数字>.log`：目录里可能同时存在 P1-05 的 `app-*.log`
-// 与其他文件，它们不属于本通道的清理范围。
+// 只认 `game-<8 位>-<8 位数字>.log` 与 `game-<8 位>-<8 位数字>-<序号>.log`：
+// 目录里可能同时存在 P1-05 的 `app-*.log` 与其他文件，它们不属于本通道的清理范围。
 func listGameLogFiles(dir string) ([]os.FileInfo, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -694,33 +744,111 @@ func listGameLogFiles(dir string) ([]os.FileInfo, error) {
 
 // isGameLogFileName 判断文件名是否为游戏日志文件。
 //
-// 形态：`game-<launchId 前 8 位>-<YYYYMMDD>.log`。
-// 该判定与 `internal/logging.isLogFileName`（只认 `app-*.log`）互不重叠，
+// 认可两种形态：
+//   - `game-<launchId 前 8 位>-<YYYYMMDD>.log`（序号 0）；
+//   - `game-<launchId 前 8 位>-<YYYYMMDD>-<序号>.log`（序号 ≥ 1，同一天超过单文件上限）。
+//
+// 该判定与 `internal/logging` 的 `app-*.log` 判定互不重叠，
 // 保证两套日志永远不会互相清理。
 func isGameLogFileName(name string) bool {
+	_, _, _, ok := parseGameLogFileName(name)
+	return ok
+}
+
+// parseGameLogFileName 解析游戏日志文件名。
+//
+// 返回 launchId 片段、日期（YYYYMMDD）、序号（0 表示无序号后缀）与是否合法。
+// 先尝试「日期 + 序号」形态，失败再回退到「仅日期」形态：launchId 片段本身
+// 可以包含 `-`，也可能恰好是 8 位数字（例如纯数字 ID），必须允许回退。
+func parseGameLogFileName(name string) (string, string, int, bool) {
 	if !strings.HasPrefix(name, gameLogFilePrefix) || !strings.HasSuffix(name, gameLogFileSuffix) {
-		return false
+		return "", "", 0, false
 	}
 
 	middle := strings.TrimSuffix(strings.TrimPrefix(name, gameLogFilePrefix), gameLogFileSuffix)
 	parts := strings.Split(middle, "-")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
+		return "", "", 0, false
+	}
+
+	// 形态一：`<launchPart>-<date>-<seq>`。
+	if len(parts) >= 3 {
+		dateCandidate := parts[len(parts)-2]
+		if isGameLogDateSegment(dateCandidate) {
+			if seq, seqOK := parsePositiveDecimal(parts[len(parts)-1]); seqOK {
+				launchPart := strings.Join(parts[:len(parts)-2], "-")
+				if isValidGameLogLaunchPart(launchPart) {
+					return launchPart, dateCandidate, seq, true
+				}
+			}
+		}
+	}
+
+	// 形态二：`<launchPart>-<date>`。
+	dateCandidate := parts[len(parts)-1]
+	if !isGameLogDateSegment(dateCandidate) {
+		return "", "", 0, false
+	}
+	launchPart := strings.Join(parts[:len(parts)-1], "-")
+	if !isValidGameLogLaunchPart(launchPart) {
+		return "", "", 0, false
+	}
+	return launchPart, dateCandidate, 0, true
+}
+
+// isGameLogDateSegment 判断片段是否为合法日期（YYYYMMDD）。
+func isGameLogDateSegment(value string) bool {
+	if len(value) != len(gameLogDateLayout) {
 		return false
 	}
-	if len(parts[0]) == 0 || len(parts[0]) > gameLogLaunchIDPrefixLength {
-		return false
-	}
-	if len(parts[1]) != len(gameLogDateLayout) {
-		return false
-	}
-	_, err := time.Parse(gameLogDateLayout, parts[1])
+	_, err := time.Parse(gameLogDateLayout, value)
 	return err == nil
 }
 
-// gameLogFileName 生成游戏日志文件名。
+// isValidGameLogLaunchPart 判断 launchId 片段是否合法（非空且不超过保留长度）。
+func isValidGameLogLaunchPart(value string) bool {
+	return value != "" && len(value) <= gameLogLaunchIDPrefixLength
+}
+
+// parsePositiveDecimal 解析十进制正整数；不接受符号、空串与前导零以外的写法。
+func parsePositiveDecimal(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return 0, false
+		}
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number <= 0 {
+		return 0, false
+	}
+	return number, true
+}
+
+// gameLogFileName 生成游戏日志文件名（序号 0）。
 //
 // 参数 launchID 为启动标识（取前 8 位，不足则全取）；date 为日期（YYYYMMDD）。
 func gameLogFileName(launchID string, date string) string {
+	return gameLogFileNameFor(launchID, date, 0)
+}
+
+// gameLogFileNameFor 按日期与序号生成游戏日志文件名。
+//
+// 序号 0 为 `game-<id>-<date>.log`，序号 ≥ 1 为 `game-<id>-<date>-<seq>.log`。
+func gameLogFileNameFor(launchID string, date string, seq int) string {
+	name := gameLogFilePrefix + gameLogLaunchPart(launchID) + "-" + date
+	if seq > 0 {
+		name += "-" + strconv.Itoa(seq)
+	}
+	return name + gameLogFileSuffix
+}
+
+// gameLogLaunchPart 返回文件名中使用的 launchId 片段。
+//
+// 截取前 8 位、清洗非法字符；清洗后为空时回退 unknown。
+func gameLogLaunchPart(launchID string) string {
 	prefix := launchID
 	if len(prefix) > gameLogLaunchIDPrefixLength {
 		prefix = prefix[:gameLogLaunchIDPrefixLength]
@@ -730,7 +858,7 @@ func gameLogFileName(launchID string, date string) string {
 	if prefix == "" {
 		prefix = "unknown"
 	}
-	return gameLogFilePrefix + prefix + "-" + date + gameLogFileSuffix
+	return prefix
 }
 
 // sanitizeFileNamePart 清理文件名片段中的非法字符。
