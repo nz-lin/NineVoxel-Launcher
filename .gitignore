@@ -12,3 +12,6 @@ build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
 # 应用运行时数据：WebView2 用户数据目录与启动日志由程序自动创建。
 /webview
 /logs
+
+# macOS 目录元数据（由 Finder / 构建工具产生，不应入库）
+.DS_Store

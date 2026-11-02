@@ -2,7 +2,7 @@
 
 NineVoxel Launcher 是面向 Minecraft Java Edition 的跨平台桌面启动器，基于 Wails v3（Go 后端 + WebView 前端）构建。
 
-当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；部分前端界面仍使用演示数据，账号认证、实例管理、插件/模组市场尚未实现，部分前后端链路仍在接线中，具体以代码为准。
+当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；账号子系统（账号 SPI：微软 PKCE 浏览器登录 + 设备码回退、离线、自定 Yggdrasil、Ninevoxel 占位）已实现并接入前端账号管理与启动身份（皮肤上传、authlib-injector 注入待后续）；实例管理、插件/模组市场尚未实现，部分前后端链路仍在接线中，具体以代码为准。
 
 ## 技术栈
 
@@ -22,6 +22,7 @@ Vite 只用于前端构建与开发调试，**运行期不参与**：前端产�
 ```text
 .                     Go 模块根：Wails 应用入口（main.go / appservice.go / logservice.go）
 internal/app          Wails 装配、窗口与启动/退出钩子
+internal/account      账号 SPI：账号来源注册表、登录会话、加密凭证存储（offline / microsoft / yggdrasil / ninevoxel 占位）
 internal/artifact     数据根、制品路径、内容寻址与路径边界校验
 internal/database     SQLite 打开、迁移与 checksum 校验
 internal/download     下载队列、断点续传、校验、隔离与启动恢复
