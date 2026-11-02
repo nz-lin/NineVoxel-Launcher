@@ -15,6 +15,7 @@
 package launch
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -803,8 +804,28 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 	}
 
 	// P2-04：构建参数。
-	plan, planErr := buildLaunchPlan(root, versionID, outcome.merged,
-		req.AdditionalJvmArgs, req.AdditionalGameArgs)
+	//
+	// P3 账号接入：先解析所选账号身份，再决定走哪条构建路径。
+	// 解析放在 Java 校验与版本加载之后：账号失效不该掩盖「Java / 版本根本不可用」
+	// 这类更基础、更省时间的错误；也避免为一次注定失败的启动去刷新凭证。
+	identity, identityErr := resolveAccountIdentity(context.Background(), req.AccountID)
+	if identityErr != nil {
+		// 原样透传 `LAUNCH_ACCOUNT_001`（failLaunch 会记录，文案已脱敏）。
+		return nil, identityErr
+	}
+
+	var plan *LaunchPlan
+	var planErr *Error
+	// AccountIdentity 全部字段为字符串，可直接与零值比较；
+	// 若将来加入切片/映射字段，这里必须改成显式判断（见 identity.go）。
+	if identity == (AccountIdentity{}) {
+		// 未选账号：沿用 P2 的离线占位身份（兼容旧调用）。
+		plan, planErr = buildLaunchPlan(root, versionID, outcome.merged,
+			req.AdditionalJvmArgs, req.AdditionalGameArgs)
+	} else {
+		plan, planErr = buildLaunchPlanWithIdentity(root, versionID, outcome.merged,
+			req.AdditionalJvmArgs, req.AdditionalGameArgs, identity)
+	}
 	if planErr != nil {
 		return nil, planErr
 	}

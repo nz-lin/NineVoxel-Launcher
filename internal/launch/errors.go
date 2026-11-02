@@ -3,7 +3,9 @@
 // 错误码来源（不得自造、不得改义复用）：
 //   - `launcher/docs/tasks/P2/决策记录.md` 第五节「P2 新增错误码冻结（2026-11-01）」；
 //   - `PATH_INVALID_001` / `JAVA_NOT_FOUND_001` 为 P1 已冻结、P2 复用的既有码；
-//   - `JAVA_VERSION_001` 由 P2 新增冻结，首个使用卡即 P2-01。
+//   - `JAVA_VERSION_001` 由 P2 新增冻结，首个使用卡即 P2-01；
+//   - `LAUNCH_PROFILE_001`（P2-13）与 `LAUNCH_ACCOUNT_001`（P3 账号接入）为后续新增码，
+//     同样不得改义复用。
 //
 // 改义复用被明令禁止：不得用 `JAVA_NOT_FOUND_001` 表达「Java 版本过低」，
 // 也不得用 `PATH_INVALID_001` 表达「目录结构缺失」（后者属 P2-02 的 `GAME_DIR_001`）。
@@ -29,6 +31,23 @@ const (
 	// 来源：决策记录第五节新增冻结码表（首个使用卡 P2-01）。
 	// 注意：仅覆盖「可执行但版本解析失败」，不得用于「文件不存在」。
 	ErrorCodeJavaVersion = "JAVA_VERSION_001"
+)
+
+// P3 账号接入新增的稳定错误码。
+//
+// 不复用既有码：账号读取失败既不是「路径非法」（`PATH_INVALID_001`），
+// 也不是「版本元数据损坏」（`VERSION_METADATA_001`）——用独立码让前端能按
+// 「账号失效 → 引导去账号管理重新登录」处理，而不是当成普通启动参数错误。
+const (
+	// ErrorCodeLaunchAccount 表示启动时无法读取所选账号的身份或凭证。
+	//
+	// 触发条件（见 identity.go 的 `resolveAccountIdentity`）：
+	//   - 传了 accountId 但装配层没有注入身份解析器（程序装配问题）；
+	//   - 解析器返回错误（账号已删除 / 凭证刷新失败）；
+	//   - 解析出的身份缺少玩家名或 UUID（账号数据异常）。
+	//
+	// 文案必须脱敏：不含账号 id、token 片段与路径。
+	ErrorCodeLaunchAccount = "LAUNCH_ACCOUNT_001"
 )
 
 // ErrorCategory 表示错误的归类，用于区分「用户输入错误 / 系统错误 / 外部依赖错误」。
@@ -78,7 +97,7 @@ func (c ErrorCategory) String() string {
 // 实现 error 接口，`Error()` 的输出格式为 `<CODE>: <message>`，
 // 与 P1 各包的既有约定一致（前端 `toAppError` 能按前缀提取错误码）。
 type Error struct {
-	// Code 为稳定错误码，取值必须来自本文件的三个常量。
+	// Code 为稳定错误码，取值必须来自本文件定义的常量。
 	Code string
 
 	// Category 为错误归类。
@@ -163,6 +182,13 @@ const (
 
 	// messageVersionOutputEmpty 表示 java -version 没有任何输出。
 	messageVersionOutputEmpty = "该程序没有输出任何版本信息，可能不是有效的 Java 程序或执行失败。"
+
+	// messageLaunchAccountUnreadable 表示启动时无法读取所选账号的身份（脱敏文案）。
+	//
+	// 刻意不区分「解析器未注入 / 账号已删除 / 凭证刷新失败 / 身份字段缺失」：
+	// 这些细节对用户没有操作意义，且可能泄漏内部状态；用户能做的动作都是
+	// 「去账号管理页重新选择或登录」。
+	messageLaunchAccountUnreadable = "无法读取所选账号，请在账号管理中重新登录。"
 )
 
 // P2-13 新增：启动配置持久化相关的稳定错误码与中文文案。

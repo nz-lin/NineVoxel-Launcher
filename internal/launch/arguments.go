@@ -231,6 +231,12 @@ type buildContext struct {
 
 	// nativesPresent 表示 natives 目录是否存在。
 	nativesPresent bool
+
+	// identity 为所选账号的真实身份（P3 账号接入）。
+	//
+	// 零值表示没有选中账号：占位符替换表逐项回落到 D-5 的离线占位常量，
+	// 行为与 P2 完全一致（旧调用方与既有测试不受影响）。
+	identity AccountIdentity
 }
 
 // placeholderValue 是替换表中的一项。
@@ -286,22 +292,31 @@ func buildPlaceholderTable(ctx *buildContext) map[string]placeholderValue {
 	table["launcher_name"] = placeholderValue{value: launcherName}
 	table["launcher_version"] = placeholderValue{value: launcherVersion}
 
-	// 身份类（D-5 离线占位）：这三项**永远**是占位值，不是真实凭证。
+	// 身份类（P3 账号接入）：有真实身份时逐项覆盖，空值逐项回落到 D-5 的离线占位常量。
+	//
+	// 为什么是「逐项回落」而不是「整体回落」：离线账号有 Username/UUID 但没有
+	// AccessToken/UserType（凭证为空），整体回落会把玩家名也退回 "Player"，
+	// 反而丢失了唯一能拿到的真实身份；逐项回落让每个占位符各自取到最好的值。
+	// 未选账号时 ctx.identity 为零值，所有项都落回占位常量，行为与 P2 完全一致。
+	//
 	// `${auth_player_name}` 缺失后果：游戏无法确定玩家名。
-	table["auth_player_name"] = placeholderValue{value: placeholderUsername}
+	table["auth_player_name"] = placeholderValue{value: identityOrFallback(ctx.identity.Username, placeholderUsername)}
 	// `${auth_uuid}` 缺失后果：部分版本拒绝启动（无法生成玩家档案）。
-	table["auth_uuid"] = placeholderValue{value: placeholderUUID}
-	// `${auth_access_token}` 缺失后果：联网校验失败；离线占位下游戏不发起联网校验。
-	table["auth_access_token"] = placeholderValue{value: placeholderAccessToken}
+	table["auth_uuid"] = placeholderValue{value: identityOrFallback(ctx.identity.UUID, placeholderUUID)}
+	// `${auth_access_token}` 缺失后果：联网校验失败；离线账号没有 token 时回落占位 "0"。
+	table["auth_access_token"] = placeholderValue{value: identityOrFallback(ctx.identity.AccessToken, placeholderAccessToken)}
 	// `${user_type}` 缺失后果：旧版会按在线身份处理并尝试联网校验。
-	table["user_type"] = placeholderValue{value: placeholderUserType}
-	// `${user_properties}` 是旧版常见占位（玩家皮肤等），P2 以空 JSON 对象表示「无属性」。
+	// 真实凭证给的是 msa / mojang / legacy；离线账号为空时回落 legacy。
+	table["user_type"] = placeholderValue{value: identityOrFallback(ctx.identity.UserType, placeholderUserType)}
+	// `${user_properties}` 是旧版常见占位（玩家皮肤等）。
+	// 首期**不做** user properties：账号子系统尚未向启动链路提供皮肤属性，
+	// 统一给空 JSON 对象表示「无属性」，避免拼出格式非法的 JSON。
 	table["user_properties"] = placeholderValue{value: "{}"}
 	// `${clientid}` / `${auth_xuid}` 是 1.20.5+ 新增的身份参数（客户端 ID 与 Xbox 用户 ID）。
-	// 离线占位身份下没有真实值，官方启动器在这两个参数缺省时同样能启动；
-	// 给固定占位值是为了让整个参数得以保留，而不是被当成「无法解析」而阻塞启动（D-19）。
-	table["clientid"] = placeholderValue{value: placeholderClientID, onlineOnly: true}
-	table["auth_xuid"] = placeholderValue{value: placeholderClientID, onlineOnly: true}
+	// 微软账号有真实 XUID 时用它；否则回落占位值，让整个参数得以保留，
+	// 而不是被当成「无法解析」而阻塞启动（D-19）。
+	table["clientid"] = placeholderValue{value: identityOrFallback(ctx.identity.XUID, placeholderClientID), onlineOnly: true}
+	table["auth_xuid"] = placeholderValue{value: identityOrFallback(ctx.identity.XUID, placeholderClientID), onlineOnly: true}
 
 	// 分辨率类（D-13 补强，2026-11-01）：P2 注入默认分辨率，使引用这两个占位符的
 	// 版本可以启动，而不再落入 `unresolvedPlaceholders`。
@@ -313,6 +328,19 @@ func buildPlaceholderTable(ctx *buildContext) map[string]placeholderValue {
 	table["resolution_height"] = placeholderValue{value: strconv.Itoa(defaultResolutionHeight)}
 
 	return table
+}
+
+// identityOrFallback 返回真实身份字段值；为空时回落到 D-5 的离线占位常量。
+//
+// 单独抽成小函数而不是在替换表里写 6 个 if：让「空值回落」这一规则只有一处定义，
+// 避免某个占位符漏写回落、直接把空串写进游戏参数（例如 `--username ""`）。
+//
+// 参数 value 为账号子系统给出的真实值；fallback 为该占位符的离线占位常量。
+func identityOrFallback(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 // unresolvedPlaceholderReasons 中记录「已知但本包无法解析」的占位符原因。
@@ -998,7 +1026,11 @@ const (
 	messageResolutionMissingValue = "附加参数 %s 缺少取值。"
 )
 
-// buildLaunchPlan 构建 LaunchPlan。
+// buildLaunchPlan 构建 LaunchPlan（沿用零值身份，即 D-5 的离线占位行为）。
+//
+// 这是 **P2 的原始签名**，保留为「不带身份」的包装：既有调用点（预览路径
+// `internal/launch/plan.go`、P2-09 的编排入口）与既有测试一行都不用改。
+// P3 账号接入后，真实身份走 `buildLaunchPlanWithIdentity`（supervisor 调用）。
 //
 // 参数 root 为已归一化的游戏根；merged 为 P2-03 的继承合并结果；
 // additionalJvmArgs / additionalGameArgs 为可选附加参数（来自前端，需逐项校验）。
@@ -1013,6 +1045,26 @@ const (
 //
 // 只读：不创建目录、不写文件、不解压。
 func buildLaunchPlan(root, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string) (*LaunchPlan, *Error) {
+	return buildLaunchPlanWithIdentity(root, versionID, merged,
+		additionalJvmArgs, additionalGameArgs, AccountIdentity{})
+}
+
+// buildLaunchPlanWithIdentity 构建 LaunchPlan（可携带真实账号身份）。
+//
+// 与 `buildLaunchPlan` 的唯一区别：把 identity 放进构建上下文，占位符替换表
+// 用真实身份覆盖身份类占位符；identity 为零值时结果与 `buildLaunchPlan` 完全一致。
+//
+// identity 由调用方（supervisor 的 `buildPlanForLaunch`）通过
+// `resolveAccountIdentity` 取得并校验过（至少含 Username 与 UUID），
+// 本函数不再做身份校验，只负责替换——保持「一个函数只做一件事」。
+//
+// 参数 root 为已归一化的游戏根；merged 为 P2-03 的继承合并结果；
+// additionalJvmArgs / additionalGameArgs 为可选附加参数（来自前端，需逐项校验）；
+// identity 为所选账号的启动身份（零值表示未选账号）。
+//
+// 失败情形与 `buildLaunchPlan` 完全相同（classpath / 附加参数 / 长度）。
+// 只读：不创建目录、不写文件、不解压。
+func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string, identity AccountIdentity) (*LaunchPlan, *Error) {
 	if merged == nil {
 		return nil, newInputError(ErrorCodeLaunchArgs, messageVersionJSONMissing)
 	}
@@ -1126,6 +1178,9 @@ func buildLaunchPlan(root, versionID string, merged *mergedVersion, additionalJv
 	}
 
 	// 3. 构建上下文与占位符替换表。
+	//
+	// identity 放进上下文而不是作为参数层层传递：替换表是**唯一**的取值来源，
+	// 让表构造时就能拿到身份，避免在展开参数时再写一套「身份覆盖」逻辑。
 	ctx := &buildContext{
 		gameRoot:         root,
 		versionID:        merged.ID,
@@ -1135,6 +1190,7 @@ func buildLaunchPlan(root, versionID string, merged *mergedVersion, additionalJv
 		classPathEntries: classPathEntries,
 		nativesDirectory: nativesDir,
 		nativesPresent:   nativesDir != "",
+		identity:         identity,
 	}
 	table := buildPlaceholderTable(ctx)
 

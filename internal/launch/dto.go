@@ -688,6 +688,13 @@ type StartLaunchRequest struct {
 	// VersionID 为要启动的版本 id。
 	VersionID string `json:"versionId"`
 
+	// AccountID 为所选账号的本地 id；为空表示沿用离线占位身份（兼容旧调用）。
+	//
+	// 该字段只是账号子系统内的本地标识，**不是**凭证：后端用它向账号子系统
+	// 换取启动所需的身份（见 identity.go 的 AccountIdentityResolver），
+	// access token 等凭证只在后端内存中流转，不进入任何返回值。
+	AccountID string `json:"accountId,omitempty"`
+
 	// AdditionalJvmArgs 为附加 JVM 参数（逐项校验后追加）。
 	AdditionalJvmArgs []string `json:"additionalJvmArgs"`
 

@@ -638,6 +638,14 @@ export interface StartLaunchRequest {
 
   /** 附加游戏参数；`null` 表示不提供。 */
   additionalGameArgs: string[] | null
+
+  /**
+   * 所选账号的本地 id；缺省（不传）表示沿用离线占位身份（兼容旧调用）。
+   *
+   * 后端会用该 id 解析账号档案与凭证，并把真实用户名/UUID/token/userType
+   * 写进启动参数；凭证不会经过前端。
+   */
+  accountId?: string
 }
 
 /** 启动受理结果。 */
