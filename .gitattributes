@@ -1,0 +1,6 @@
+# Shell 脚本必须保持 LF：Windows 上 core.autocrlf=true 会把工作区文件转成 CRLF，
+# 导致 macOS / Linux 上的 shebang（#!/usr/bin/env bash）失效。
+*.sh text eol=lf
+
+# PowerShell 脚本同样统一为 LF，Windows PowerShell 与 pwsh 7 均可正常执行。
+*.ps1 text eol=lf
