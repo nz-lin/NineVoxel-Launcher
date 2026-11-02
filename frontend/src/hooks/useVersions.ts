@@ -81,7 +81,7 @@ function toErrorInfo(error: unknown): { code: string; message: string } {
  * 首次加载流程：先查清单状态，不可用就触发一次联网刷新，再取列表。
  * 这样用户第一次打开页面就能看到数据，而不用自己去点「刷新清单」。
  */
-export function useVersions(): VersionCatalogController {
+export function useVersions(pageSize = DEFAULT_LIMIT): VersionCatalogController {
   const [items, setItems] = useState<VersionSummary[]>([])
   const [total, setTotal] = useState(0)
   const [stale, setStale] = useState(false)
@@ -92,7 +92,7 @@ export function useVersions(): VersionCatalogController {
   const [errorCode, setErrorCode] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [typeFilter, setTypeFilterState] = useState<VersionTypeFilter>('')
-  const [limit] = useState(DEFAULT_LIMIT)
+  const [limit] = useState(pageSize)
 
   // 用于丢弃过期请求的回写：快速切换过滤时只认最后一次。
   const requestSeqRef = useRef(0)

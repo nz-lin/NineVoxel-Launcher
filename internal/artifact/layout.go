@@ -533,17 +533,35 @@ func ResolveInsideRoot(root, rel string) (string, *Error) {
 		return "", err
 	}
 
-	// 符号链接逃逸检查：仅对已存在的目标做真实路径比对。
-	if resolved, evalErr := filepath.EvalSymlinks(joined); evalErr == nil {
-		if err := EnsureWithinRoot(trimmedRoot, resolved); err != nil {
-			return "", err
+	// Missing leaves still require validating the nearest existing ancestor.
+	// An unresolved link is rejected rather than treated as a missing directory.
+	for ancestor := joined; ; ancestor = filepath.Dir(ancestor) {
+		resolved, evalErr := filepath.EvalSymlinks(ancestor)
+		if evalErr == nil {
+			if err := EnsureWithinRoot(trimmedRoot, resolved); err != nil {
+				return "", err
+			}
+			suffix, relErr := filepath.Rel(ancestor, joined)
+			if relErr != nil {
+				return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
+			}
+			return filepath.Join(resolved, suffix), nil
 		}
-		// 真实路径通过校验时返回真实路径：后续读写的必须是真实文件。
-		return resolved, nil
+		if info, statErr := os.Lstat(ancestor); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
+		}
+		if !os.IsNotExist(evalErr) {
+			return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
+		}
+		if ancestor == filepath.Clean(trimmedRoot) {
+			return joined, nil
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
+		}
 	}
 
-	// 目标不存在（或解析失败）：父目录链已校验过，直接返回拼接结果。
-	return joined, nil
 }
 
 // EnsureWithinRoot 校验绝对路径 candidate 是否确实位于 root 之内。

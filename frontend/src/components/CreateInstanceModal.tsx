@@ -1,337 +1,69 @@
 import React, { useState } from 'react';
-import { X, Check, Layers, Cpu, Sparkles, Download, AlertCircle } from 'lucide-react';
-import { Instance, LoaderType } from '../types/launcher';
-import { MC_VERSIONS_LIST } from '../data/mockData';
+import { X, Download, AlertCircle } from 'lucide-react';
+import { useVersions } from '../hooks/useVersions';
+import type { InstanceConfig } from '../services/instance';
 
 interface CreateInstanceModalProps {
   onClose: () => void;
-  onCreate: (newInstance: Instance) => void;
+  onCreate: (config: InstanceConfig) => Promise<void>;
 }
 
-export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
-  onClose,
-  onCreate
-}) => {
-  const [step, setStep] = useState<1 | 2>(1);
+export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({ onClose, onCreate }) => {
+  const catalog = useVersions(200);
   const [name, setName] = useState('我的全新世界');
-  const [icon, setIcon] = useState('💎');
-  const [selectedVersion, setSelectedVersion] = useState('1.21.4');
-  const [selectedLoader, setSelectedLoader] = useState<LoaderType>('fabric');
-  const [loaderVersion, setLoaderVersion] = useState('0.16.10');
-  const [memoryMb, setMemoryMb] = useState(6144);
-  const [partition, setPartition] = useState('常用模组包');
-  const [versionTypeFilter, setVersionTypeFilter] = useState<'all' | 'release' | 'snapshot'>('release');
+  const [version, setVersion] = useState('');
+  const [icon, setIcon] = useState('🟩');
+  const [partition, setPartition] = useState('默认分区');
+  const [memoryMb, setMemoryMb] = useState(4096);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const field = 'w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-700 text-sm';
 
-  const availableIcons = ['💎', '⚡', '⚙️', '🔮', '🟩', '🛡️', '🗡️', '🌲', '🚀', '⭐', '🔥', '🧊'];
-
-  const filteredVersions = MC_VERSIONS_LIST.filter((v) => {
-    if (versionTypeFilter === 'all') return true;
-    return v.type === versionTypeFilter;
-  });
-
-  const handleNextOrFinish = () => {
-    if (step === 1) {
-      setStep(2);
-    } else {
-      const sanitizedName = name.trim().replace(/[/\\?%*:|"<>]/g, '-') || `MC-${selectedVersion}`;
-      const newInst: Instance = {
-        id: `inst-${Date.now()}`,
-        name: name.trim() || `MC ${selectedVersion} (${selectedLoader})`,
-        mcVersion: selectedVersion,
-        loader: selectedLoader,
-        loaderVersion: loaderVersion,
-        installedLoaders: [
-          { type: selectedLoader, version: loaderVersion, isPrimary: true, installDate: new Date().toISOString().split('T')[0] }
-        ],
-        partition: partition,
-        icon: icon,
-        playTimeMinutes: 0,
-        lastPlayed: '从未运行',
-        javaVersion: selectedVersion.startsWith('1.7') ? 'Java 8' : 'Java 21',
-        customJavaPath: selectedVersion.startsWith('1.7') ? 'Ninevoxel/javaruntime/java-8/bin/java' : 'Ninevoxel/javaruntime/java-21/bin/java',
-        memoryMb: memoryMb,
-        jvmArgs: '-XX:+UseG1GC',
-        modsCount: 0,
-        description: `基于 ${selectedLoader.toUpperCase()} 平台自动配置的新实例，专属沙盒目录隔离，多版本互不污染。`,
-        isFavorite: false,
-        status: 'ready',
-        folderPath: `instances/${sanitizedName}/.minecraft`,
-        isolatedDirectory: true
-      };
-      onCreate(newInst);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onCreate({ name: name.trim(), mcVersion: version.trim(), loader: 'vanilla', partition, icon, memoryMb, jvmArgs: '-XX:+UseG1GC', description: '', isFavorite: false, customJavaPath: '' });
       onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setSaving(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="w-full max-w-xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-        {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-neutral-800 flex items-center justify-between bg-slate-50 dark:bg-neutral-950/60">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
-              <Layers className="w-4 h-4" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <form onSubmit={submit} className="w-full max-w-xl max-h-[85vh] overflow-y-auto bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-700 rounded-2xl shadow-2xl">
+        <div className="flex justify-between items-center px-6 py-4 border-b border-slate-200 dark:border-neutral-800">
+          <div><h2 className="font-bold">新建 Minecraft 实例</h2><p className="text-xs text-slate-500 mt-1">创建独立游戏目录并安装原版游戏资源</p></div>
+          <button type="button" disabled={saving} onClick={onClose} aria-label="关闭" className="p-2 disabled:opacity-40"><X className="w-4 h-4" /></button>
+        </div>
+        <fieldset disabled={saving} className="p-6 space-y-4 disabled:opacity-60">
+          <label className="block text-xs space-y-1.5"><span>实例名称</span><input required maxLength={80} value={name} onChange={e => setName(e.target.value)} className={field} /></label>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs"><span>Minecraft 版本</span><button type="button" onClick={() => catalog.reload({ forceRefresh: true })} disabled={catalog.loading} className="text-emerald-600 disabled:opacity-40">{catalog.loading ? '正在读取清单…' : '刷新清单'}</button></div>
+            <div className="flex gap-2 text-xs">
+              {([['', '正式版与快照'], ['release', '正式版'], ['snapshot', '快照']] as const).map(([type, label]) => <button key={type} type="button" onClick={() => catalog.setTypeFilter(type)} className={`px-2 py-1 rounded ${catalog.typeFilter === type ? 'bg-emerald-500/20 text-emerald-600' : 'bg-slate-100 dark:bg-neutral-800'}`}>{label}</button>)}
             </div>
-            <div>
-              <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">新建 Minecraft 游戏实例</h2>
-              <p className="text-[11px] text-slate-500 dark:text-neutral-400">
-                {step === 1 ? '步骤 1/2: 选择核心版本与模组加载器' : '步骤 2/2: 设置实例名称、图标与运行内存'}
-              </p>
-            </div>
+            <input required aria-label="Minecraft 版本号" list="minecraft-versions" value={version} onChange={e => setVersion(e.target.value)} placeholder="输入完整版本号，或选择清单中的版本" className={field} />
+            <datalist id="minecraft-versions">{catalog.items.map(item => <option key={item.id} value={item.id}>{item.type} · {item.releaseTime.slice(0, 10)}</option>)}</datalist>
+            {catalog.errorMessage && <p className="text-xs text-rose-500">{catalog.errorMessage}</p>}
+            {catalog.stale && catalog.items.length > 0 && <p className="text-xs text-amber-600">当前显示缓存清单，安装仍需联网获取缺失文件。</p>}
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 p-3 text-xs space-y-1"><p className="font-semibold">Vanilla 原版</p><p className="text-slate-500">Fabric、Forge、NeoForge 和 Quilt 安装尚未接入。</p></div>
+          <label className="block text-xs space-y-1.5"><span>分组</span><input maxLength={80} value={partition} onChange={e => setPartition(e.target.value)} className={field} /></label>
+          <label className="block text-xs space-y-1.5"><span>图标</span><select value={icon} onChange={e => setIcon(e.target.value)} className={field}>{['🟩', '💎', '⚡', '⚙️', '🔮', '🌲', '🚀', '⭐'].map(value => <option key={value}>{value}</option>)}</select></label>
+          <label className="block text-xs space-y-1.5"><span>最大内存（MB）</span><input type="number" required min={512} max={1048576} step={256} value={memoryMb} onChange={e => setMemoryMb(Number(e.target.value))} className={field} /></label>
+          <p className="text-xs text-slate-500">安装将下载客户端、当前平台依赖库和资源文件；下载线路遵循启动器设置。进度与失败信息会保存在实例列表中。</p>
+        </fieldset>
+        {error && <div role="alert" className="px-6 pb-4 flex gap-2 text-xs text-rose-500"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
+        <div className="px-6 py-4 border-t border-slate-200 dark:border-neutral-800 flex justify-end gap-3">
+          <button type="button" disabled={saving} onClick={onClose} className="text-xs px-3 py-2">取消</button>
+          <button type="submit" disabled={saving || !name.trim() || !version.trim()} className="px-4 py-2 rounded-lg bg-emerald-500 text-neutral-950 font-bold text-xs flex gap-2 items-center disabled:opacity-40"><Download className="w-4 h-4" />{saving ? '正在创建…' : '创建并安装'}</button>
         </div>
-
-        {/* Modal Body */}
-        <div className="p-6 space-y-5 flex-1 overflow-y-auto max-h-[70vh]">
-          {step === 1 ? (
-            <>
-              {/* Version Type tabs */}
-              <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block">
-                  1. 选择 Minecraft 游戏版本
-                </label>
-                <div className="flex items-center gap-2 pb-1">
-                  <button
-                    type="button"
-                    onClick={() => setVersionTypeFilter('release')}
-                    className={`px-3 py-1 rounded text-xs transition-colors cursor-pointer ${
-                      versionTypeFilter === 'release'
-                        ? 'bg-slate-200 dark:bg-neutral-800 text-slate-900 dark:text-white font-bold border border-slate-300 dark:border-neutral-700'
-                        : 'text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200'
-                    }`}
-                  >
-                    正式发布版 (Release)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVersionTypeFilter('snapshot')}
-                    className={`px-3 py-1 rounded text-xs transition-colors cursor-pointer ${
-                      versionTypeFilter === 'snapshot'
-                        ? 'bg-slate-200 dark:bg-neutral-800 text-slate-900 dark:text-white font-bold border border-slate-300 dark:border-neutral-700'
-                        : 'text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200'
-                    }`}
-                  >
-                    快照预览版 (Snapshot)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setVersionTypeFilter('all')}
-                    className={`px-3 py-1 rounded text-xs transition-colors cursor-pointer ${
-                      versionTypeFilter === 'all'
-                        ? 'bg-slate-200 dark:bg-neutral-800 text-slate-900 dark:text-white font-bold border border-slate-300 dark:border-neutral-700'
-                        : 'text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200'
-                    }`}
-                  >
-                    全部版本
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-36 overflow-y-auto pr-1">
-                  {filteredVersions.map((v) => (
-                    <button
-                      key={v.id}
-                      type="button"
-                      onClick={() => setSelectedVersion(v.id)}
-                      className={`p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer ${
-                        selectedVersion === v.id
-                          ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-800 dark:text-emerald-300 font-bold'
-                          : 'bg-slate-50 dark:bg-neutral-950/50 border-slate-200 dark:border-neutral-800 hover:border-slate-300 dark:hover:border-neutral-700 text-slate-700 dark:text-neutral-300'
-                      }`}
-                    >
-                      <div className="font-bold">{v.id}</div>
-                      <div className="text-[10px] text-slate-500 dark:text-neutral-500 mt-0.5">{v.date}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Loader Selection */}
-              <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-neutral-800/80">
-                <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block">
-                  2. 选择模组加载器 (Mod Loader)
-                </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {[
-                    { id: 'fabric' as LoaderType, name: 'Fabric', desc: '轻量极速，生态活跃', tag: '推荐' },
-                    { id: 'neoforge' as LoaderType, name: 'NeoForge', desc: 'Forge 新分支，兼顾高版本' },
-                    { id: 'forge' as LoaderType, name: 'Forge', desc: '传统大型模组标准' },
-                    { id: 'quilt' as LoaderType, name: 'Quilt', desc: '开源社区驱动分支' },
-                    { id: 'vanilla' as LoaderType, name: 'Vanilla 原版', desc: '无模组纯净体验' },
-                  ].map((ldr) => (
-                    <button
-                      key={ldr.id}
-                      type="button"
-                      onClick={() => setSelectedLoader(ldr.id)}
-                      className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
-                        selectedLoader === ldr.id
-                          ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-900 dark:text-white ring-1 ring-emerald-500/30'
-                          : 'bg-slate-50 dark:bg-neutral-950/50 border-slate-200 dark:border-neutral-800 hover:border-slate-300 dark:hover:border-neutral-700 text-slate-700 dark:text-neutral-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-xs">{ldr.name}</span>
-                        {ldr.tag && (
-                          <span className="text-[9px] bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.2 rounded font-medium">
-                            {ldr.tag}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-slate-500 dark:text-neutral-400 mt-1 line-clamp-1">{ldr.desc}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              {/* Step 2: Name, Icon, Memory */}
-              <div className="space-y-4">
-                <div>
-                  <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block mb-1.5">
-                    实例名称
-                  </label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="输入实例名称..."
-                    className="w-full px-3 py-2 bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 rounded-lg text-xs text-slate-900 dark:text-neutral-200 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block mb-1.5">
-                    所属隔离分区 (Partition / Group)
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={partition}
-                      onChange={(e) => setPartition(e.target.value)}
-                      placeholder="如: 常用模组包、大型科技服..."
-                      className="flex-1 px-3 py-2 bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 rounded-lg text-xs text-slate-900 dark:text-neutral-200 focus:outline-none focus:border-emerald-500"
-                    />
-                    <div className="flex gap-1">
-                      {['常用模组包', '大型科技服', '纯净与测试'].map(p => (
-                        <button
-                          key={p}
-                          type="button"
-                          onClick={() => setPartition(p)}
-                          className="px-2 py-1 text-[11px] rounded bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-slate-700 dark:text-neutral-300 cursor-pointer"
-                        >
-                          {p}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block mb-1.5">
-                    选择实例图标
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {availableIcons.map((ic) => (
-                      <button
-                        key={ic}
-                        type="button"
-                        onClick={() => setIcon(ic)}
-                        className={`w-9 h-9 rounded-lg flex items-center justify-center text-lg transition-all cursor-pointer ${
-                          icon === ic
-                            ? 'bg-emerald-500/20 border-2 border-emerald-500 scale-105'
-                            : 'bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 hover:border-slate-300 dark:hover:border-neutral-700'
-                        }`}
-                      >
-                        {ic}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
-                      独立内存分配 (Max RAM)
-                    </label>
-                    <span className="font-mono text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                      {memoryMb} MB ({(memoryMb / 1024).toFixed(1)} GB)
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min="2048"
-                    max="16384"
-                    step="512"
-                    value={memoryMb}
-                    onChange={(e) => setMemoryMb(Number(e.target.value))}
-                    className="w-full accent-emerald-500 cursor-pointer"
-                  />
-                  <div className="flex justify-between text-[10px] text-slate-400 dark:text-neutral-500 mt-1 font-mono">
-                    <span>2048 MB (轻量)</span>
-                    <span>6144 MB (推荐)</span>
-                    <span>16384 MB (大型包)</span>
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-neutral-950/70 border border-slate-200 dark:border-neutral-800/80 text-xs space-y-1.5 text-slate-600 dark:text-neutral-400">
-                  <div className="text-slate-900 dark:text-neutral-200 font-semibold flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    <span>自动配置与下载概览</span>
-                  </div>
-                  <div className="text-[11px] leading-relaxed">
-                    将自动从 BMCLAPI 高速镜像下载 Minecraft {selectedVersion} 客户端核心与 {selectedLoader.toUpperCase()} 加载器文件。创建后可立即在“模组工坊”中一键安装优化模组。
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 dark:border-neutral-800 flex items-center justify-between bg-slate-50 dark:bg-neutral-950/50">
-          {step === 2 ? (
-            <button
-              type="button"
-              onClick={() => setStep(1)}
-              className="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-            >
-              ← 上一步
-            </button>
-          ) : (
-            <div />
-          )}
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              onClick={handleNextOrFinish}
-              className="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-500/20 active:scale-98 transition-all cursor-pointer"
-            >
-              {step === 1 ? (
-                <span>下一步: 实例配置 →</span>
-              ) : (
-                <>
-                  <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>立即创建并下载</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-      </div>
+      </form>
     </div>
   );
 };

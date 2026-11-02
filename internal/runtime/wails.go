@@ -71,7 +71,7 @@ func (s *RuntimeService) UninstallRuntime(req UninstallRuntimeRequest) (RuntimeL
 	return list, nil
 }
 
-// ResolveRuntimeRequirement 按版本元数据解析 Java 需求。//
+// ResolveRuntimeRequirement 按版本元数据解析 Java 需求。
 // 只读本地版本 JSON，不联网、不安装。元数据未声明 Java 版本时返回
 // `source=unknown`（不是错误），界面必须提示用户手动选择。
 // 版本 id 为空、元数据不可读或非法时返回 `VERSION_METADATA_001`。

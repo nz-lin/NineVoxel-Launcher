@@ -19,7 +19,7 @@ interface SidebarProps {
   onSelectTab: (tab: NavTab) => void;
   currentAccount: Account;
   onOpenAccountModal: () => void;
-  activeInstance: Instance;
+  activeInstance?: Instance;
   /**
    * 下载镜像开关的真实状态。
    *
@@ -72,7 +72,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     5
                   </span>
                 )}
-                {item.id === 'console' && activeInstance.status === 'running' && (
+                {item.id === 'console' && activeInstance?.status === 'running' && (
                   <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500 dark:bg-emerald-400 animate-ping" />
                 )}
               </button>

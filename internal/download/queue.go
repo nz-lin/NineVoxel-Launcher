@@ -157,10 +157,12 @@ type progressState struct {
 // 调度循环与工作协程都只在锁内做簿记，真正的传输与落库在锁外进行，
 // 避免慢 IO 拖住入队与查询。
 type Queue struct {
-	mu sync.Mutex
+	enqueueMu sync.Mutex
+	mu        sync.Mutex
 
-	options QueueOptions
-	tasks   map[string]*Task
+	options    QueueOptions
+	tasks      map[string]*Task
+	ownedPlans map[string]bool
 	// seq 为入队序号，用于同优先级下的稳定排序。
 	seq map[string]int64
 	// pending 为待调度任务 ID（按入队顺序追加，派出时按优先级挑选）。
@@ -192,6 +194,7 @@ func NewQueue(options QueueOptions) *Queue {
 	return &Queue{
 		options:     normalized,
 		tasks:       make(map[string]*Task, 64),
+		ownedPlans:  make(map[string]bool),
 		seq:         make(map[string]int64, 64),
 		running:     make(map[string]struct{}, 8),
 		hostRunning: make(map[string]int, 8),
@@ -392,6 +395,9 @@ func (q *Queue) pickLocked() (*Task, bool) {
 		task, exists := q.tasks[id]
 		if !exists || task.State != StateQueued {
 			q.removePendingLocked(id)
+			continue
+		}
+		if _, running := q.running[id]; running {
 			continue
 		}
 		host := hostOf(task.SourceURI)
@@ -766,6 +772,7 @@ func (q *Queue) bumpParent(id string) {
 		return
 	}
 	total, completed, failed, cancelled := 0, 0, 0, 0
+	var failureCode, failureMessage string
 	for _, candidate := range q.tasks {
 		if candidate.ParentTaskID != child.ParentTaskID {
 			continue
@@ -776,6 +783,10 @@ func (q *Queue) bumpParent(id string) {
 			completed++
 		case StateFailed:
 			failed++
+			if failureCode == "" {
+				failureCode = candidate.ErrorCode
+				failureMessage = candidate.ErrorMessageSafe
+			}
 		case StateCancelled:
 			cancelled++
 		}
@@ -788,9 +799,9 @@ func (q *Queue) bumpParent(id string) {
 		switch {
 		case failed > 0:
 			parent.State = StateFailed
-			parent.ErrorCode = child.ErrorCode
-			parent.ErrorMessageSafe = child.ErrorMessageSafe
-		case completed == 0 && cancelled > 0:
+			parent.ErrorCode = failureCode
+			parent.ErrorMessageSafe = failureMessage
+		case cancelled > 0:
 			parent.State = StateCancelled
 		default:
 			parent.State = StateCompleted
@@ -800,10 +811,13 @@ func (q *Queue) bumpParent(id string) {
 	}
 	parent.UpdatedAtMs = q.now()
 	snapshot := *parent
+	shouldEmit := IsTerminal(snapshot.State) || q.shouldEmitProgressLocked(snapshot)
 	q.mu.Unlock()
 
 	q.persist(snapshot)
-	q.emit(snapshot)
+	if shouldEmit {
+		q.emit(snapshot)
+	}
 }
 
 // EnqueuePlan 按安装计划创建父任务与全部子任务，并返回父任务受理结果。
@@ -822,6 +836,13 @@ func (q *Queue) EnqueuePlan(ctx context.Context, req StartDownloadPlanRequest) (
 	if planErr != nil {
 		return TaskAccepted{}, planErr
 	}
+	return q.EnqueueTransferPlan(ctx, req, plan)
+}
+
+// EnqueueTransferPlan accepts a backend-only plan; URLs never cross Wails bindings.
+func (q *Queue) EnqueueTransferPlan(ctx context.Context, req StartDownloadPlanRequest, plan TransferPlan) (TaskAccepted, *Error) {
+	q.enqueueMu.Lock()
+	defer q.enqueueMu.Unlock()
 	if len(plan.Items) == 0 {
 		return TaskAccepted{}, newInputError(ErrorCodePlan, messagePlanEmpty)
 	}
@@ -834,18 +855,27 @@ func (q *Queue) EnqueuePlan(ctx context.Context, req StartDownloadPlanRequest) (
 
 	// 去重与路径校验：任何一条计划不合法都整体拒绝，避免半个计划落地。
 	q.mu.Lock()
-	for id, existing := range q.tasks {
-		if !isInFlightState(existing.State) {
+	for _, existing := range q.tasks {
+		if !q.ownedPlans[existing.ID] || existing.TaskType != TaskTypePlan || IsTerminal(existing.State) || existing.VersionID != req.VersionID || existing.PlanHash != plan.PlanHash {
 			continue
 		}
-		for _, item := range plan.Items {
-			if existing.TargetRelPath == item.TargetRelPath && existing.ExpectedSHA256 == item.ExpectedSHA256 {
-				createdAt := existing.CreatedAtMs
-				parent := existing.ParentTaskID
-				state := string(existing.State)
-				q.mu.Unlock()
-				return TaskAccepted{TaskID: parentOrSelf(parent, id), ParentTaskID: parent, State: state, Duplicate: true, CreatedAtMs: createdAt}, nil
+		// A shared library is not sufficient to reuse an unrelated version's plan.
+		matches := 0
+		for _, child := range q.tasks {
+			if child.ParentTaskID != existing.ID {
+				continue
 			}
+			for _, item := range plan.Items {
+				if child.TargetRelPath == item.TargetRelPath && child.ExpectedSHA1 == item.ExpectedSHA1 && child.ExpectedSHA256 == item.ExpectedSHA256 && child.ExpectedSize == item.ExpectedSize {
+					matches++
+					break
+				}
+			}
+		}
+		if matches == len(plan.Items) && int(existing.ExpectedSize) == len(plan.Items) {
+			accepted := TaskAccepted{TaskID: existing.ID, State: string(existing.State), Duplicate: true, CreatedAtMs: existing.CreatedAtMs}
+			q.mu.Unlock()
+			return accepted, nil
 		}
 	}
 	q.mu.Unlock()
@@ -899,6 +929,7 @@ func (q *Queue) EnqueuePlan(ctx context.Context, req StartDownloadPlanRequest) (
 		return TaskAccepted{}, newInputError(ErrorCodeState, messageQueueClosed)
 	}
 	q.tasks[parent.ID] = parent
+	q.ownedPlans[parent.ID] = true
 	q.seq[parent.ID] = now<<16 + int64(len(q.seq))
 	for index := range children {
 		copied := children[index]
@@ -967,6 +998,9 @@ func isInFlightState(state State) bool {
 
 // Pause 暂停任务。
 func (q *Queue) Pause(id string) (DownloadTaskView, *Error) {
+	if view, err, handled := q.planAction(id, "pause"); handled {
+		return view, err
+	}
 	if strings.TrimSpace(id) == "" {
 		return DownloadTaskView{}, newInputError(ErrorCodeState, messageTaskIDEmpty)
 	}
@@ -991,6 +1025,9 @@ func (q *Queue) Pause(id string) (DownloadTaskView, *Error) {
 
 // Resume 恢复被暂停的任务：paused → queued 重新排队。
 func (q *Queue) Resume(id string) (DownloadTaskView, *Error) {
+	if view, err, handled := q.planAction(id, "resume"); handled {
+		return view, err
+	}
 	if strings.TrimSpace(id) == "" {
 		return DownloadTaskView{}, newInputError(ErrorCodeState, messageTaskIDEmpty)
 	}
@@ -1021,6 +1058,9 @@ func (q *Queue) Resume(id string) (DownloadTaskView, *Error) {
 // 与暂停的区别：取消是终态（cancelled），已下载字节不再续用；
 // 提交阶段不可取消，返回 DOWNLOAD_CANCEL_001。
 func (q *Queue) Cancel(id string) (DownloadTaskView, *Error) {
+	if view, err, handled := q.planAction(id, "cancel"); handled {
+		return view, err
+	}
 	if strings.TrimSpace(id) == "" {
 		return DownloadTaskView{}, newInputError(ErrorCodeState, messageTaskIDEmpty)
 	}
@@ -1101,6 +1141,9 @@ func (q *Queue) List(filter DownloadTaskFilter) DownloadTaskList {
 		stateSet[state] = true
 	}
 	for _, task := range q.tasks {
+		if filter.ParentsOnly && task.ParentTaskID != "" {
+			continue
+		}
 		if len(stateSet) > 0 && !stateSet[string(task.State)] {
 			continue
 		}

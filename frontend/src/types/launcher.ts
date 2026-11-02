@@ -32,6 +32,10 @@ export interface ShaderPackItem {
 }
 
 export interface Instance {
+  installationState?: 'not_installed' | 'installing' | 'installed' | 'failed';
+  installationProgress?: number;
+  installationError?: string;
+  installTaskId?: string;
   id: string;
   name: string;
   mcVersion: string;

@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -103,7 +104,12 @@ type MigrationResult struct {
 //
 // 返回本次应用的版本列表与当前版本；任何失败都返回带上下文的错误，
 // 调用方负责转换为 `DB_MIGRATION_001`。
+// migrationMu serializes lazy service initialization against the same app database.
+var migrationMu sync.Mutex
+
 func Migrate(ctx context.Context, db *sql.DB) (MigrationResult, error) {
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
 	var result MigrationResult
 	if db == nil {
 		return result, errors.New("database: 迁移需要非空的数据库连接")

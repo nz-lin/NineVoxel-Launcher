@@ -4,7 +4,7 @@ import { Minus, Square, X, Download, Terminal, Cpu, Coffee, Sun, Moon } from 'lu
 import { Instance, Account, DownloadTask } from '../types/launcher';
 
 interface TitleBarProps {
-  currentInstance: Instance;
+  currentInstance?: Instance;
   currentAccount: Account;
   downloadTasks: DownloadTask[];
   onOpenDownloads: () => void;
@@ -60,10 +60,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
           <span>当前实例</span>
           <span className="text-slate-300 dark:text-neutral-600">/</span>
           <span className="text-slate-900 dark:text-neutral-200 font-medium truncate max-w-[220px]">
-            {currentInstance.name}
+            {currentInstance?.name ?? '尚无实例'}
           </span>
           <span className="text-slate-500 dark:text-neutral-500 font-mono text-[11px] bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 px-1.5 py-0.5 rounded">
-            {currentInstance.mcVersion}
+            {currentInstance?.mcVersion ?? '—'}
           </span>
         </div>
       </div>
@@ -74,7 +74,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded bg-slate-100 dark:bg-neutral-900/60 border border-slate-200 dark:border-neutral-800/50 text-slate-600 dark:text-neutral-400 text-[11px]">
           <Cpu className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
           <span>分配内存</span>
-          <span className="text-slate-900 dark:text-neutral-200 font-mono font-medium">{currentInstance.memoryMb} MB</span>
+          <span className="text-slate-900 dark:text-neutral-200 font-mono font-medium">{currentInstance ? `${currentInstance.memoryMb} MB` : '—'}</span>
         </div>
 
         {/* Java Runtime Manager quick toggle */}

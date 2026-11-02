@@ -101,9 +101,10 @@ const (
 // manifestAllowedHosts 是允许的清单来源 host 白名单。
 //
 // 写死在包内、不接受请求参数覆盖；清单只从官方源获取，不经过镜像。
-// 完整白名单同时包含后续下载域，但本卡只使用 piston-meta。
+// 同时用于版本元数据和制品计划校验；与 internal/download 的官方白名单保持一致。
 var manifestAllowedHosts = map[string]bool{
 	"piston-meta.mojang.com":           true,
+	"piston-data.mojang.com":           true,
 	"launcher.mojang.com":              true,
 	"launchermeta.mojang.com":          true,
 	"resources.download.minecraft.net": true,

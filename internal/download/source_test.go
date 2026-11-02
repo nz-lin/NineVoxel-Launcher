@@ -114,6 +114,10 @@ func TestValidateURLRejectsNonHTTPSAndUnknownHost(t *testing.T) {
 		{name: "file 协议", raw: "file:///C:/x.jar", code: ErrorCodeSource},
 		{name: "非白名单 host", raw: "https://evil.example.com/x.jar", code: ErrorCodeSource},
 		{name: "相似但不同的 host", raw: "https://libraries.minecraft.net.evil.com/x.jar", code: ErrorCodeSource},
+		{name: "piston data http", raw: "http://piston-data.mojang.com/client.jar", code: ErrorCodeSource},
+		{name: "piston data lookalike", raw: "https://piston-data.mojang.com.evil.example/client.jar", code: ErrorCodeSource},
+		{name: "piston data subdomain", raw: "https://evil.piston-data.mojang.com/client.jar", code: ErrorCodeSource},
+		{name: "piston data userinfo spoof", raw: "https://piston-data.mojang.com@evil.example/client.jar", code: ErrorCodeSource},
 		{name: "无法解析", raw: "://bad", code: ErrorCodeSource},
 	}
 	for _, testCase := range cases {
@@ -132,11 +136,12 @@ func TestValidateURLRejectsNonHTTPSAndUnknownHost(t *testing.T) {
 	}
 }
 
-// TestValidateURLAcceptsOfficialHosts 验证 5 个官方 host 全部放行。
+// TestValidateURLAcceptsOfficialHosts 验证所有官方 host 全部放行。
 func TestValidateURLAcceptsOfficialHosts(t *testing.T) {
 	registry := NewSourceRegistry(false)
 	hosts := []string{
 		"piston-meta.mojang.com",
+		"piston-data.mojang.com",
 		"launcher.mojang.com",
 		"launchermeta.mojang.com",
 		"resources.download.minecraft.net",
@@ -268,5 +273,31 @@ func TestSetMirrorEnabledProviderNilRestoresDefault(t *testing.T) {
 	SetMirrorEnabledProvider(nil)
 	if MirrorEnabledFromProvider() {
 		t.Fatal("注入 nil 后应恢复默认关闭")
+	}
+}
+
+func TestPistonDataDownloadCandidates(t *testing.T) {
+	const official = "https://piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar"
+	for _, enabled := range []bool{false, true} {
+		registry := NewSourceRegistry(enabled)
+		candidates, appErr := registry.Candidates(official)
+		if appErr != nil {
+			t.Fatalf("mirror enabled=%v: %v", enabled, appErr)
+		}
+		wantCount := 1
+		if enabled {
+			wantCount = 2
+		}
+		if len(candidates) != wantCount || candidates[0] != official {
+			t.Fatalf("mirror enabled=%v: unexpected candidates %v", enabled, candidates)
+		}
+		if enabled && candidates[1] != "https://bmclapi2.bangbang93.com/piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar" {
+			t.Fatalf("unexpected mirror URL: %s", candidates[1])
+		}
+		for _, candidate := range candidates {
+			if appErr := registry.ValidateURL(candidate); appErr != nil {
+				t.Fatalf("candidate rejected: %v", appErr)
+			}
+		}
 	}
 }

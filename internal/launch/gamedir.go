@@ -10,6 +10,7 @@ package launch
 
 import (
 	"errors"
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -269,17 +270,11 @@ func resolveInside(root, relative string) (string, error) {
 		return "", err
 	}
 
-	// 符号链接逃逸检查：仅对**已存在**的目标做真实路径比对。
-	if resolved, err := filepath.EvalSymlinks(joined); err == nil {
-		if relErr := ensureWithinRoot(root, resolved); relErr != nil {
-			return "", relErr
-		}
-		// 真实路径通过校验时返回真实路径：后续读取使用的是真实文件。
-		return resolved, nil
+	resolved, resolveErr := artifact.ResolveInsideRoot(root, relative)
+	if resolveErr != nil {
+		return "", newInputError(ErrorCodePathInvalid, messageGameDirRelative)
 	}
-	// 目标不存在（或解析失败）：父目录链已在上面校验过，直接返回。
-	// 这不是错误——「文件不存在」是调用方要判断的正常业务结论。
-	return joined, nil
+	return resolved, nil
 }
 
 // ensureWithinRoot 校验绝对路径 candidate 是否确实位于 root 之内。

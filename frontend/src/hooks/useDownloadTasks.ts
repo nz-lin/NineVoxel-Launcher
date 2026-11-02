@@ -102,10 +102,10 @@ export function useDownloadTasks(): DownloadTasksState {
     setLoading(true);
     setError(null);
     try {
-      const list = await downloadService.list({ limit: 100 });
+      const list = await downloadService.list({ limit: 100, parentsOnly: true });
       if (cancelledRef.current) return;
       // 后端按创建时间升序返回时，界面要最新在前。
-      setTasks(list.tasks.map(toDesignTask).reverse());
+      setTasks(list.tasks.map(toDesignTask));
     } catch (cause) {
       if (cancelledRef.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));

@@ -216,11 +216,31 @@ func managedRuntimeDir(row runtimeRow) (string, *AppError) {
 	if rootErr != nil {
 		return "", rootErr
 	}
-	rel := strings.TrimSpace(row.LocalRelPath)
-	if rel == "" {
-		rel = artifact.DirRuntimes + "/" + row.ID
+	id, pathErr := artifact.ValidateRelativePath(row.ID)
+	if pathErr != nil || id != row.ID || strings.ContainsAny(id, "/\\:") {
+		return "", newInputError(ErrorCodeRuntimeInstall, messageRuntimeUninstallFailed)
 	}
-	return filepath.Join(root, filepath.FromSlash(rel)), nil
+	expected := artifact.DirRuntimes + "/" + id
+	rel := strings.TrimSpace(row.LocalRelPath)
+	if rel != "" && filepath.ToSlash(rel) != expected {
+		return "", newInputError(ErrorCodeRuntimeInstall, messageRuntimeUninstallFailed)
+	}
+	// Reject links at either managed directory before recursive deletion. Checking
+	// the parent separately also covers a missing runtime below a redirected root.
+	for _, candidate := range []string{filepath.Join(root, artifact.DirRuntimes), filepath.Join(root, filepath.FromSlash(expected))} {
+		if info, err := os.Lstat(candidate); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", newInputError(ErrorCodeRuntimeInstall, messageRuntimeUninstallFailed)
+			}
+		} else if !os.IsNotExist(err) {
+			return "", newSystemError(ErrorCodeRuntimeInstall, messageRuntimeUninstallFailed, false)
+		}
+	}
+	dir, resolveErr := artifact.ResolveInsideRoot(root, expected)
+	if resolveErr != nil {
+		return "", newInputError(ErrorCodeRuntimeInstall, messageRuntimeUninstallFailed)
+	}
+	return dir, nil
 }
 
 // installedRuntimeRows 读取全部已安装 Runtime 记录。

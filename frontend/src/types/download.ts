@@ -188,6 +188,7 @@ export interface TaskIDRequest {
 
 /** 任务列表过滤条件。 */
 export interface DownloadTaskFilter {
+  parentsOnly: boolean
   /** 状态白名单；空数组表示不过滤。 */
   states: string[]
 

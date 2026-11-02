@@ -2,7 +2,7 @@
 
 NineVoxel Launcher 是面向 Minecraft Java Edition 的跨平台桌面启动器，基于 Wails v3（Go 后端 + WebView 前端）构建。
 
-当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；账号子系统（账号 SPI：微软 PKCE 浏览器登录 + 设备码回退、离线、自定 Yggdrasil、Ninevoxel 占位）已实现并接入前端账号管理与启动身份（皮肤上传、authlib-injector 注入待后续）；实例管理、插件/模组市场尚未实现，部分前后端链路仍在接线中，具体以代码为准。
+当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；账号子系统（账号 SPI：微软 PKCE 浏览器登录 + 设备码回退、离线、自定 Yggdrasil、Ninevoxel 占位）已实现并接入前端账号管理与启动身份（皮肤上传、authlib-injector 注入待后续）；原版实例已支持 SQLite 持久化、独立游戏目录、版本资源安装与失败重试；主界面的真实游戏进程启动仍待接线，模组加载器安装、插件/模组市场尚未实现。具体以代码为准。
 
 ## 技术栈
 
@@ -27,6 +27,7 @@ internal/artifact     数据根、制品路径、内容寻址与路径边界校�
 internal/database     SQLite 打开、迁移与 checksum 校验
 internal/download     下载队列、断点续传、校验、隔离与启动恢复
 internal/events       事件信封、事件名与载荷类型注册
+internal/instance     原版实例持久化、选择、配置、文件归档与版本安装编排
 internal/launch       游戏目录检查、版本解析、启动计划、进程监督、游戏日志
 internal/logging      结构化日志、脱敏、文件轮转与查询
 internal/platform     用户目录、WebView2 目录、主题与窗口的平台差异
@@ -67,6 +68,14 @@ wails3 task package               # 当前平台安装包
 ```
 
 注意：`main.go` 使用 `//go:embed all:frontend/dist` 引用前端产物。干净 checkout 下直接执行 `go build` / `go vet` / `go test` 会因 `frontend/dist` 不存在而失败，需先完成前端构建（CI 中通过写入占位文件规避）。`frontend/bindings`、`frontend/dist`、`bin` 均为生成目录，已加入忽略列表。
+
+## 原版实例
+
+从“版本实例”创建原版实例，选择官方清单中的版本或输入完整版本号。配置保存在 SQLite 的 `instances` 表，独立游戏目录为数据根下的 `instances/<id>/.minecraft/`；显示名称与分组不会参与路径拼接。
+
+安装依次获取版本元数据、客户端、当前平台依赖和资源索引，再下载资源对象并组装标准游戏目录；旧式本地库会检查路径和大小后解压。列表显示真实安装状态和进度，失败可重试；应用中断后会标记为待重试，已校验缓存可复用。移除实例会将原目录归档到 `instances/.trash/`，复制操作仅复制配置并安装新实例，不复制存档。
+
+当前只支持 Vanilla 原版；继承版本、加载器安装及 `map_to_resources` 旧式布局会明确报错。资源安装完成后，主界面的游戏启动按钮仍会提示待接线，尚不启动 JVM。
 
 ## 数据与日志位置
 

@@ -36,7 +36,7 @@ interface InstanceDetailModalProps {
   /** 当前要管理的实例；组件只在实例存在时挂载，因此这里是必填。 */
   instance: Instance;
   onClose: () => void;
-  onUpdateInstance: (updated: Instance) => void;
+  onUpdateInstance: (updated: Instance) => Promise<void>;
   onOpenFolder: (path: string) => void;
   javaRuntimes: JavaRuntime[];
 }
@@ -48,17 +48,23 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   onOpenFolder,
   javaRuntimes
 }) => {
-  const [activeTab, setActiveTab] = useState<'loaders' | 'mods' | 'shaders' | 'resourcepacks' | 'saves' | 'settings'>('loaders');
+  const [activeTab, setActiveTab] = useState<'loaders' | 'mods' | 'shaders' | 'resourcepacks' | 'saves' | 'settings'>('settings');
+
+  const [name, setName] = useState(instance.name);
+  const [description, setDescription] = useState(instance.description);
+  const [favorite, setFavorite] = useState(instance.isFavorite);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Instance State
   const [currentLoader, setCurrentLoader] = useState<LoaderType>(instance.loader);
   const [loaderVersion, setLoaderVersion] = useState(instance.loaderVersion);
-  const [modsList, setModsList] = useState<ModItem[]>(() => MOCK_MODS.filter(m => m.installed));
-  const [shaderList, setShaderList] = useState<ShaderPackItem[]>(MOCK_SHADERS);
-  const [resourcePackList, setResourcePackList] = useState<ResourcePackItem[]>(MOCK_RESOURCEPACKS);
+  const [modsList, setModsList] = useState<ModItem[]>([]);
+  const [shaderList, setShaderList] = useState<ShaderPackItem[]>([]);
+  const [resourcePackList, setResourcePackList] = useState<ResourcePackItem[]>([]);
   const [memoryMb, setMemoryMb] = useState(instance.memoryMb);
   const [jvmArgs, setJvmArgs] = useState(instance.jvmArgs);
-  const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || 'javaruntime/java-21/bin/java');
+  const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || '');
   const [partitionName, setPartitionName] = useState(instance.partition || '常用模组包');
 
   // Mod Search & Filter
@@ -236,19 +242,17 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   };
 
   // --- Save / Persist All Changes ---
-  const handleSaveAll = () => {
-    const updated: Instance = {
-      ...instance,
-      loader: currentLoader,
-      loaderVersion: loaderVersion,
-      partition: partitionName,
-      memoryMb: memoryMb,
-      jvmArgs: jvmArgs,
-      customJavaPath: selectedJavaPath,
-      modsCount: modsList.filter(m => m.enabled).length
-    };
-    onUpdateInstance(updated);
-    showNotify('✓ 实例全部配置已保存生效！');
+  const handleSaveAll = async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onUpdateInstance({ ...instance, name, description, isFavorite: favorite, partition: partitionName, memoryMb, jvmArgs, customJavaPath: selectedJavaPath });
+      onClose();
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : String(cause));
+      setSaving(false);
+    }
   };
 
   const filteredMods = modsList.filter(m => {
@@ -315,8 +319,10 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
             return (
               <button
                 key={tab.id}
+                disabled={tab.id !== 'settings'}
+                title={tab.id === 'settings' ? '修改持久化实例配置' : '尚未接入'}
                 onClick={() => setActiveTab(tab.id)}
-                className={`py-3 px-3.5 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                className={`py-3 px-3.5 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                   isActive
                     ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400 font-bold'
                     : 'border-transparent text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200'
@@ -736,6 +742,10 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
           {/* TAB 5: INSTANCE SETTINGS & JAVA RUNTIME */}
           {activeTab === 'settings' && (
             <div className="space-y-5">
+              <p className="text-xs text-slate-500">当前支持原版资源安装和配置持久化，加载器、模组、光影与材质包管理尚未接入。</p>
+              <label className="block text-xs space-y-2"><span>实例名称</span><input required maxLength={80} value={name} onChange={e => setName(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800" /></label>
+              <label className="block text-xs space-y-2"><span>说明</span><textarea maxLength={4096} value={description} onChange={e => setDescription(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800" /></label>
+              <label className="flex gap-2 text-xs items-center"><input type="checkbox" checked={favorite} onChange={e => setFavorite(e.target.checked)} />收藏此实例</label>
               {/* Partition / Grouping */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-2">
                 <label className="text-xs font-semibold text-slate-800 dark:text-neutral-200 block">
@@ -764,57 +774,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Dedicated Java Runtime Selection */}
-              <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Coffee className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                    <span className="text-xs font-semibold text-slate-800 dark:text-neutral-200">
-                      独立指定本地 Java Runtime
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-slate-500 dark:text-neutral-500">
-                    存放于本地 javaruntime/ 分类目录
-                  </span>
-                </div>
-
-                <div className="space-y-2">
-                  {javaRuntimes.map((jre) => {
-                    const isSelected = selectedJavaPath === jre.binaryPath;
-
-                    return (
-                      <div
-                        key={jre.id}
-                        onClick={() => setSelectedJavaPath(jre.binaryPath ?? '')}
-                        className={`p-3 rounded-lg border flex items-center justify-between cursor-pointer transition-colors ${
-                          isSelected
-                            ? 'bg-emerald-500/10 dark:bg-neutral-900 border-emerald-500/50 ring-1 ring-emerald-500/20'
-                            : 'bg-white dark:bg-neutral-950 border-slate-200 dark:border-neutral-800 hover:border-slate-300 dark:hover:border-neutral-700'
-                        }`}
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-slate-800 dark:text-neutral-200">{jre.vendor}</span>
-                            <span className="text-[10px] font-mono bg-slate-100 dark:bg-neutral-800 text-slate-600 dark:text-neutral-400 px-1 py-0.5 rounded">
-                              Java {jre.majorVersion}
-                            </span>
-                            <span className="text-[10px] text-slate-500 dark:text-neutral-500 font-mono">v{jre.versionString}</span>
-                          </div>
-                          <div className="text-[11px] text-slate-500 dark:text-neutral-500 font-mono mt-0.5">
-                            {jre.binaryPath}
-                          </div>
-                        </div>
-
-                        {isSelected && (
-                          <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-bold">
-                            <Check className="w-4 h-4" /> 当前使用
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <p className="text-xs text-slate-500">Java 运行时请在启动器的 Java 管理中选择，实例专属 Java 选择尚待启动链路接入。</p>
 
               {/* Dedicated RAM Allocation */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-3">
@@ -828,9 +788,9 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                 </div>
                 <input
                   type="range"
-                  min="2048"
-                  max="16384"
-                  step="512"
+                  min="512"
+                  max="65536"
+                  step="256"
                   value={memoryMb}
                   onChange={(e) => setMemoryMb(Number(e.target.value))}
                   className="w-full accent-emerald-500 cursor-pointer"
@@ -856,6 +816,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
         {/* Footer */}
         <div className="px-6 py-4 border-t border-slate-200 dark:border-neutral-800 flex items-center justify-between bg-slate-50 dark:bg-neutral-950/70">
           <div className="text-xs">
+            {saveError && <p role="alert" className="text-rose-500">{saveError}</p>}
             {notification && (
               <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1 font-medium animate-in fade-in">
                 <CheckCircle2 className="w-3.5 h-3.5" /> {notification}
@@ -872,10 +833,11 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
             </button>
             <button
               onClick={handleSaveAll}
+              disabled={saving || !name.trim()}
               className="px-5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-emerald-500/20 active:scale-98 transition-all cursor-pointer"
             >
               <Save className="w-3.5 h-3.5" />
-              <span>保存实例所有修改</span>
+              <span>{saving ? '保存中…' : '保存实例所有修改'}</span>
             </button>
           </div>
         </div>

@@ -197,3 +197,29 @@ func containsSubstring(text string, sub string) bool {
 
 // 编译期断言：本文件使用的 sql 包类型必须可用（防止将来误删 import）。
 var _ = sql.ErrNoRows
+
+// Lazy frontend services can migrate separate connections to the same database.
+func TestConcurrentServiceMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "app.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	start := make(chan struct{})
+	outcomes := make(chan error, 2)
+	for _, db := range []*sql.DB{first, second} {
+		go func(db *sql.DB) { <-start; _, err := Migrate(context.Background(), db); outcomes <- err }(db)
+	}
+	close(start)
+	for range 2 {
+		if err := <-outcomes; err != nil {
+			t.Fatal(err)
+		}
+	}
+}

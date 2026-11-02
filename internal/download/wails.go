@@ -7,6 +7,7 @@ package download
 
 import (
 	"context"
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"sync"
 
 	"example.com/ninevoxel/launcher/internal/events"
@@ -65,6 +66,9 @@ func taskEmitter() *events.Emitter {
 // 调用时机由队列保证：状态与任务表都写完才发事件，
 // 因此前端收到事件后立刻查询快照，读到的一定是新状态。
 func emitTaskChanged(task Task, progress float64) {
+	if task.ParentTaskID != "" {
+		return
+	}
 	emitter := taskEmitter()
 	if emitter == nil {
 		return
@@ -89,8 +93,26 @@ func emitTaskChanged(task Task, progress float64) {
 // sharedDownloadQueue 返回队列单例，必要时启动它。
 func sharedDownloadQueue() (*Queue, *Error) {
 	downloadQueueOnce.Do(func() {
+		root, rootErr := artifact.DataRoot()
+		if rootErr != nil {
+			downloadQueueErr = newSystemError(ErrorCodeCommit, messageCommitFailed, false)
+			return
+		}
+		transport := NewHTTPTransport(HTTPTransportOptions{Sink: NewStagingSink(root)})
+		committer := NewCommitter(CommitOptions{DataRoot: root})
 		queue := NewQueue(QueueOptions{
-			Sink: emitTaskChanged,
+			PlanSource: configuredPlanSource,
+			Transfer: func(ctx context.Context, task Task) TransferResult {
+				target, pathErr := artifact.ResolveInsideRoot(root, task.TargetRelPath)
+				if pathErr == nil {
+					if _, verifyErr := VerifyFile(target, VerifyExpectation{ExpectedSize: task.ExpectedSize, ExpectedSHA1: task.ExpectedSHA1, ExpectedSHA256: task.ExpectedSHA256}); verifyErr == nil {
+						return TransferResult{Downloaded: max(0, task.ExpectedSize-task.DownloadedSize), TotalSize: task.ExpectedSize}
+					}
+				}
+				return transport.Transfer(ctx, task)
+			},
+			Commit: committer.Commit,
+			Sink:   emitTaskChanged,
 			Logf: func(format string, args ...any) {
 				downloadLog().Info("下载队列事件", logging.Fields{
 					Event:      "download.queue",
@@ -237,4 +259,34 @@ func boolText(value bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// configuredPlanSource is injected at application assembly, before queue startup.
+var configuredPlanSource PlanSource
+
+func SetPlanSource(source PlanSource) { configuredPlanSource = source }
+
+// StartTransferPlan submits a plan prepared entirely by backend code.
+func StartTransferPlan(ctx context.Context, plan TransferPlan) (TaskAccepted, error) {
+	q, err := queueOrError()
+	if err != nil {
+		return TaskAccepted{}, err
+	}
+	accepted, appErr := q.EnqueueTransferPlan(ctx, StartDownloadPlanRequest{VersionID: plan.VersionID, PlanHash: plan.PlanHash}, plan)
+	if appErr != nil {
+		return TaskAccepted{}, appErr
+	}
+	return accepted, nil
+}
+
+func GetTransferTask(id string) (DownloadTaskView, error) {
+	q, err := queueOrError()
+	if err != nil {
+		return DownloadTaskView{}, err
+	}
+	view, appErr := q.Get(id)
+	if appErr != nil {
+		return DownloadTaskView{}, appErr
+	}
+	return view, nil
 }

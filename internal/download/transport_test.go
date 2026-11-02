@@ -575,3 +575,45 @@ func TestTransferPartSizePrefersRangeStart(t *testing.T) {
 		t.Fatalf("partSize(两者都有) = %d，期望以 range_start 为准", got)
 	}
 }
+
+func TestTransferPistonDataClient(t *testing.T) {
+	const clientURL = "https://piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar"
+	const payload = "client jar test payload"
+	for _, redirect := range []bool{false, true} {
+		name := "direct"
+		if redirect {
+			name = "redirect"
+		}
+		t.Run(name, func(t *testing.T) {
+			sourceURL := clientURL
+			if redirect {
+				sourceURL = "https://launcher.mojang.com/client.jar"
+			}
+			roundTripper := &stubRoundTripper{fn: func(request *http.Request) (*http.Response, error) {
+				if redirect && request.URL.String() == sourceURL {
+					return stubResponse(http.StatusFound, "", 0, map[string]string{"Location": clientURL}), nil
+				}
+				if request.URL.String() != clientURL {
+					t.Fatalf("unexpected request: %s", request.URL)
+				}
+				return stubResponse(http.StatusOK, payload, int64(len(payload)), nil), nil
+			}}
+			sink := &fakeStagingSink{}
+			transport := newTestTransport(roundTripper, sink, nil)
+			result := transport.Transfer(context.Background(), Task{SourceURI: sourceURL, ExpectedSize: int64(len(payload))})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			if result.Downloaded != int64(len(payload)) || sink.body.String() != payload || !sink.closed {
+				t.Fatalf("incomplete transfer: %+v", result)
+			}
+			wantCalls := 1
+			if redirect {
+				wantCalls = 2
+			}
+			if roundTripper.count() != wantCalls {
+				t.Fatalf("request count = %d, want %d", roundTripper.count(), wantCalls)
+			}
+		})
+	}
+}

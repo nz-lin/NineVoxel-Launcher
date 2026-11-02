@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -636,5 +637,31 @@ func TestErrorIsMatchesByCode(t *testing.T) {
 	}
 	if errors.Is(err, &Error{Code: ErrorCodeArtifactLayout}) {
 		t.Fatal("不同错误码不应匹配")
+	}
+}
+
+func TestResolveInsideRootRejectsMissingLeafBelowEscapingSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ResolveInsideRoot(root, "escape/missing/file"); err == nil {
+		t.Fatal("accepted escaping ancestor")
+	}
+}
+
+func TestResolveInsideRootAllowsMissingLeafBelowInternalSymlink(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "inside")
+	if err := os.Mkdir(inside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	resolved, err := ResolveInsideRoot(root, "link/missing/file")
+	if err != nil || resolved != filepath.Join(inside, "missing", "file") {
+		t.Fatalf("internal link: %q %v", resolved, err)
 	}
 }

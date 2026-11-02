@@ -1,7 +1,7 @@
 // 本文件实现下载来源注册表与镜像重写规则（P3-05 第 14 条）。
 //
 // 边界：
-//   - 官方白名单只有 5 个 host，任何 http、任何其它 host 都不允许下载；
+//   - 官方地址必须使用 HTTPS 且精确匹配白名单 host；
 //   - 镜像只是**默认候选**，不是信任根：它同样受 host 白名单约束，
 //     且只有「镜像开关打开」时才会进入候选列表；
 //   - 镜像 host 只出现在本文件，不得散落到 transport.go / resume.go，
@@ -43,10 +43,10 @@ const (
 
 // rewritableOfficialHosts 是可被镜像重写的官方 host 白名单。
 //
-// 与 internal/version 的 manifestAllowedHosts 保持一致（该包禁止修改，
-// 因此这里按语义复制一份；两边一旦分叉，下载会退化为「只走官方」而不会静默放行）。
+// 与 internal/version 的 manifestAllowedHosts 保持一致；新增官方制品域名时同步更新两处。
 var rewritableOfficialHosts = map[string]bool{
 	"piston-meta.mojang.com":           true,
+	"piston-data.mojang.com":           true,
 	"launcher.mojang.com":              true,
 	"launchermeta.mojang.com":          true,
 	"resources.download.minecraft.net": true,
@@ -276,7 +276,7 @@ func (r *SourceRegistry) Candidates(official string) ([]string, *Error) {
 
 // ValidateURL 校验一个下载地址是否允许请求。
 //
-// 允许的集合 = https + 5 个官方 host + 已启用镜像的 host。
+// 允许的集合 = https + 官方白名单 host + 已启用镜像的 host。
 // 注意镜像 host 只有在开关打开时才被接受，避免「关了镜像还能直连镜像地址」。
 func (r *SourceRegistry) ValidateURL(raw string) *Error {
 	trimmed := strings.TrimSpace(raw)

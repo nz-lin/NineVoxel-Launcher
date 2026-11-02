@@ -170,6 +170,7 @@ export function normalizeDownloadTaskFilter(filter?: Partial<DownloadTaskFilter>
   return {
     states: states ?? [],
     versionId: filter?.versionId ?? '',
+    parentsOnly: filter?.parentsOnly === true,
     offset: Math.max(0, filter?.offset ?? 0),
     limit: limit > 0 ? Math.min(limit, DOWNLOAD_MAX_LIST_LIMIT) : DOWNLOAD_MAX_LIST_LIMIT,
   }
@@ -270,6 +271,7 @@ const downloadBindingsApi: DownloadBindingsApi = {
     DownloadService.ListDownloadTasks({
       // 空数组表示「不限状态」，生成物用 null 表达同一语义。
       states: filter.states.length > 0 ? filter.states : null,
+      parentsOnly: filter.parentsOnly,
       versionId: filter.versionId,
       offset: filter.offset,
       limit: filter.limit,

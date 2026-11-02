@@ -394,6 +394,7 @@ type TaskIDRequest struct {
 
 // DownloadTaskFilter 是任务列表查询条件。
 type DownloadTaskFilter struct {
+	ParentsOnly bool `json:"parentsOnly"`
 	// States 为空表示不限状态。
 	States []string `json:"states"`
 

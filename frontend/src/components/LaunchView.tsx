@@ -53,7 +53,7 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
       case 'running':
         return 'Minecraft 正在运行中';
       default:
-        return '启动游戏';
+        return currentInstance.installationState === 'installed' ? '游戏启动待接入' : '查看安装状态';
     }
   };
 

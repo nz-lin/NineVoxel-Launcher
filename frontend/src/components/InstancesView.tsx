@@ -24,6 +24,7 @@ interface InstancesViewProps {
   onOpenManageInstance: (instance: Instance) => void;
   onOpenCreateModal: () => void;
   onDeleteInstance: (id: string) => void;
+  onRetryInstall: (instance: Instance) => void;
   onDuplicateInstance: (instance: Instance) => void;
   onOpenFolder: (path: string) => void;
 }
@@ -37,6 +38,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
   onOpenCreateModal,
   onDeleteInstance,
   onDuplicateInstance,
+  onRetryInstall,
   onOpenFolder
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -173,7 +175,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
                     </span>
                   </div>
                   <span className="text-[11px] text-slate-500 dark:text-neutral-500 font-mono">
-                    沙盒根: Ninevoxel/instances/{partitionName}/
+                    实例分组：{partitionName}
                   </span>
                 </div>
 
@@ -195,7 +197,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           <HardDrive className="w-8 h-8 text-slate-400 dark:text-neutral-600 mx-auto" />
           <h3 className="text-sm font-semibold text-slate-800 dark:text-neutral-300">此分区暂无匹配实例</h3>
           <p className="text-xs text-slate-500 dark:text-neutral-500 max-w-sm mx-auto">
-            每个实例都支持自定义分区与加载器管理，点击右上角新建实例体验。
+            点击右上角创建原版实例，游戏资源会下载到独立目录。
           </p>
         </div>
       )}
@@ -286,6 +288,12 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           </div>
         </div>
 
+        <div className="mb-3 text-xs space-y-2" role="status">
+          <p className={inst.installationState === 'failed' ? 'text-rose-500' : 'text-slate-500'}>
+            {inst.installationState === 'installing' ? `正在安装 ${Math.round((inst.installationProgress ?? 0) * 100)}%` : inst.installationState === 'installed' ? '游戏资源已安装' : inst.installationState === 'failed' ? `安装失败：${inst.installationError}` : '尚未安装游戏资源'}
+          </p>
+          {inst.installationState === 'installing' && <progress aria-label="实例安装进度" className="w-full h-1.5 accent-emerald-500" max={1} value={inst.installationProgress ?? 0} />}
+        </div>
         {/* Bottom Actions */}
         <div className="flex items-center justify-between gap-2 pt-1">
           {/* Secondary tools */}
@@ -293,7 +301,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
             <button
               onClick={() => onOpenManageInstance(inst)}
               className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-xs text-slate-800 dark:text-neutral-200 flex items-center gap-1 transition-colors cursor-pointer"
-              title="配置加载器/模组/光影/材质包"
+              title="修改实例配置"
             >
               <Settings className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
               <span>管理版本配置</span>
@@ -310,16 +318,16 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
             <button
               onClick={() => onDuplicateInstance(inst)}
               className="p-1.5 rounded-lg hover:text-slate-900 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-              title="克隆独立实例"
+              title="复制配置并安装新实例（不复制存档）"
             >
               <Copy className="w-3.5 h-3.5" />
             </button>
 
-            {instances.length > 1 && (
+            {(
               <button
                 onClick={() => onDeleteInstance(inst.id)}
                 className="p-1.5 rounded-lg hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                title="删除实例"
+                title="移除实例并归档文件"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -328,11 +336,12 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
 
           {/* Primary Launch Action */}
           <button
-            onClick={() => onLaunchInstance(inst)}
+            onClick={() => inst.installationState === 'installed' ? onLaunchInstance(inst) : onRetryInstall(inst)}
+            disabled={inst.installationState === 'installing'}
             className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500 text-emerald-800 dark:text-emerald-300 hover:text-neutral-950 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
-            <span>启动</span>
+            <span>{inst.installationState === 'installing' ? '安装中…' : inst.installationState === 'failed' ? '重试安装' : inst.installationState === 'installed' ? '启动' : '安装'}</span>
           </button>
         </div>
       </div>

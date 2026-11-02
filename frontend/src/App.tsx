@@ -17,10 +17,6 @@ import { AccountManagerModal } from './components/AccountManagerModal';
 import { JavaRuntimeManagerModal } from './components/JavaRuntimeManagerModal';
 import { DownloadsDrawer } from './components/DownloadsDrawer';
 import {
-  INITIAL_INSTANCES,
-  INITIAL_SETTINGS
-} from './data/mockData';
-import {
   Instance,
   Account,
   DownloadTask,
@@ -34,6 +30,8 @@ import { useAppRuntime } from './hooks/useAppRuntime';
 import { useLauncherSettings } from './hooks/useLauncherSettings';
 import { useJavaRuntimes } from './hooks/useJavaRuntimes';
 import { useDownloadTasks } from './hooks/useDownloadTasks';
+import { useInstances } from './hooks/useInstances';
+import { instanceService, type InstanceConfig } from './services/instance';
 import { useAccounts } from './hooks/useAccounts';
 import { runtimeService } from './services/runtime';
 import { pickJavaExecutable, validateJavaPath } from './services/launch';
@@ -84,8 +82,9 @@ export default function App() {
   // 真实运行时信息：顶栏版本号与侧栏下载源状态都来自这里（读不到时如实显示「—」/「未知」）。
   const appRuntime = useAppRuntime();
   const [currentTab, setCurrentTab] = useState<NavTab>('launch');
-  const [instances, setInstances] = useState<Instance[]>(INITIAL_INSTANCES);
-  const [currentInstanceId, setCurrentInstanceId] = useState<string>('inst-1');
+  const instancesState = useInstances();
+  const instances = instancesState.instances;
+  const currentInstanceId = instancesState.selectedId;
   // 账号改为真实后端：列表、当前账号、登录流程全部来自 AccountService（凭证不出后端）。
   const accountsState = useAccounts();
   // 设置改为走后端持久化：主题与下载线路会真正写进设置库，其余字段仅本次运行有效。
@@ -205,95 +204,74 @@ export default function App() {
     [accountsState.currentAccount],
   );
 
-  // Game launch simulation
+  // Actual process startup is the next integration step.
   const handleLaunchGame = () => {
-    if (launchState !== 'ready') return;
-
-    setLaunchState('preparing');
-    showToast(`正在准备启动 ${currentInstance.name} (沙盒目录: ${currentInstance.folderPath})...`);
-
-    setTimeout(() => {
-      setLaunchState('checking_assets');
-
-      setTimeout(() => {
-        setLaunchState('starting_jvm');
-
-        setTimeout(() => {
-          setLaunchState('running');
-          showToast(`Minecraft ${currentInstance.mcVersion} 游戏已成功启动！`);
-        }, 900);
-      }, 1000);
-    }, 700);
+    if (!currentInstance) return;
+    if (currentInstance.installationState !== 'installed') {
+      showToast('请先在实例列表完成游戏资源安装。');
+      setCurrentTab('instances');
+      return;
+    }
+    showToast('实例资源已安装，游戏进程启动接线将在下一步完成。');
   };
 
-  const handleKillGame = () => {
-    setLaunchState('ready');
-    showToast('游戏进程已由用户强制终止');
-  };
+  const handleKillGame = () => { showToast('当前没有由此界面启动的游戏进程。'); };
+  const reportError = (cause: unknown) => showToast(cause instanceof Error ? cause.message : String(cause));
 
-  // Manage Instances
   const handleSelectInstance = (inst: Instance) => {
-    setCurrentInstanceId(inst.id);
+    void instanceService.select(inst.id).then(instancesState.reload).catch(reportError);
   };
 
-  const handleCreateInstance = (newInst: Instance) => {
-    setInstances((prev) => [newInst, ...prev]);
-    setCurrentInstanceId(newInst.id);
-    showToast(`成功创建隔离实例: ${newInst.name} (分区: ${newInst.partition})`);
-    // 注意：这里不再伪造下载任务。真实的版本下载要等实例能力（P5-A）接入后
-    // 由后端 DownloadService 发起，界面只负责展示真实任务。
+  const handleCreateInstance = async (config: InstanceConfig) => {
+    const created = await instanceService.create(config);
+    // Creation is durable even if starting the download fails; retain a retry entry.
+    await instancesState.reload();
+    try {
+      await instanceService.select(created.id);
+      await instanceService.install(created.id);
+      showToast(`已创建 ${created.name}，开始安装游戏资源。`);
+    } catch (cause) {
+      reportError(cause);
+    }
+    await instancesState.reload();
+    setCurrentTab('instances');
   };
 
   const handleDeleteInstance = (id: string) => {
-    const instToDelete = instances.find((i) => i.id === id);
-    setInstances((prev) => prev.filter((i) => i.id !== id));
-    if (currentInstanceId === id) {
-      const remaining = instances.filter((i) => i.id !== id);
-      if (remaining.length > 0) {
-        setCurrentInstanceId(remaining[0].id);
-      }
-    }
-    showToast(`已删除独立实例沙盒: ${instToDelete?.name || ''}`);
+    if (!window.confirm('移除此实例？游戏文件将保留在数据目录的 instances/.trash 中。')) return;
+    void (async () => {
+      try {
+        await instanceService.remove(id);
+        if (detailInstance?.id === id) setDetailInstance(null);
+        await instancesState.reload();
+        showToast('实例已移除，原文件已归档到 instances/.trash。');
+      } catch (cause) { reportError(cause); }
+    })();
   };
 
   const handleDuplicateInstance = (inst: Instance) => {
-    const sanitized = `${inst.name}-Copy`.replace(/\s+/g, '-');
-    const cloned: Instance = {
-      ...inst,
-      id: `inst-${Date.now()}`,
-      name: `${inst.name} (副本)`,
-      isFavorite: false,
-      lastPlayed: '从未运行',
-      folderPath: `instances/${sanitized}/.minecraft`
-    };
-    setInstances((prev) => [cloned, ...prev]);
-    showToast(`已成功复制实例沙盒: ${cloned.name}`);
+    void handleCreateInstance({ ...inst, name: `${inst.name.slice(0, 70)} (副本)`, isFavorite: false }).catch(reportError);
   };
 
-  const handleUpdateInstance = (updated: Instance) => {
-    setInstances((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-    if (detailInstance?.id === updated.id) {
-      setDetailInstance(updated);
-    }
+  const handleUpdateInstance = async (updated: Instance) => {
+    const persisted = await instanceService.update(updated);
+    setDetailInstance(persisted);
+    await instancesState.reload();
+    showToast('实例配置已保存。');
+  };
+
+  const handleRetryInstall = (inst: Instance) => {
+    void instanceService.install(inst.id).then(instancesState.reload).catch(reportError);
   };
 
   const handleOpenFolder = (folderPath: string) => {
-    showToast(`已在系统文件管理器中定位: ${folderPath}`);
+    const inst = instances.find(item => item.folderPath === folderPath);
+    if (inst) { void instanceService.openFolder(inst.id).catch(reportError); }
+    else { showToast('此目录的打开入口尚未接入。'); }
   };
 
-  // Manage Mods
-  const handleInstallMod = (mod: ModItem) => {
-    // 模组源（Modrinth/CurseForge）属 P5/P6，后端还没有对应服务；
-    // 这里不伪造下载任务，只如实提示。
-    setInstances((prev) =>
-      prev.map((inst) =>
-        inst.id === currentInstanceId
-          ? { ...inst, modsCount: inst.modsCount + 1 }
-          : inst
-      )
-    );
-
-    showToast(`模组安装需要模组源服务（P5/P6），当前仅记录在实例信息里：${mod.name}`);
+  const handleInstallMod = (_mod: ModItem) => {
+    showToast('模组安装服务尚未接入。');
   };
 
   // Manage Java Runtimes：安装走真实下载（Adoptium 元数据 + SHA-256 校验），
@@ -379,7 +357,16 @@ export default function App() {
 
         {/* Dynamic Main View */}
         <main className="flex-1 flex flex-col overflow-hidden relative bg-slate-100 dark:bg-neutral-950">
-          {currentTab === 'launch' && (
+          {instancesState.error && <div role="alert" className="px-6 py-3 text-xs text-rose-600 bg-rose-500/10">实例服务：{instancesState.error}<button onClick={() => { void instancesState.reload(); }} className="ml-3 underline">重试</button></div>}
+          {!currentInstance && ['launch', 'mods', 'console'].includes(currentTab) && (
+            <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
+              <h2 className="font-bold text-lg">{instancesState.loading ? '正在读取实例…' : '创建你的第一个 Minecraft 实例'}</h2>
+              <p className="text-sm text-slate-500">原版游戏资源会安装到独立目录，实例配置会自动保存。</p>
+              <button disabled={instancesState.loading || !!instancesState.error} onClick={() => setCreateModalOpen(true)} className="px-5 py-2 rounded-lg bg-emerald-500 text-neutral-950 text-sm font-bold disabled:opacity-40">新建实例</button>
+            </div>
+          )}
+
+          {currentTab === 'launch' && currentInstance && (
             <LaunchView
               currentInstance={currentInstance}
               allInstances={instances}
@@ -405,24 +392,25 @@ export default function App() {
               onLaunchInstance={(inst) => {
                 handleSelectInstance(inst);
                 setCurrentTab('launch');
-                handleLaunchGame();
+                showToast('游戏进程启动接线将在下一步完成。');
               }}
               onOpenManageInstance={(inst) => setDetailInstance(inst)}
               onOpenCreateModal={() => setCreateModalOpen(true)}
               onDeleteInstance={handleDeleteInstance}
               onDuplicateInstance={handleDuplicateInstance}
+              onRetryInstall={handleRetryInstall}
               onOpenFolder={handleOpenFolder}
             />
           )}
 
-          {currentTab === 'mods' && (
+          {currentTab === 'mods' && currentInstance && (
             <ModsHubView
               currentInstance={currentInstance}
               onInstallMod={handleInstallMod}
             />
           )}
 
-          {currentTab === 'console' && (
+          {currentTab === 'console' && currentInstance && (
             <ConsoleView
               currentInstance={currentInstance}
               onUpdateInstance={handleUpdateInstance}
