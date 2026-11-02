@@ -1,0 +1,283 @@
+# NineVoxel Launcher — GitLab CI（P0 阶段）
+#
+# 本流水线只执行工程检查：Go 格式化与静态检查、Wails 绑定生成、前端类型与生产构建，
+# 以及原生 Windows/macOS 桌面二进制构建。它不会启动应用、业务服务或 UI 自动化测试；
+# 功能验收由用户本人执行。
+#
+# 版本锁定与本仓库的依赖声明保持一致：
+#   - Go toolchain  -> launcher/go.mod 的 toolchain 指令（go1.27.3）
+#   - Node          -> launcher/.node-version 与 frontend/package.json engines（22.16.0）
+#   - pnpm          -> frontend/package.json packageManager（pnpm@10.33.0）
+#   - Wails CLI     -> go.mod 的 github.com/wailsapp/wails/v3 v3.0.0
+#
+# 目标平台：P0 构建 Windows x64 与 macOS arm64 桌面二进制。静态 Go 作业在 Linux
+# 容器内对 Windows 目标交叉分析，不编译需要 GTK / WebKit 开发库的 Linux 后端。
+# 原生构建要求带 `windows` 与 `macos` 标签的 GitLab shell runner，并预装锁定 Go/Node/pnpm；
+# Windows runner 使用 PowerShell，macOS runner 必须运行在 macOS 主机并安装 Xcode Command Line Tools。
+
+stages:
+  - go
+  - bindings
+  - frontend
+  - desktop
+
+variables:
+  GO_VERSION: "1.27.3"
+  NODE_VERSION: "22.16.0"
+  PNPM_VERSION: "10.33.0"
+  WAILS_VERSION: "v3.0.0"
+
+  # Go 模块与构建缓存。放在项目内是为了让 GitLab cache 能持久化；
+  # 这两个目录必须在 gofmt / vet 的文件范围内被排除（见 go:fmt 注释）。
+  # 注意：不在这里设置 GOFLAGS=-mod=readonly。全局生效会干扰
+  # `go install <pkg>@<version>`（该命令在模块感知模式下运行时与 -mod 语义冲突），
+  # 因此只在实际需要只读依赖的作业上单独声明。
+  GOPATH: "$CI_PROJECT_DIR/.cache/go"
+  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+
+  # Go 静态检查与绑定生成的目标平台。P0 只交付 Windows x64 与 macOS arm64 桌面
+  # 产物，Linux 不在范围内；Windows 目标的交叉分析与绑定生成都不需要 cgo 工具链，
+  # 可在 Linux 容器内完成。若在 Linux 目标上分析，Wails 会编译需要 GTK/WebKit
+  # 头文件的 linux 后端，而共享 runner 未安装这些库。
+  # 使用独立的 GO_TARGET_* 变量名，避免与 Go 自身的 GOOS 语义混淆。
+  GO_TARGET_OS: "windows"
+  GO_TARGET_ARCH: "amd64"
+
+# 统一的 Go 作业基线：镜像与缓存锚点合并在一个 mapping 中。
+# 注意：YAML 的 << 合并键在同一映射里出现多次时，后一个会覆盖前一个，
+# 因此这里只有一个锚点，image 与 cache 必须同处其中。
+.go-base: &go-base
+  image: "golang:${GO_VERSION}"
+  interruptible: true
+  cache:
+    key: "go-${GO_VERSION}-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cache/go
+      - .cache/go-build
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+
+default:
+  interruptible: true
+  before_script:
+    - echo "工程检查任务：不启动业务服务、不执行功能测试"
+
+# 1) Go 代码格式检查。
+#    只检查受版本控制的 Go 文件：GOPATH 缓存目录内含大量第三方 .go 源码，
+#    若直接用 gofmt -l . 会把缓存也纳入判定并产生误报。
+#    另外 frontend/ 下的是前端源码，不属于 Go 检查范围。
+#    git ls-files 不可用时回退到 find，并显式排除缓存、前端与构建产物目录。
+#    文件清单统一使用 NUL 分隔（git ls-files -z / find -print0）并交给 xargs -0，
+#    避免文件名含空格或换行时被按空白拆裂，导致未格式化文件被静默漏检。
+go:fmt:
+  <<: *go-base
+  stage: go
+  script:
+    - go version
+    - |
+      if git ls-files -z -- '*.go' > /tmp/go-files.bin 2>/dev/null && [ -s /tmp/go-files.bin ]; then
+        echo "使用 git ls-files -z 列出受版本控制的 Go 文件（NUL 分隔）";
+      else
+        echo "git ls-files 不可用或结果为空，回退到 find（排除缓存、前端与构建产物目录）";
+        find . -name '*.go' -type f \
+          -not -path './.cache/*' \
+          -not -path './frontend/*' \
+          -not -path './bin/*' \
+          -not -path './.task/*' \
+          -print0 > /tmp/go-files.bin;
+      fi
+    - test -s /tmp/go-files.bin || (echo "未找到任何 Go 文件" && exit 1)
+    - xargs -0 gofmt -l < /tmp/go-files.bin > /tmp/gofmt-unformatted.txt
+    - |
+      if [ -s /tmp/gofmt-unformatted.txt ]; then
+        echo "以下 Go 文件未按 gofmt 格式化，请本地运行 gofmt -w 后提交：";
+        cat /tmp/gofmt-unformatted.txt;
+        exit 1;
+      fi
+    - echo "gofmt 检查通过"
+
+# 2) Go 静态检查。
+#    -mod=readonly 只作用于本作业，防止 CI 自行改写 go.mod / go.sum。
+#    显式指定 GOOS/GOARCH 并关闭 cgo：Linux runner 上对 Windows 桌面后端做类型与
+#    静态检查，不依赖 GTK / WebKit 头文件，也不产出 Windows 二进制。
+#    已知覆盖缺口：macOS 后端（cgo + Cocoa / WebKit）无法在 Linux runner 上检查，
+#    需在 macOS runner 上补充，详见交付报告的遗留问题。
+go:vet:
+  <<: *go-base
+  stage: go
+  variables:
+    GOFLAGS: "-mod=readonly"
+  script:
+    - go version
+    - go mod download
+    - |
+      # main.go 使用 `//go:embed all:frontend/dist`，Go 的 embed 要求在编译期该目录必须存在。
+      # 干净 checkout 时 frontend/dist 被 .gitignore 忽略，直接执行 go vet 必然报
+      # "pattern all:frontend/dist: no matching files found"。此处写入占位文件让静态检查
+      # 能够运行；占位内容不进入 artifacts，desktop 阶段会由真实前端构建覆盖该目录。
+      mkdir -p frontend/dist
+      [ -f frontend/dist/index.html ] || printf '<!doctype html>\n' > frontend/dist/index.html
+    - GOOS="${GO_TARGET_OS}" GOARCH="${GO_TARGET_ARCH}" CGO_ENABLED=0 go vet ./...
+    - echo "go vet 检查通过（GOOS=${GO_TARGET_OS} GOARCH=${GO_TARGET_ARCH} CGO_ENABLED=0）"
+
+# 3) ADR-002 门槛 3：SQLite 集成强制定向断言（强制断言，不得删除）。
+#    本作业把 ADR-002 门槛 3 的三项要求变成可执行的 CI 断言：
+#      A. CGO_ENABLED=0 的完整应用构建成功：只断言 windows/amd64（本项目 P0 交付目标）。
+#         不要把 darwin 加入本断言：Wails v3 的 macOS 后端依赖 cgo 符号
+#         （macosApp / newPlatformApp / fatalHandler 等），CGO_ENABLED=0 时必然构建失败；
+#         这是已知缺口，不是本门槛要验证的内容（详见 docs/validation/P0-14-ci-audit.md）。
+#      B. go test ./internal/database/... 通过，即真正执行 SELECT sqlite_version() 冒烟查询。
+#      C. modernc.org/libc 版本精确等于 v1.79.0；不匹配时打印实际值并让作业失败。
+#    main.go 用 //go:embed all:frontend/dist 引用前端产物，干净 checkout 时该目录被
+#    .gitignore 忽略，因此构建前先写入占位文件（与 go:vet 的处理保持一致）。
+go:sqlite-gate:
+  <<: *go-base
+  stage: go
+  variables:
+    # 只读依赖：本作业不安装 wails3 CLI，因此 GOFLAGS 不会干扰 go install。
+    GOFLAGS: "-mod=readonly"
+  script:
+    - go version
+    - go mod download
+    - |
+      # 构建前置：//go:embed 要求 frontend/dist 在编译期存在。
+      mkdir -p frontend/dist
+      [ -f frontend/dist/index.html ] || printf '<!doctype html>\n' > frontend/dist/index.html
+    - |
+      # ADR-002 门槛 3（断言 A）：CGO_ENABLED=0 的 windows/amd64 完整应用构建。
+      GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /tmp/ninevoxel-launcher.exe .
+      test -s /tmp/ninevoxel-launcher.exe || { echo "ADR-002 门槛 3（断言 A）失败：CGO_ENABLED=0 的 windows/amd64 构建未产出二进制"; exit 1; }
+      echo "ADR-002 门槛 3（断言 A）通过：CGO_ENABLED=0 的 windows/amd64 完整应用构建成功"
+    - |
+      # ADR-002 门槛 3（断言 B）：SQLite 引擎冒烟测试（linux/amd64 容器内原生执行）。
+      CGO_ENABLED=0 go test ./internal/database/...
+      echo "ADR-002 门槛 3（断言 B）通过：SELECT sqlite_version() 冒烟测试通过"
+    - |
+      # ADR-002 门槛 3（断言 C）：modernc.org/libc 精确版本校验。
+      libc_version="$(go list -m -f '{{.Version}}' modernc.org/libc)"
+      if [ "${libc_version}" != "v1.79.0" ]; then
+        echo "ADR-002 门槛 3（断言 C）失败：modernc.org/libc 期望 v1.79.0，实际为 ${libc_version}"
+        exit 1
+      fi
+      echo "ADR-002 门槛 3（断言 C）通过：modernc.org/libc ${libc_version}"
+
+# 4) 生成 Wails 前端绑定。
+#    frontend/src/App.vue 依赖 frontend/bindings 下的生成代码；该目录不进版本库，
+#    必须由 CI 生成后传给前端阶段，类型检查与构建才有输入。
+#    Wails CLI 使用与 go.mod 一致的精确版本。
+#    GOOS/GOARCH 与 vet 保持一致：绑定生成要分析 Go 包，若在 Linux 目标上分析会
+#    编译需要 GTK/WebKit 的 linux 后端。
+bindings:generate:
+  <<: *go-base
+  stage: bindings
+  script:
+    - go version
+    - go install "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+    - export PATH="${GOPATH}/bin:${PATH}"
+    - wails3 version
+    - GOOS="${GO_TARGET_OS}" GOARCH="${GO_TARGET_ARCH}" CGO_ENABLED=0 wails3 generate bindings -clean=true -ts -i
+    - test -d frontend/bindings || (echo "绑定生成未产出 frontend/bindings" && exit 1)
+  artifacts:
+    name: "wails-bindings-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - frontend/bindings/
+    expire_in: 1 week
+
+# 5) 前端依赖安装、类型检查与生产构建。
+#    Node 与 pnpm 使用精确版本；pnpm 通过 npm 全局安装，避免 corepack 的版本漂移。
+#    `pnpm run build` 已包含 `vue-tsc --noEmit`（见 frontend/package.json），
+#    因此类型检查与构建在本作业内一并完成。
+frontend:check:
+  stage: frontend
+  image: "node:${NODE_VERSION}"
+  needs:
+    - job: bindings:generate
+      artifacts: true
+  script:
+    - node --version
+    - npm install --global "pnpm@${PNPM_VERSION}"
+    - pnpm --version
+    - cd frontend
+    - test -f pnpm-lock.yaml || (echo "frontend/pnpm-lock.yaml 缺失，必须提交锁文件" && exit 1)
+    - pnpm install --frozen-lockfile
+    - pnpm run build
+    - test -d dist || (echo "前端构建未产出 frontend/dist" && exit 1)
+  artifacts:
+    name: "frontend-dist-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - frontend/dist/
+    expire_in: 1 week
+
+# 6) 原生 Windows x64 构建。runner 必须预装精确版本 Go、Node 与 pnpm，且使用 PowerShell shell。
+#    通过 needs 消费上游 artifacts：bindings:generate 产出 frontend/bindings/，
+#    frontend:check 产出 frontend/dist/。这样 wails3 task build 内的 build:frontend
+#    在产物较新时按 Taskfile 的 sources/generates 规则跳过前端重建，避免同一份前端
+#    在 frontend:check 与每个 desktop 作业里被重复构建。
+desktop:windows:
+  stage: desktop
+  needs:
+    - job: bindings:generate
+      artifacts: true
+    - job: frontend:check
+      artifacts: true
+  tags:
+    - windows
+  variables:
+    GOOS: "windows"
+    GOARCH: "amd64"
+    CGO_ENABLED: "0"
+  timeout: 30m
+  script:
+    - 'if ((go version) -notmatch "go$env:GO_VERSION") { throw "Go 版本必须为 $env:GO_VERSION" }'
+    - 'if ((node --version) -ne "v$env:NODE_VERSION") { throw "Node 版本必须为 $env:NODE_VERSION" }'
+    - 'if ((pnpm --version) -ne $env:PNPM_VERSION) { throw "pnpm 版本必须为 $env:PNPM_VERSION" }'
+    - 'go install "github.com/wailsapp/wails/v3/cmd/wails3@$env:WAILS_VERSION"'
+    - '$env:PATH = "$env:GOPATH\bin;$env:PATH"'
+    - 'wails3 task build GOOS=windows ARCH=amd64'
+    - 'if (-not (Test-Path "bin\ninevoxel-launcher.exe")) { throw "Windows 二进制产物不存在" }'
+    - 'git diff --exit-code -- go.mod go.sum'
+  artifacts:
+    name: "windows-x64-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - bin/
+    expire_in: 1 week
+
+# 7) 原生 macOS arm64 构建。runner 必须为 macOS 主机并预装精确版本工具链。
+#    与 desktop:windows 相同：通过 needs 消费 bindings 与前端 dist artifacts，
+#    避免重复执行前端构建。
+desktop:macos:
+  stage: desktop
+  needs:
+    - job: bindings:generate
+      artifacts: true
+    - job: frontend:check
+      artifacts: true
+  tags:
+    - macos
+  variables:
+    GOOS: "darwin"
+    GOARCH: "arm64"
+    ARCH: "arm64"
+    CGO_ENABLED: "1"
+    MACOSX_DEPLOYMENT_TARGET: "12.0"
+  timeout: 30m
+  script:
+    - |
+      test "$(go version | awk '{print $3}')" = "go${GO_VERSION}"
+      test "$(node --version)" = "v${NODE_VERSION}"
+      test "$(pnpm --version)" = "${PNPM_VERSION}"
+    - xcode-select -p
+    - test -x "$(xcrun --find clang)"
+    - go install "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+    - export PATH="${GOPATH}/bin:${PATH}"
+    - wails3 task build GOOS=darwin ARCH=arm64
+    - test -f bin/ninevoxel-launcher || (echo "macOS arm64 二进制产物不存在" && exit 1)
+    - git diff --exit-code -- go.mod go.sum
+  artifacts:
+    name: "macos-arm64-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - bin/
+    expire_in: 1 week

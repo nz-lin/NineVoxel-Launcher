@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MsixPackagingToolTemplate
+    xmlns="http://schemas.microsoft.com/msix/packaging/msixpackagingtool/template/2022">
+    <Settings
+        AllowTelemetry="false"
+        ApplyACLsToPackageFiles="true"
+        GenerateCommandLineFile="true"
+        AllowPromptForPassword="false">
+    </Settings>
+    <Installer
+        Path="ninevoxel_launcher.exe"
+        Arguments=""
+        InstallLocation="C:\Program Files\NineVoxel\NineVoxel Launcher">
+    </Installer>
+    <PackageInformation
+        PackageName="NineVoxel Launcher"
+        PackageDisplayName="NineVoxel Launcher"
+        PublisherName="CN=NineVoxel"
+        PublisherDisplayName="NineVoxel"
+        Version="0.1.0.0"
+        PackageDescription="跨平台 Minecraft Java Edition 桌面启动器工程基础">
+        <Capabilities>
+            <Capability Name="runFullTrust" />
+            
+        </Capabilities>
+        <Applications>
+            <Application
+                Id="com.ninevoxel.launcher"
+                Description="跨平台 Minecraft Java Edition 桌面启动器工程基础"
+                DisplayName="NineVoxel Launcher"
+                ExecutableName="ninevoxel_launcher.exe"
+                EntryPoint="Windows.FullTrustApplication">
+                
+            </Application>
+        </Applications>
+        <Resources>
+            <Resource Language="en-us" />
+        </Resources>
+        <Dependencies>
+            <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+        </Dependencies>
+        <Properties>
+            <Framework>false</Framework>
+            <DisplayName>NineVoxel Launcher</DisplayName>
+            <PublisherDisplayName>NineVoxel</PublisherDisplayName>
+            <Description>跨平台 Minecraft Java Edition 桌面启动器工程基础</Description>
+            <Logo>Assets\AppIcon.png</Logo>
+        </Properties>
+    </PackageInformation>
+    <SaveLocation PackagePath="ninevoxel_launcher.msix" />
+    <PackageIntegrity>
+        <CertificatePath></CertificatePath>
+    </PackageIntegrity>
+</MsixPackagingToolTemplate>

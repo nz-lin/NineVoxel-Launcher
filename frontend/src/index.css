@@ -1,0 +1,58 @@
+/*
+ * 字体随程序打包（2026-11-01）。
+ *
+ * 原设计稿在 index.html 里引 Google Fonts 外链，桌面应用离线时加载失败会回退到系统字体，
+ * 字重与字距明显不同。这里改用 `@fontsource/*` 的本地字体文件，由 Vite 打包进 dist，
+ * 只取 latin 子集（中文由系统字体回退，不重复打包中文字形）。
+ *
+ * 许可证：两套字体均为 SIL Open Font License 1.1，允许随软件分发（含商业用途）。
+ * - Plus Jakarta Sans：原设计取自 Tokotype
+ * - JetBrains Mono：JetBrains 出品
+ */
+@import '@fontsource/plus-jakarta-sans/latin-400.css';
+@import '@fontsource/plus-jakarta-sans/latin-500.css';
+@import '@fontsource/plus-jakarta-sans/latin-600.css';
+@import '@fontsource/plus-jakarta-sans/latin-700.css';
+@import '@fontsource/plus-jakarta-sans/latin-800.css';
+@import '@fontsource/jetbrains-mono/latin-400.css';
+@import '@fontsource/jetbrains-mono/latin-500.css';
+@import '@fontsource/jetbrains-mono/latin-600.css';
+@import '@fontsource/jetbrains-mono/latin-700.css';
+
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    overflow-x: hidden;
+  }
+}
+
+/* Custom scrollbar for sleek desktop feel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+/* Minecraft dirt pattern / acrylic noise if needed */
+.acrylic-card {
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}

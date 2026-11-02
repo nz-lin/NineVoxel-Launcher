@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0409": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "NineVoxel",
+			"FileDescription": "跨平台 Minecraft Java Edition 桌面启动器工程基础",
+			"LegalCopyright": "Copyright (c) 2026 NineVoxel",
+			"ProductName": "NineVoxel Launcher",
+			"Comments": "NineVoxel Launcher 工程初始化"
+		}
+	}
+}

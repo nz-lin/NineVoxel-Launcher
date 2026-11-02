@@ -1,0 +1,12 @@
+.task
+bin
+frontend/dist
+frontend/node_modules
+# Wails CLI 生成的绑定由构建任务和 CI 重新生成。
+frontend/bindings
+build/linux/appimage/build
+build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+/launcher.exe
+# 应用运行时数据：WebView2 用户数据目录与启动日志由程序自动创建。
+/webview
+/logs

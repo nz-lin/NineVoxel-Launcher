@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NineVoxel Launcher</title>
+    <meta name="description" content="NineVoxel Launcher —— Minecraft Java Edition 桌面启动器。" />
+    <script>
+      // 首帧主题兜底：在主脚本执行前按系统偏好预先决定深浅色。
+      // 真实主题以设置库中的 appearance.theme 为准，React 挂载后会覆盖这里的值；
+      // 这段只负责让「设置尚未读回」的那一瞬不出现明显反色的白/黑闪。
+      (function () {
+        try {
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          document.documentElement.classList.toggle('dark', prefersDark);
+        } catch (error) {
+          // matchMedia 不可用时保持浅色默认，不影响后续真实主题应用。
+        }
+      })();
+    </script>
+  </head>
+  <body class="bg-slate-100 text-slate-900 dark:bg-neutral-950 dark:text-neutral-100 antialiased selection:bg-emerald-500/30 selection:text-emerald-800 dark:selection:text-emerald-200 transition-colors duration-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

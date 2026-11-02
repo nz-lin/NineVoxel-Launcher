@@ -1,0 +1,6 @@
+{
+  "name": "Ninevoxel Launcher",
+  "description": "Next-generation Minecraft launcher featuring modern mica acrylic design, multi-loader instance management, Modrinth/CurseForge catalog, game log diagnostics, and performance optimization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=NineVoxel Launcher
+Comment=跨平台 Minecraft Java Edition 桌面启动器工程基础
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/ninevoxel_launcher.exe %u
+Terminal=false
+Type=Application
+Icon=ninevoxel_launcher.exe
+Categories=Utility;
+StartupWMClass=ninevoxel_launcher.exe
+
+ 
