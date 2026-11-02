@@ -6,6 +6,7 @@ import (
 
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/events"
+	"example.com/ninevoxel/launcher/internal/platform"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -19,9 +20,9 @@ const appVersion = "0.1.0"
 
 // AppInfo 表示启动器的非敏感应用信息，供首页与诊断区域展示。
 //
-// 字段与接口冻结清单 §8.4 逐字一致，JSON 使用 lowerCamelCase；
-// 同时与前端 `launcher/frontend/src/types/app.ts` 的 `AppInfo` 逐字段对应。
-// 该结构替代 P0 的 `RuntimeInfo`（其三个字段已并入本结构）。
+// 字段与接口冻结清单 §8.4 逐字一致（`totalMemoryMb` 为后续追加，见字段注释），
+// JSON 使用 lowerCamelCase；同时与前端 `launcher/frontend/src/types/app.ts` 的
+// `AppInfo` 逐字段对应。该结构替代 P0 的 `RuntimeInfo`（其三个字段已并入本结构）。
 type AppInfo struct {
 	// AppVersion 为启动器版本号。
 	AppVersion string `json:"appVersion"`
@@ -39,6 +40,14 @@ type AppInfo struct {
 	// DataDirectoryStatus* 常量（ok / read-only / unavailable）。
 	// 该字段是状态摘要，**不含任何绝对路径**。
 	DataDirectoryStatus string `json:"dataDirectoryStatus"`
+
+	// TotalMemoryMb 为本机物理内存总量（MiB）；0 表示探测失败或平台不支持。
+	//
+	// 追加字段：界面上「全局默认最大分配内存」的滑块上限与刻度据此计算，
+	// 而不是写死一个数字——写死的上限在内存更小的机器上会鼓励过度分配，
+	// 在内存更大的机器上又显得过窄。前端把 0 当作「未知」并回退到保守默认值，
+	// 不得把 0 当成「物理内存为 0」。
+	TotalMemoryMb int64 `json:"totalMemoryMb"`
 }
 
 // AppService 提供启动器基础桌面服务。
@@ -114,6 +123,7 @@ func (s *AppService) Snapshot() (AppInfo, error) {
 		GOOS:                runtime.GOOS,
 		GOARCH:              runtime.GOARCH,
 		DataDirectoryStatus: s.dataDirectoryStatus,
+		TotalMemoryMb:       int64(platform.TotalMemoryBytes() >> 20),
 	}, nil
 }
 
