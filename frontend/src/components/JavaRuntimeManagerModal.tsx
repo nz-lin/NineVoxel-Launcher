@@ -14,6 +14,7 @@ import {
   Check
 } from 'lucide-react';
 import { JavaRuntime } from '../types/launcher';
+import type { RuntimeInstallProgress } from '../types/runtime';
 
 interface JavaRuntimeManagerModalProps {
   isOpen: boolean;
@@ -34,6 +35,8 @@ interface JavaRuntimeManagerModalProps {
   onChooseJavaPath?: () => Promise<{ ok: boolean; message: string }>;
   /** 清除已指定的路径，回到「只用启动器安装的运行时」。 */
   onClearJavaPath?: () => Promise<void>;
+  /** 正在进行的安装进度；null 或未提供表示当前没有安装任务。 */
+  installProgress?: RuntimeInstallProgress | null;
 }
 
 export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = ({
@@ -48,7 +51,8 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
   onReload,
   javaPath,
   onChooseJavaPath,
-  onClearJavaPath
+  onClearJavaPath,
+  installProgress
 }) => {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; msg: string } | null>(null);
@@ -223,6 +227,46 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
             </div>
           ) : null}
         </div>
+
+        {/* 安装进度：后端复用 download.task.changed.v1 推进度，taskId 形如
+            runtime-install-<id>。这里只渲染事件真实携带的 progress 与阶段，
+            不编造已下载字节数与速度。 */}
+        {installProgress ? (
+          <div className="px-6 py-2.5 border-b border-slate-200 dark:border-neutral-800/80 bg-white dark:bg-neutral-900">
+            {installProgress.phase === 'failed' ? (
+              <div className="text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  安装失败
+                  {installProgress.errorCode ? `（${installProgress.errorCode}）` : ''}
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between text-[11px] mb-1.5">
+                  <span className="text-slate-700 dark:text-neutral-300 font-semibold">
+                    {installProgress.phase === 'completed'
+                      ? '安装完成'
+                      : installProgress.phase === 'committing'
+                        ? '校验并解压…'
+                        : '正在下载 Java 运行时…'}
+                  </span>
+                  <span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold">
+                    {Math.round(installProgress.progress * 100)}%
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-slate-200 dark:bg-neutral-800 overflow-hidden">
+                  <div
+                    className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                    style={{
+                      width: `${Math.min(100, Math.max(2, Math.round(installProgress.progress * 100)))}%`,
+                    }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
 
         {/* Runtime Major Versions List */}
         <div className="p-6 flex-1 overflow-y-auto space-y-4">

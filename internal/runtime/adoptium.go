@@ -70,8 +70,17 @@ const (
 	// adoptiumOfficialHost 是 Adoptium 官方归档的 host（GitHub Release）。
 	adoptiumOfficialHost = "github.com"
 
-	// adoptiumRedirectHost 是 GitHub Release 下载时的重定向目标 host。
+	// adoptiumRedirectHost 是 GitHub Release 下载时的旧重定向目标 host。
+	//
+	// GitHub 在 2024 年之后逐步改用 release-assets.githubusercontent.com，
+	// 但部分存量链接仍可能跳到旧域名，因此两个都保留在允许列表里。
 	adoptiumRedirectHost = "objects.githubusercontent.com"
+
+	// adoptiumReleaseAssetsHost 是 GitHub Release 资产当前的重定向目标 host。
+	//
+	// 实测（2026-11）：github.com → 302 → release-assets.githubusercontent.com → 200。
+	// 只放旧域名会让每一次归档下载都在重定向处被白名单拒绝（RUNTIME_SOURCE_001）。
+	adoptiumReleaseAssetsHost = "release-assets.githubusercontent.com"
 
 	// sourceNameAdoptium 是 `java_runtimes.source_name` 里记录的来源标识。
 	sourceNameAdoptium = "adoptium"
@@ -119,12 +128,13 @@ var adoptiumArchitectures = map[string]string{
 
 // adoptiumDownloadHosts 是归档下载允许的 host 集合。
 //
-// 包含三类：官方 GitHub Release、GitHub 的静态对象存储（302 之后）、清华镜像。
+// 包含四类：官方 GitHub Release、GitHub 的两代静态对象存储（302 之后）、清华镜像。
 // 任何其它 host 都拒绝，避免「元数据来自 A、归档却来自 B」的供应链风险。
 var adoptiumDownloadHosts = map[string]bool{
-	adoptiumOfficialHost: true,
-	adoptiumRedirectHost: true,
-	adoptiumMirrorHost:   true,
+	adoptiumOfficialHost:      true,
+	adoptiumRedirectHost:      true,
+	adoptiumReleaseAssetsHost: true,
+	adoptiumMirrorHost:        true,
 }
 
 // adoptiumAPIResponse 是资产 API 返回数组里的一个元素。
@@ -226,8 +236,9 @@ func newAdoptiumHTTPClient() *http.Client {
 
 // checkAdoptiumRedirect 校验每一次重定向的目标。
 //
-// GitHub Release 会 302 到 objects.githubusercontent.com，因此不能要求 host 不变；
-// 但必须仍然在 https + 白名单内，且跳数受限（与 P3-01 的清单重定向同一策略）。
+// GitHub Release 会 302 到 release-assets.githubusercontent.com（存量链接仍可能
+// 跳 objects.githubusercontent.com），因此不能要求 host 不变；但必须仍然在
+// https + 白名单内，且跳数受限（与 P3-01 的清单重定向同一策略）。
 func checkAdoptiumRedirect(request *http.Request, via []*http.Request) error {
 	if request == nil {
 		return errors.New("重定向请求为空")
@@ -729,7 +740,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 	if _, spaceErr := download.CheckDiskSpace(root, release.SizeBytes); spaceErr != nil {
 		return download.TaskAccepted{}, downloadErrToAppError(spaceErr)
 	}
-	progress := newInstallProgress(taskID, 1)
+	progress := newInstallProgress(taskID, release.SizeBytes, 1)
 	progress.report(runtimeEventStateDownloading, "")
 
 	if appErr := os.RemoveAll(stagingRoot); appErr != nil {
@@ -740,11 +751,13 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 	}
 
 	candidates := adoptiumDownloadCandidates(release, adoptiumMirrorEnabled())
-	if downloadErr := downloadAdoptiumArchive(ctx, candidates, archivePath, release.SizeBytes); downloadErr != nil {
+	if downloadErr := downloadAdoptiumArchive(ctx, candidates, archivePath, release.SizeBytes, progress); downloadErr != nil {
 		cleanupRuntimeStaging(stagingRoot)
 		runtimeProgressSink(taskID, runtimeEventStateFailed, 0, downloadErr.Code)
 		return download.TaskAccepted{}, downloadErr
 	}
+	// 下载完成：再上报一次，确保进度条停在 100% 而不是被节流吞掉的中间值。
+	progress.report(runtimeEventStateDownloading, "")
 
 	// SHA-256 必须匹配：Adoptium 的校验值是 SHA-256，绝不能塞进 sha1 字段。
 	// 校验不通过属于「源端给了错文件」，重试也只会再拿到同一份坏文件，故不可重试。
@@ -892,7 +905,7 @@ func cleanupRuntimeStaging(stagingRoot string) {
 //
 // 写盘走 P3-05 的 `download.StagingSink` 接缝（与官方 Runtime 安装共用同一套
 // 「staging 内写入」语义），因此这里的 HTTP 代码只负责把字节搬进 writer。
-func downloadAdoptiumArchive(ctx context.Context, candidates []string, archivePath string, expectedSize int64) *AppError {
+func downloadAdoptiumArchive(ctx context.Context, candidates []string, archivePath string, expectedSize int64, progress *installProgress) *AppError {
 	if len(candidates) == 0 {
 		return newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceUnreachable, true)
 	}
@@ -911,7 +924,7 @@ func downloadAdoptiumArchive(ctx context.Context, candidates []string, archivePa
 		if openErr != nil {
 			return newSystemError(ErrorCodeRuntimeInstall, messageRuntimeStagingFailed, false)
 		}
-		appErr := fetchAdoptiumArchiveInto(ctx, client, candidate, writer, expectedSize)
+		appErr := fetchAdoptiumArchiveInto(ctx, client, candidate, writer, expectedSize, progress)
 		if appErr == nil {
 			return nil
 		}
@@ -926,6 +939,24 @@ func downloadAdoptiumArchive(ctx context.Context, candidates []string, archivePa
 	return lastErr
 }
 
+// progressReader 在每次 Read 后把字节数累加给 installProgress。
+//
+// 为什么包在读取侧而不是写入侧：io.CopyBuffer 会优先使用 writer 的 ReadFrom
+// 方法，包装 writer 可能在优化路径下被绕过；包装 reader 则一定会被调用。
+type progressReader struct {
+	reader   io.Reader
+	progress *installProgress
+}
+
+// Read 实现 io.Reader，并把本次读到的字节数计入进度。
+func (r *progressReader) Read(buffer []byte) (int, error) {
+	read, err := r.reader.Read(buffer)
+	if read > 0 {
+		r.progress.addBytes(int64(read))
+	}
+	return read, err
+}
+
 // fetchAdoptiumArchiveInto 把单个候选地址的归档写入 writer。
 func fetchAdoptiumArchiveInto(
 	ctx context.Context,
@@ -933,6 +964,7 @@ func fetchAdoptiumArchiveInto(
 	rawURL string,
 	writer download.StagingWriter,
 	expectedSize int64,
+	progress *installProgress,
 ) *AppError {
 	closeWriter := func() {
 		_ = writer.Close()
@@ -973,7 +1005,13 @@ func fetchAdoptiumArchiveInto(
 		return newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceStatusFailed, false)
 	}
 
-	written, copyErr := io.CopyBuffer(writer, io.LimitReader(response.Body, expectedSize+1), make([]byte, adoptiumCopyBufferSize))
+	body := io.LimitReader(response.Body, expectedSize+1)
+	// 读取侧计数：见 progressReader 的说明。
+	var source io.Reader = body
+	if progress != nil {
+		source = &progressReader{reader: body, progress: progress}
+	}
+	written, copyErr := io.CopyBuffer(writer, source, make([]byte, adoptiumCopyBufferSize))
 	if copyErr != nil {
 		closeWriter()
 		return newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceUnreachable, true)

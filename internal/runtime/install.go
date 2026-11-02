@@ -335,13 +335,21 @@ func emitRuntimeProgress(taskID, state string, progress float64, errorCode strin
 }
 
 // installProgress 维护一次安装的进度与节流状态。
+//
+// 进度按「已写入字节 / 总字节」计算，而不是文件计数：runtime manifest 里
+// 单个文件可以相差三个数量级（几 KB 的配置 vs 上百 MB 的 jar），按文件数
+// 计会让进度条长时间停在个位数，然后一下跳到 100%。
 type installProgress struct {
 	// taskID 为事件关联键。
 	taskID string
-	// total 为需要下载的文件总数。
-	total int
-	// done 为已完成数。
-	done int
+	// totalBytes 为待下载内容的总字节数；0 表示清单未声明大小。
+	totalBytes int64
+	// doneBytes 为已确认写入的字节数。
+	doneBytes int64
+	// totalFiles 为待下载文件数，仅在 totalBytes 为 0 时用于回退计算。
+	totalFiles int
+	// doneFiles 为已完成文件数。
+	doneFiles int
 	// lastEmitMs 为上次发射时间。
 	lastEmitMs int64
 	// now 为时钟。
@@ -349,14 +357,37 @@ type installProgress struct {
 }
 
 // newInstallProgress 创建进度跟踪器。
-func newInstallProgress(taskID string, total int) *installProgress {
+//
+// totalBytes 为待下载内容的总字节数；为 0（清单未声明大小）时回退到按文件数
+// 计算，避免出现「永远 0%」。
+func newInstallProgress(taskID string, totalBytes int64, totalFiles int) *installProgress {
 	return &installProgress{
-		taskID: taskID,
-		total:  total,
+		taskID:     taskID,
+		totalBytes: totalBytes,
+		totalFiles: totalFiles,
 		now: func() int64 {
 			return time.Now().UnixMilli()
 		},
 	}
+}
+
+// addBytes 累加已下载字节并按节流规则上报一次进度。
+//
+// 传输过程中每读到一段就调用一次：节流在 report 内部完成，因此可以高频调用。
+func (p *installProgress) addBytes(delta int64) {
+	if delta <= 0 {
+		return
+	}
+	p.doneBytes += delta
+	p.report(runtimeEventStateDownloading, "")
+}
+
+// isComplete 判断按字节计的下载是否已经写满。
+//
+// 用于让「最后一帧 100%」绕过节流：否则最后一次 addBytes 可能被时间窗口吞掉，
+// 进度条会停在 97% 之类的位置，紧接着又被 committing 阶段的 100% 覆盖。
+func (p *installProgress) isComplete() bool {
+	return p.totalBytes > 0 && p.doneBytes >= p.totalBytes
 }
 
 // report 按节流规则发射一次进度。
@@ -365,15 +396,29 @@ func newInstallProgress(taskID string, total int) *installProgress {
 // 界面会一直停在「准备中」。
 func (p *installProgress) report(state, errorCode string) {
 	nowMs := p.now()
-	if state == runtimeEventStateDownloading && p.done < p.total {
+	// 下载阶段的中间进度按时间节流；终态、阶段切换与「已下载满」不节流。
+	if state == runtimeEventStateDownloading && p.doneFiles < p.totalFiles && !p.isComplete() {
 		if nowMs-p.lastEmitMs < runtimeProgressThrottleMs {
 			return
 		}
 	}
 	p.lastEmitMs = nowMs
+
 	progress := 0.0
-	if p.total > 0 {
-		progress = float64(p.done) / float64(p.total)
+	switch {
+	case state == runtimeEventStateCompleted:
+		progress = 1
+	case p.totalBytes > 0:
+		progress = float64(p.doneBytes) / float64(p.totalBytes)
+	case p.totalFiles > 0:
+		// 清单没有声明总大小时退回文件计数，至少不是死板的 0。
+		progress = float64(p.doneFiles) / float64(p.totalFiles)
+	}
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
 	}
 	runtimeProgressSink(p.taskID, state, progress, errorCode)
 }
@@ -478,7 +523,7 @@ func installRuntime(ctx context.Context, req InstallRuntimeRequest) (download.Ta
 		if saveErr := saveRuntime(ctx, row); saveErr != nil {
 			return download.TaskAccepted{}, saveErr
 		}
-		progress := newInstallProgress(taskID, 0)
+		progress := newInstallProgress(taskID, 0, 0)
 		progress.report(runtimeEventStateCompleted, "")
 		runtimeLog().Info("Runtime 已存在且校验通过，跳过安装", logging.Fields{
 			Event:      "runtime.install.skipped",
@@ -512,7 +557,15 @@ func installRuntime(ctx context.Context, req InstallRuntimeRequest) (download.Ta
 		return download.TaskAccepted{}, newSystemError(ErrorCodeRuntimeInstall, messageRuntimeStagingFailed, false)
 	}
 
-	progress := newInstallProgress(taskID, stats.fileCount)
+	// 优先按字节计进度：清单里单个文件的体积相差极大，按文件数计会让进度条失真。
+	var totalBytes int64
+	for _, entry := range files {
+		if entry.Type == runtimeFileTypeDirectory || entry.Type == runtimeFileTypeLink {
+			continue
+		}
+		totalBytes += entry.Downloads.Raw.Size
+	}
+	progress := newInstallProgress(taskID, totalBytes, stats.fileCount)
 	progress.report(runtimeEventStateDownloading, "")
 
 	transfer := runtimeTransferFactory(stagingDir)
@@ -753,8 +806,14 @@ func downloadManifestFiles(
 		if entry.Executable {
 			applyExecutableBit(stagedPath)
 		}
-		progress.done++
-		progress.report(runtimeEventStateDownloading, "")
+		progress.doneFiles++
+		// 按实际写入字节累加：清单声明的 size 与实际不符时以实际为准，
+		// 否则进度会在结尾处冲过 100% 或被截断。
+		if result.Downloaded > 0 {
+			progress.addBytes(result.Downloaded)
+		} else {
+			progress.addBytes(raw.Size)
+		}
 	}
 	return nil
 }

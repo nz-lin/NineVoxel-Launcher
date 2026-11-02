@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { downloadService, subscribeDownloadTaskChanged } from '../services/download';
+import { RUNTIME_INSTALL_TASK_PREFIX } from '../types/runtime';
 import type { DownloadTask } from '../types/launcher';
 import type { DownloadTaskView } from '../types/download';
 
@@ -165,7 +166,14 @@ export function useDownloadTasks(): DownloadTasksState {
     // 事件只用来知道「哪个任务变了」，具体数值仍然以后端快照为准。
     const unsubscribe = subscribeDownloadTaskChanged((envelope) => {
       const taskId = envelope.payload.taskId;
-      if (taskId) void refreshOne(taskId);
+      // 运行时安装复用 `download.task.changed.v1` 推送进度（D-45），
+      // 但它的 `runtime-install-*` 任务不在下载队列里。不过滤就会拿这个 id
+      // 去调 GetDownloadTask，每次进度事件都在 Wails 日志里留下一条
+      // DOWNLOAD_STATE_001「下载任务不存在或已被清理」。
+      if (!taskId || taskId.startsWith(RUNTIME_INSTALL_TASK_PREFIX)) {
+        return;
+      }
+      void refreshOne(taskId);
     });
 
     return () => {

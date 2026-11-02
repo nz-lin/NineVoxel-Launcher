@@ -9,9 +9,13 @@
  * 界面必须显示「—」而不是编造内容。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { runtimeService } from '../services/runtime';
+import { runtimeService, subscribeRuntimeInstallProgress } from '../services/runtime';
 import type { JavaRuntime } from '../types/launcher';
-import type { RuntimeProbeWarning, RuntimeSummary } from '../types/runtime';
+import type {
+  RuntimeInstallProgress,
+  RuntimeProbeWarning,
+  RuntimeSummary,
+} from '../types/runtime';
 
 /** 发行商标识到可读名称的映射。 */
 const VENDOR_LABELS: Record<string, string> = {
@@ -74,6 +78,8 @@ export interface JavaRuntimesState {
   reload: (refresh?: boolean) => Promise<void>;
   /** 选择要使用的运行时。 */
   selectRuntime: (runtimeId: string) => Promise<void>;
+  /** 正在进行的安装进度；null 表示当前没有安装任务。 */
+  installProgress: RuntimeInstallProgress | null;
 }
 
 /**
@@ -88,6 +94,7 @@ export function useJavaRuntimes(): JavaRuntimesState {
   const [error, setError] = useState<string | null>(null);
   const [probedAtMs, setProbedAtMs] = useState(0);
   const [warnings, setWarnings] = useState<RuntimeProbeWarning[]>([]);
+  const [installProgress, setInstallProgress] = useState<RuntimeInstallProgress | null>(null);
 
   // 卸载后不再回写状态，避免 React 严格模式下旧请求覆盖新结果。
   const cancelledRef = useRef(false);
@@ -95,26 +102,33 @@ export function useJavaRuntimes(): JavaRuntimesState {
   /**
    * 读取运行时列表。
    *
-   * @param refresh 为 true 时绕过缓存重新扫盘
+   * @param refresh 为 true 时先绕过缓存重新探测，再读完整列表
    */
   const reload = useCallback(async (refresh = false) => {
     setLoading(true);
     setError(null);
     try {
       if (refresh) {
-        // 用户显式要求重新探测：真正扫盘，返回的是探测结果（含告警与探测时间）。
-        const probe = await runtimeService.detect(true);
-        if (cancelledRef.current) return;
-        setRuntimes(probe.items.map(toDesignRuntime));
-        setProbedAtMs(probe.probedAtMs);
-        setWarnings(probe.warnings);
-      } else {
-        // 首次进入：只读已缓存的结果，不触发新的磁盘扫描。
-        const list = await runtimeService.list();
-        if (cancelledRef.current) return;
-        setRuntimes(list.items.map(toDesignRuntime));
-        setSelectedRuntimeId(list.selectedRuntimeId);
-        // 列表接口不返回探测时间，这里记录的是本次读取的时刻。
+        // 先刷新探测缓存。探测失败不影响列表：list() 仍能返回已安装项。
+        try {
+          const probe = await runtimeService.detect(true);
+          if (cancelledRef.current) return;
+          setProbedAtMs(probe.probedAtMs);
+          setWarnings(probe.warnings);
+        } catch {
+          // 探测失败时保留上一次的探测时间与告警，由下面的 list() 兜底。
+        }
+      }
+
+      // 列表一律走 list()：detect 只返回「探测到的本机 Java」，**不含启动器
+      // 自己安装的运行时**。此前 refresh 分支直接拿 detect 的结果覆盖列表，
+      // 导致安装完成后（或点「重新探测」）已安装项全部消失，只剩手动指定的那个。
+      const list = await runtimeService.list();
+      if (cancelledRef.current) return;
+      setRuntimes(list.items.map(toDesignRuntime));
+      setSelectedRuntimeId(list.selectedRuntimeId);
+      if (!refresh) {
+        // 首次进入只读缓存，探测时间未知，记录的是本次读取的时刻。
         setProbedAtMs(Date.now());
         setWarnings([]);
       }
@@ -154,6 +168,29 @@ export function useJavaRuntimes(): JavaRuntimesState {
     };
   }, [reload]);
 
+  // 订阅安装进度：后端复用 download.task.changed.v1 推进度，taskId 形如
+  // runtime-install-<runtimeId>。此前没有任何组件订阅这个通道，所以下载
+  // 过程中界面一片空白；终态时刷新列表，让新装的运行时立刻出现。
+  useEffect(() => {
+    const unsubscribe = subscribeRuntimeInstallProgress((progress) => {
+      if (cancelledRef.current) return;
+      setInstallProgress(progress);
+      if (progress.phase === 'completed') {
+        void reload(false);
+        // 「安装完成」留 4 秒让用户看见，然后回到常态，避免进度条一直挂着。
+        window.setTimeout(() => {
+          if (!cancelledRef.current) setInstallProgress(null);
+        }, 4000);
+      } else if (progress.phase === 'failed') {
+        // 失败态保留在界面上，让用户能看到错误码并决定是否重试。
+        void reload(false);
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [reload]);
+
   return {
     runtimes,
     selectedRuntimeId,
@@ -163,5 +200,6 @@ export function useJavaRuntimes(): JavaRuntimesState {
     warnings,
     reload,
     selectRuntime,
+    installProgress,
   };
 }

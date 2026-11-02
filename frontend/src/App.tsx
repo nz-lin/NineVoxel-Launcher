@@ -510,6 +510,7 @@ export default function App() {
         javaPath={settings.javaPath}
         onChooseJavaPath={handleChooseJavaPath}
         onClearJavaPath={handleClearJavaPath}
+        installProgress={javaRuntimesState.installProgress}
       />
 
       <DownloadsDrawer

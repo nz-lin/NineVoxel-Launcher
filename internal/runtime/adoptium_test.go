@@ -164,7 +164,7 @@ func (s *adoptiumTestServer) roundTrip(req *http.Request) (*http.Response, error
 			}
 		}
 		return adoptiumTestResponse(req, http.StatusOK, nil), nil
-	case adoptiumOfficialHost, adoptiumMirrorHost, adoptiumRedirectHost:
+	case adoptiumOfficialHost, adoptiumMirrorHost, adoptiumRedirectHost, adoptiumReleaseAssetsHost:
 		s.archiveCalls++
 		if s.archiveError != nil {
 			return nil, s.archiveError
@@ -406,6 +406,43 @@ func TestFetchAdoptiumReleaseRejectsRedirectOutsideWhitelist(t *testing.T) {
 	requireCode(t, appErr, ErrorCodeRuntimeSource)
 	if appErr.Retryable {
 		t.Error("白名单外重定向不应标记为可重试")
+	}
+}
+
+// TestCheckAdoptiumRedirectHostAllowlist 锁定归档与重定向允许的 host 集合。
+//
+// 回归目标：GitHub 在 2024 年之后把 Release 资产从 objects.githubusercontent.com
+// 迁到 release-assets.githubusercontent.com。只认旧域名时，API 查询完全正常
+// （能列出可用版本），但一点下载就在重定向处被拒——症状是 RUNTIME_SOURCE_001，
+// 很容易被误判成网络问题。这个用例把「当前真实域名」钉在白名单里。
+func TestCheckAdoptiumRedirectHostAllowlist(t *testing.T) {
+	cases := []struct {
+		name    string
+		target  string
+		allowed bool
+	}{
+		{"GitHub 资产新域名", "https://" + adoptiumReleaseAssetsHost + "/adoptium/x.zip", true},
+		{"GitHub 资产旧域名", "https://" + adoptiumRedirectHost + "/adoptium/x.zip", true},
+		{"GitHub Release 源", "https://" + adoptiumOfficialHost + "/adoptium/x.zip", true},
+		{"清华镜像", "https://" + adoptiumMirrorHost + "/Adoptium/x.zip", true},
+		{"白名单外", "https://example.com/x.zip", false},
+		{"非 https", "http://" + adoptiumReleaseAssetsHost + "/x.zip", false},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodGet, testCase.target, nil)
+			if err != nil {
+				t.Fatalf("构造请求失败: %v", err)
+			}
+			redirectErr := checkAdoptiumRedirect(request, nil)
+			if testCase.allowed && redirectErr != nil {
+				t.Fatalf("目标 %s 应被接受，实际拒绝: %v", testCase.target, redirectErr)
+			}
+			if !testCase.allowed && redirectErr == nil {
+				t.Fatalf("目标 %s 应被拒绝，实际接受", testCase.target)
+			}
+		})
 	}
 }
 
