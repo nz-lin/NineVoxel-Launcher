@@ -33,8 +33,8 @@ import {
 import { MOCK_MODS, MOCK_SHADERS, MOCK_RESOURCEPACKS } from '../data/mockData';
 
 interface InstanceDetailModalProps {
-  instance: Instance | null;
-  isOpen: boolean;
+  /** 当前要管理的实例；组件只在实例存在时挂载，因此这里是必填。 */
+  instance: Instance;
   onClose: () => void;
   onUpdateInstance: (updated: Instance) => void;
   onOpenFolder: (path: string) => void;
@@ -43,14 +43,11 @@ interface InstanceDetailModalProps {
 
 export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   instance,
-  isOpen,
   onClose,
   onUpdateInstance,
   onOpenFolder,
   javaRuntimes
 }) => {
-  if (!isOpen || !instance) return null;
-
   const [activeTab, setActiveTab] = useState<'loaders' | 'mods' | 'shaders' | 'resourcepacks' | 'saves' | 'settings'>('loaders');
 
   // Instance State

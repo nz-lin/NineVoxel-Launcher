@@ -4,18 +4,14 @@ import { Instance, LoaderType } from '../types/launcher';
 import { MC_VERSIONS_LIST } from '../data/mockData';
 
 interface CreateInstanceModalProps {
-  isOpen: boolean;
   onClose: () => void;
   onCreate: (newInstance: Instance) => void;
 }
 
 export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
-  isOpen,
   onClose,
   onCreate
 }) => {
-  if (!isOpen) return null;
-
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState('我的全新世界');
   const [icon, setIcon] = useState('💎');

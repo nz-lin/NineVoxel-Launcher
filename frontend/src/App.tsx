@@ -406,20 +406,26 @@ export default function App() {
       </div>
 
       {/* Modals & Slide-over Drawers */}
-      <CreateInstanceModal
-        isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onCreate={handleCreateInstance}
-      />
+      {/* 弹窗按需挂载：关闭即卸载，避免 hooks 调用数量变化导致白屏，
+          同时保证每次打开都用当前实例重新初始化状态（不串数据）。 */}
+      {createModalOpen && (
+        <CreateInstanceModal
+          onClose={() => setCreateModalOpen(false)}
+          onCreate={handleCreateInstance}
+        />
+      )}
 
-      <InstanceDetailModal
-        instance={detailInstance}
-        isOpen={Boolean(detailInstance)}
-        onClose={() => setDetailInstance(null)}
-        onUpdateInstance={handleUpdateInstance}
-        onOpenFolder={handleOpenFolder}
-        javaRuntimes={javaRuntimes}
-      />
+      {detailInstance && (
+        <InstanceDetailModal
+          // key 保证切换到另一个实例时组件重新挂载，state 不会沿用上一个实例。
+          key={detailInstance.id}
+          instance={detailInstance}
+          onClose={() => setDetailInstance(null)}
+          onUpdateInstance={handleUpdateInstance}
+          onOpenFolder={handleOpenFolder}
+          javaRuntimes={javaRuntimes}
+        />
+      )}
 
       <AccountManagerModal
         isOpen={accountModalOpen}
