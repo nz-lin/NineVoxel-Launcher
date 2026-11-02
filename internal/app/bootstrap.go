@@ -117,6 +117,18 @@ func RegisterDownloadService(in Bootstrap) Bootstrap {
 //
 // 参数 in 为 package main 构造的装配输入；返回值为追加运行时服务后的副本。
 func RegisterRuntimeService(in Bootstrap) Bootstrap {
+	// 用户显式指定的 Java 路径：注入给运行时探测，作为**唯一**候选来源。
+	//
+	// 注入必须早于服务注册：探测在第一次调用 DetectRuntimes 时读取它。
+	// 空串表示「未指定」——此时启动器不探测本机任何 Java（不读 JAVA_HOME、
+	// 不扫 PATH、不遍历常见安装根），只使用自己下载安装的运行时。
+	//
+	// 与 D-57 的镜像开关同一模式：读的是设置服务的内存快照，不做磁盘 IO，
+	// 因此用户改完设置后下一次探测就能看到新值。
+	runtime.SetPreferredJavaPathProvider(func() string {
+		return settings.StringSetting(settings.KeyLaunchJavaPath, "")
+	})
+
 	// 追加而不是替换：AppService、LogService、SettingsService、LaunchService、
 	// VersionService、DownloadService 的注册顺序保持不变
 	// （Wails 按注册顺序调用 ServiceStartup）。
@@ -222,6 +234,14 @@ func RegisterStartupEvents(wailsApp *application.App, onReady func()) {
 	// P2-06：把事件发射器绑定给启动管理器，使状态变更能推送到前端。
 	// 使用 launch 包自己的发射器：生命周期的关联 ID 语义与日志/设置各自独立。
 	launch.BindSupervisorEmitter(launch.NewSupervisorEmitter(wailsApp))
+
+	// 设置服务的发射器：`settings.changed.v1` 必须绑定应用实例才能推送。
+	//
+	// 这一行此前遗漏，表现为每次保存设置都在日志里打印
+	// 「发射器尚未绑定应用实例，事件 "settings.changed.v1" 未发送」：
+	// 落盘本身是成功的，只是变更通知送不到前端，界面要靠保存后的手动
+	// refreshSnapshot 兜底，事件通道形同虚设。
+	settings.BindEmitterToApp(wailsApp)
 
 	// P2-06：注册应用退出钩子，确保关闭应用时不会留下孤儿游戏进程。
 	//
