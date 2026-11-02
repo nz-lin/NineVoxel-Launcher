@@ -29,11 +29,9 @@ import {
  *
  * 这些字段属于实例能力（P5-A）或尚未进入阶段的模块。列出来是为了让界面
  * 可以如实提示「此项仅本次运行有效」，而不是让用户以为已经存进设置库。
- * （会真正持久化的只有 `theme` 与 `downloadSource` 两项。）
+ * （会真正持久化的只有 `theme`、`downloadSource`、`javaPath` 与 `maxMemoryMb` 四项。）
  */
 const LOCAL_ONLY_FIELDS = [
-  'javaPath',
-  'maxMemoryMb',
   'minMemoryMb',
   'autoDownloadJava',
   'instancesDirectory',
@@ -79,6 +77,13 @@ function mergeSnapshot(base: LauncherSettings, snapshot: SettingsSnapshot): Laun
     // 实际呈现的主题，避免界面显示与实际观感不一致。
     theme: resolveTheme(snapshot.theme),
     downloadSource: snapshot.downloadMirrorEnabled ? 'bmclapi' : 'official',
+    // 后端存的是绝对路径；空串表示「未指定」，此时启动器只用自己安装的运行时。
+    javaPath: snapshot.launchJavaPath,
+    // 兜底：快照字段在「旧后端二进制 + 新前端」或 HMR 混合状态下可能缺失，
+    // 非有限值会一路传到界面显示成 `NaN MB`。这里统一回落到默认值。
+    maxMemoryMb: Number.isFinite(snapshot.launchMaxMemoryMb)
+      ? snapshot.launchMaxMemoryMb
+      : INITIAL_SETTINGS.maxMemoryMb,
   };
 }
 
@@ -127,7 +132,12 @@ export function useLauncherSettings(options: UseLauncherSettingsOptions = {}): L
   const [loaded, setLoaded] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   // 记录最后一次写入成功的值，用于判断是否需要再次写盘，避免无意义的重复更新。
-  const persistedRef = useRef<{ theme: string; mirror: boolean } | null>(null);
+  const persistedRef = useRef<{
+    theme: string;
+    mirror: boolean;
+    javaPath: string;
+    maxMemoryMb: number;
+  } | null>(null);
   // 串行化写入：设置项连续变化时按顺序落盘，避免后发先至覆盖。
   const writeChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -144,6 +154,8 @@ export function useLauncherSettings(options: UseLauncherSettingsOptions = {}): L
         persistedRef.current = {
           theme: snapshot.theme,
           mirror: snapshot.downloadMirrorEnabled,
+          javaPath: snapshot.launchJavaPath,
+          maxMemoryMb: snapshot.launchMaxMemoryMb,
         };
       } catch {
         // 读取失败时保留初始值，界面不提示「已保存」；错误由调用方的
@@ -185,6 +197,21 @@ export function useLauncherSettings(options: UseLauncherSettingsOptions = {}): L
       });
     }
 
+    // Java 路径：空串是合法值（表示「只用启动器自己安装的运行时」），
+    // 因此按原值比较，不把空串当成「未变化」而跳过写入。
+    if (previous === null || previous.javaPath !== next.javaPath) {
+      tasks.push(async () => {
+        await updateSingleSetting(SETTINGS_KEY.launchJavaPath, next.javaPath);
+      });
+    }
+
+    // 默认分配内存：存储层只校验闭区间，真实上限由界面按物理内存约束。
+    if (previous === null || previous.maxMemoryMb !== next.maxMemoryMb) {
+      tasks.push(async () => {
+        await updateSingleSetting(SETTINGS_KEY.launchMaxMemoryMb, next.maxMemoryMb);
+      });
+    }
+
     if (tasks.length === 0) {
       return;
     }
@@ -196,7 +223,12 @@ export function useLauncherSettings(options: UseLauncherSettingsOptions = {}): L
         for (const task of tasks) {
           await task();
         }
-        persistedRef.current = { theme: next.theme, mirror: wantsMirror };
+        persistedRef.current = {
+          theme: next.theme,
+          mirror: wantsMirror,
+          javaPath: next.javaPath,
+          maxMemoryMb: next.maxMemoryMb,
+        };
         // 写入确实成功才打时间戳；界面据此提示「已自动保存」，
         // 失败时不会走到这里（异常被下面的 catch 接住）。
         setLastSavedAt(Date.now());
@@ -221,11 +253,6 @@ export function useLauncherSettings(options: UseLauncherSettingsOptions = {}): L
   const updateSettings = useCallback(
     (next: LauncherSettings) => {
       setSettings(next);
-      if (next.downloadSource === 'modrinth') {
-        // 后端没有 Modrinth 源的对应设置项（属 P5/P6 内容生态），如实拒绝而不是静默丢弃。
-        setSaveError('Modrinth 下载源尚未接入，该项未保存');
-        return;
-      }
       persistChanges(next);
     },
     [persistChanges],

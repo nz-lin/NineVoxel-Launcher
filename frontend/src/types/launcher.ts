@@ -159,7 +159,7 @@ export interface CrashDiagnosis {
 }
 
 export interface LauncherSettings {
-  downloadSource: 'official' | 'bmclapi' | 'modrinth';
+  downloadSource: 'official' | 'bmclapi';
   javaPath: string;
   maxMemoryMb: number;
   minMemoryMb: number;

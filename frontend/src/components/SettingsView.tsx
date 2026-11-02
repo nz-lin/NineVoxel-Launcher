@@ -17,6 +17,58 @@ import {
 } from 'lucide-react';
 import { LauncherSettings, JavaRuntime } from '../types/launcher';
 
+/** 全局默认最大分配内存的下限（MB）：低于 2 GB 的堆无法启动现代 Minecraft。 */
+const MIN_MEMORY_MB = 2048;
+
+/** 物理内存探测失败时的回退上限（MB）：保守值，避免在未知机器上鼓励过度分配。 */
+const FALLBACK_MAX_MEMORY_MB = 8192;
+
+/**
+ * 把物理内存总量换算成滑块上限。
+ *
+ * @param physicalMb 后端探测到的物理内存（MiB）；0 或负数表示未知
+ * @returns 向下取整到整 GB 的上限，且不低于下限
+ *
+ * 向下取整而不是向上：上限一旦超过物理内存，滑块最右端就是「一定触发换页」的位置，
+ * 用户拖到头反而得到最差的结果。硬件保留也会让报告值比标称容量略小
+ * （例如 32 GB 机器报告 31.9 GB），取整正好抹平这点差异。
+ */
+function resolveMemoryCeilingMb(physicalMb?: number): number {
+  if (!physicalMb || physicalMb <= 0) {
+    return FALLBACK_MAX_MEMORY_MB;
+  }
+  const wholeGb = Math.floor(physicalMb / 1024) * 1024;
+  return Math.max(MIN_MEMORY_MB, wholeGb);
+}
+
+/**
+ * 按上限生成刻度：取 25% / 50% / 75% / 100% 四个点，并对齐到整 GB。
+ *
+ * 标签位置由 `mb` 换算成百分比定位，**不能**用 justify-between 均分：
+ * 均分会把 8 GB 画到 33% 处，而它在滑块上的真实位置只有约 20%，
+ * 导致「滑块停在 8G 上、标签却指向别处」。
+ *
+ * @param maxMb 滑块上限
+ * @returns 递增的刻度列表，含下限点
+ */
+function buildMemoryTicks(maxMb: number): Array<{ mb: number; label: string }> {
+  // 兜底：上限必须是有限正数，否则下面的取整会算出 NaN，标签直接显示「NaN GB」。
+  const safeMax = Number.isFinite(maxMb) && maxMb > 0 ? maxMb : FALLBACK_MAX_MEMORY_MB;
+  // 对齐到 4 GB：1 GB 粒度会在大内存机器上产出「95 GB」这类不圆整的标签，
+  // 4 GB 对 8 GB 机器仍够细（25% 恰好是 2 GB），对大机器则整得好看。
+  const granularity = 4 * 1024;
+  const ratios = [0.25, 0.5, 0.75, 1];
+  const points = ratios.map((ratio) => Math.round((safeMax * ratio) / granularity) * granularity);
+  // 去重并夹在 [下限, 上限] 内：小内存机器上 25% 可能低于下限。
+  const unique = Array.from(new Set([MIN_MEMORY_MB, ...points]))
+    .map((mb) => Math.min(Math.max(mb, MIN_MEMORY_MB), safeMax))
+    .sort((left, right) => left - right);
+  return unique.map((mb) => ({
+    mb,
+    label: mb % 1024 === 0 ? `${mb / 1024} GB` : `${(mb / 1024).toFixed(1)} GB`,
+  }));
+}
+
 interface SettingsViewProps {
   settings: LauncherSettings;
   onUpdateSettings: (newSettings: LauncherSettings) => void;
@@ -29,6 +81,12 @@ interface SettingsViewProps {
   javaRuntimes: JavaRuntime[];
   onOpenJavaManager: () => void;
   onOpenFolder: (path: string) => void;
+  /**
+   * 本机物理内存总量（MiB），来自 `AppService.Snapshot()` 的真实探测。
+   *
+   * 0 或未提供表示未知：滑块回退到保守上限，界面不得假装知道机器有多大。
+   */
+  totalMemoryMb?: number;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -39,10 +97,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   lastSavedAt = null,
   javaRuntimes,
   onOpenJavaManager,
-  onOpenFolder
+  onOpenFolder,
+  totalMemoryMb
 }) => {
   const [localSettings, setLocalSettings] = useState<LauncherSettings>(settings);
   const [savedBadge, setSavedBadge] = useState(false);
+
+  // 滑块上限与刻度按真实物理内存计算，不再写死一个数字。
+  const memoryCeilingMb = resolveMemoryCeilingMb(totalMemoryMb);
+  const memoryTicks = buildMemoryTicks(memoryCeilingMb);
+  // 已存的值可能超出当前上限（换了机器，或之前设得更大）：显示时夹紧，
+  // 否则滑块 thumb 会跑到轨道外面。
+  // 兜底：上游任何一环给出非有限值（旧快照、脏数据、HMR 混合状态）时，
+  // 回落默认值，绝不让 NaN 泄漏到界面。
+  const storedMemoryMb = Number.isFinite(localSettings.maxMemoryMb)
+    ? localSettings.maxMemoryMb
+    : FALLBACK_MAX_MEMORY_MB;
+  const memoryValueMb = Math.min(Math.max(storedMemoryMb, MIN_MEMORY_MB), memoryCeilingMb);
 
   // 后端的真实回显会覆盖本地草稿：例如首次读取到设置库后，主题与下载线路
   // 应当以库里的值为准，而不是停留在初始默认值。
@@ -174,7 +245,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div>
                 <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">Java Runtime 独立隔离环境</h2>
                 <p className="text-[11px] text-slate-500 dark:text-neutral-400">
-                  本地存储根目录: <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">Ninevoxel/javaruntime/</code> (分 Java 8 / 17 / 21 / 25 存放)
+                  本地存储根目录: <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">Ninevoxel/javaruntime/</code>
                 </p>
               </div>
             </div>
@@ -212,7 +283,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-500 dark:text-neutral-500 font-mono mt-0.5 truncate max-w-[240px]">
-                    {j.folderPath ?? (j.isDownloadedByLauncher ? '由启动器安装' : '本机已安装')}
+                    {j.folderPath ?? (j.isDownloadedByLauncher ? '由启动器安装' : '手动指定')}
                   </div>
                 </div>
                 <span
@@ -280,7 +351,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <Cpu className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">默认内存分配与 JVM 垃圾回收优化</h2>
-              <p className="text-[11px] text-slate-500 dark:text-neutral-400">本机物理内存总计: 32768 MB (32 GB)</p>
+              <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                {totalMemoryMb && totalMemoryMb > 0
+                  ? `本机物理内存总计: ${totalMemoryMb} MB (${(totalMemoryMb / 1024).toFixed(1)} GB)`
+                  : '本机物理内存: 未知（按 8 GB 保守上限显示）'}
+              </p>
             </div>
           </div>
 
@@ -288,25 +363,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-700 dark:text-neutral-300 font-semibold">全局默认最大分配内存</span>
               <span className="font-mono text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                {localSettings.maxMemoryMb} MB ({(localSettings.maxMemoryMb / 1024).toFixed(1)} GB)
+                {memoryValueMb} MB ({(memoryValueMb / 1024).toFixed(1)} GB)
               </span>
             </div>
 
+            {/* 拖动过程中只更新本地草稿：range 每移动一格都会触发 onChange，
+                若每格都写设置库，拖一次会产生几十次写入。松手或键盘抬起时才落盘。 */}
             <input
               type="range"
-              min="2048"
-              max="16384"
+              min={MIN_MEMORY_MB}
+              max={memoryCeilingMb}
               step="512"
-              value={localSettings.maxMemoryMb}
-              onChange={(e) => handleSave({ ...localSettings, maxMemoryMb: Number(e.target.value) })}
+              value={memoryValueMb}
+              onChange={(e) => setLocalSettings({ ...localSettings, maxMemoryMb: Number(e.target.value) })}
+              onPointerUp={(e) =>
+                handleSave({ ...localSettings, maxMemoryMb: Number(e.currentTarget.value) })
+              }
+              onKeyUp={(e) =>
+                handleSave({ ...localSettings, maxMemoryMb: Number(e.currentTarget.value) })
+              }
               className="w-full accent-emerald-500 cursor-pointer"
             />
 
-            <div className="flex justify-between text-[10px] text-slate-400 dark:text-neutral-500 font-mono">
-              <span>2048 MB (纯净单机)</span>
-              <span>4096 MB (轻量模组)</span>
-              <span>8192 MB (推荐科技/魔法包)</span>
-              <span>16384 MB (大型整合包)</span>
+            {/* 刻度按真实数值比例定位；首尾贴边，避免文字被容器裁掉。 */}
+            <div className="relative h-4">
+              {memoryTicks.map((tick, index) => {
+                const ratio = (tick.mb - MIN_MEMORY_MB) / (memoryCeilingMb - MIN_MEMORY_MB);
+                const shift =
+                  index === 0
+                    ? 'translateX(0)'
+                    : index === memoryTicks.length - 1
+                      ? 'translateX(-100%)'
+                      : 'translateX(-50%)';
+                return (
+                  <span
+                    key={tick.mb}
+                    className="absolute top-0 text-[10px] text-slate-400 dark:text-neutral-500 font-mono whitespace-nowrap"
+                    style={{ left: `${ratio * 100}%`, transform: shift }}
+                  >
+                    {tick.label}
+                  </span>
+                );
+              })}
             </div>
           </div>
 
@@ -349,11 +447,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {[
               { id: 'bmclapi' as const, name: 'BMCLAPI 智能镜像', speed: '5-15 ms', desc: '中国大陆多线 BGP 节点 (推荐)' },
-              { id: 'official' as const, name: 'Mojang 官方官方源', speed: '120-180 ms', desc: '官方全量资源库，海外直连' },
-              { id: 'modrinth' as const, name: 'Modrinth 全球加速', speed: '40-80 ms', desc: 'Modrinth 模组资源官方专线' },
+              { id: 'official' as const, name: 'Mojang 官方源', speed: '120-180 ms', desc: '官方全量资源库，海外直连' },
             ].map((src) => (
               <div
                 key={src.id}

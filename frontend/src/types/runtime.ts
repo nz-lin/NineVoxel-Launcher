@@ -24,7 +24,7 @@ export type RuntimeArch = 'x86' | 'x64' | 'aarch64' | 'unknown'
 /** 位宽标识；空字符串表示无法确认。 */
 export type RuntimeBitness = '32' | '64' | ''
 
-/** 运行时来源：本机探测或后续下载安装。 */
+/** 运行时来源：用户显式指定的路径，或启动器下载安装。 */
 export type RuntimeSource = 'local' | 'downloaded'
 
 /** 需求来源：版本元数据声明，或无法确认。 */

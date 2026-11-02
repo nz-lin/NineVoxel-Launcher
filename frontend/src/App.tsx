@@ -36,6 +36,8 @@ import { useJavaRuntimes } from './hooks/useJavaRuntimes';
 import { useDownloadTasks } from './hooks/useDownloadTasks';
 import { useAccounts } from './hooks/useAccounts';
 import { runtimeService } from './services/runtime';
+import { pickJavaExecutable, validateJavaPath } from './services/launch';
+import { SETTINGS_KEY, updateSingleSetting } from './services/settings';
 
 /** 未登录时的展示占位：只用于顶栏/侧栏文案，不参与任何启动逻辑。 */
 const GUEST_ACCOUNT: Account = {
@@ -127,6 +129,67 @@ export default function App() {
     setTimeout(() => {
       setToastMessage((prev) => (prev === msg ? null : prev));
     }, 2800);
+  };
+
+  /**
+   * 让用户手动指定外部 Java 可执行文件。
+   *
+   * 外部 Java 不会被自动发现（不读 JAVA_HOME、不扫 PATH、不遍历安装根），
+   * 这是唯一入口：选择 → 后端三层校验 → 写入设置 → 重新探测。
+   *
+   * 用户取消对话框属正常路径，静默保持原值，不弹错误。
+   */
+  const handleChooseJavaPath = async (): Promise<{ ok: boolean; message: string }> => {
+    let picked;
+    try {
+      picked = await pickJavaExecutable();
+    } catch (cause) {
+      return {
+        ok: false,
+        message: `无法打开文件选择器：${cause instanceof Error ? cause.message : String(cause)}`,
+      };
+    }
+
+    if (picked.canceled) {
+      return { ok: true, message: '已取消选择，保持原有设置。' };
+    }
+    if (picked.errorCode) {
+      return { ok: false, message: picked.errorMessage || `文件选择器不可用（${picked.errorCode}）` };
+    }
+    if (!picked.javaPath) {
+      return { ok: false, message: '未取得 Java 路径，请重试。' };
+    }
+
+    // 校验全部在后端完成：存在性 → 可执行性 → java -version。前端不重复判定。
+    const validation = await validateJavaPath(picked.javaPath);
+    if (!validation.valid) {
+      return {
+        ok: false,
+        message: validation.errorMessage || '该路径未通过 Java 校验，请确认它指向 java 可执行文件。',
+      };
+    }
+
+    try {
+      await updateSingleSetting(SETTINGS_KEY.launchJavaPath, picked.javaPath);
+    } catch (cause) {
+      return {
+        ok: false,
+        message: `写入设置失败：${cause instanceof Error ? cause.message : String(cause)}`,
+      };
+    }
+
+    await javaRuntimesState.reload(true);
+    const label =
+      validation.majorVersion > 0
+        ? `Java ${validation.majorVersion}`
+        : validation.javaDisplay || picked.javaDisplay;
+    return { ok: true, message: `已指定 ${label}：${picked.javaDisplay || picked.javaPath}` };
+  };
+
+  /** 清除手动指定的 Java 路径，回到「只用启动器安装的运行时」。 */
+  const handleClearJavaPath = async (): Promise<void> => {
+    await updateSingleSetting(SETTINGS_KEY.launchJavaPath, '');
+    await javaRuntimesState.reload(true);
   };
 
   const handleToggleTheme = () => {
@@ -400,6 +463,7 @@ export default function App() {
               javaRuntimes={javaRuntimes}
               onOpenJavaManager={() => setJavaManagerOpen(true)}
               onOpenFolder={handleOpenFolder}
+              totalMemoryMb={appRuntime.appInfo?.totalMemoryMb}
             />
           )}
         </main>
@@ -443,6 +507,9 @@ export default function App() {
         selectedRuntimeId={javaRuntimesState.selectedRuntimeId}
         onSelectRuntime={javaRuntimesState.selectRuntime}
         onReload={() => javaRuntimesState.reload(true)}
+        javaPath={settings.javaPath}
+        onChooseJavaPath={handleChooseJavaPath}
+        onClearJavaPath={handleClearJavaPath}
       />
 
       <DownloadsDrawer

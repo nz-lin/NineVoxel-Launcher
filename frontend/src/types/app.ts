@@ -77,4 +77,12 @@ export interface AppInfo {
 
   /** 数据目录可用状态，用于诊断数据目录是否可读写。 */
   dataDirectoryStatus: string
+
+  /**
+   * 本机物理内存总量（MiB）；0 表示探测失败或平台不支持。
+   *
+   * 界面用它计算「全局默认最大分配内存」的滑块上限与刻度，而不是写死一个数字。
+   * 0 必须按「未知」处理并回退到保守默认值，不得当成「物理内存为 0」。
+   */
+  totalMemoryMb: number
 }

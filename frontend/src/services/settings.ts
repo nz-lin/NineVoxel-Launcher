@@ -36,6 +36,20 @@ export const SETTINGS_KEY = {
    * Mojang 官方 Java 运行时组件不读该开关（D-50）。
    */
   downloadMirrorEnabled: 'download.mirrorEnabled',
+  /**
+   * 用户显式指定的 Java 可执行文件路径。
+   *
+   * 空串表示未指定：此时启动器只使用自己下载安装的运行时，不探测本机任何 Java
+   * （不读 JAVA_HOME、不扫 PATH、不遍历常见安装根）。
+   */
+  launchJavaPath: 'launch.javaPath',
+  /**
+   * 全局默认最大分配内存（MiB）。
+   *
+   * 存储层只保证闭区间；真实可用上限由界面按本机物理内存动态计算，
+   * 因此回显值可能大于当前机器容量（换机器后读到旧值）。
+   */
+  launchMaxMemoryMb: 'launch.maxMemoryMb',
 } as const
 
 /** 设置项 key 的联合类型。 */
@@ -76,6 +90,14 @@ export interface SettingsSnapshot {
    * 否则用户会看到「保存成功但永远是关闭」，而下载实际上已走镜像。
    */
   downloadMirrorEnabled: boolean
+  /**
+   * 用户显式指定的 Java 可执行文件路径（`launch.javaPath`）。
+   *
+   * 空串表示未指定：启动器只使用自己下载安装的运行时，不探测本机任何 Java。
+   */
+  launchJavaPath: string
+  /** 全局默认最大分配内存（MiB）。 */
+  launchMaxMemoryMb: number
   /** 最近一次写入时间（UTC Unix 毫秒）；从未写入为 0。 */
   updatedAtMs: number
   /** 是否处于持久化模式。 */
@@ -98,6 +120,20 @@ export const WINDOW_LIMITS = {
   minHeight: 600,
   /** window.height 的上限。 */
   maxHeight: 4320,
+} as const
+
+/**
+ * 全局默认最大分配内存的存储层范围（MiB）。
+ *
+ * 与 Go 侧 `MinLaunchMemoryMb` / `MaxLaunchMemoryMb` 保持一致：
+ * 下限是 Minecraft 能启动的门槛，上限只用于挡住垃圾输入。
+ * 真实可用上限由界面按本机物理内存计算，不在这里。
+ */
+export const MEMORY_LIMITS = {
+  /** launch.maxMemoryMb 的下限。 */
+  minMemoryMb: 2048,
+  /** launch.maxMemoryMb 的上限（1 TiB）。 */
+  maxMemoryMb: 1024 * 1024,
 } as const
 
 /** 主题允许值。 */
@@ -149,6 +185,18 @@ function normalizeSnapshot(raw: SnapshotDTO): SettingsSnapshot {
     windowMaximized: typeof raw.windowMaximized === 'boolean' ? raw.windowMaximized : false,
     updateChannel: isUpdateChannelValue(raw.updateChannel) ? raw.updateChannel : 'stable',
     downloadMirrorEnabled: mirrorEnabled,
+    // 路径型字段缺失时回退空串：空串本身就是「未指定」的合法语义，
+    // 与 downloadMirrorEnabled 不同，这里不需要把缺字段当成契约破坏。
+    launchJavaPath:
+      typeof rawRecord['launchJavaPath'] === 'string' ? (rawRecord['launchJavaPath'] as string) : '',
+    launchMaxMemoryMb: normalizeDimension(
+      typeof rawRecord['launchMaxMemoryMb'] === 'number'
+        ? (rawRecord['launchMaxMemoryMb'] as number)
+        : Number.NaN,
+      MEMORY_LIMITS.minMemoryMb,
+      MEMORY_LIMITS.maxMemoryMb,
+      8192
+    ),
     updatedAtMs: typeof raw.updatedAtMs === 'number' && raw.updatedAtMs > 0 ? raw.updatedAtMs : 0,
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : false,
     storageKind: typeof raw.storageKind === 'string' ? raw.storageKind : 'memory',

@@ -491,7 +491,9 @@ export const MOCK_RESOURCEPACKS: ResourcePackItem[] = [
 
 export const INITIAL_SETTINGS: LauncherSettings = {
   downloadSource: 'bmclapi',
-  javaPath: 'Ninevoxel/javaruntime/java-21/bin/java',
+  // 空串表示「未指定外部 Java」：启动器只用自己下载安装的运行时。
+  // 这里不能放假路径——探测路径来自设置快照，假路径会显示成一个不存在的 Java。
+  javaPath: '',
   maxMemoryMb: 8192,
   minMemoryMb: 2048,
   autoDownloadJava: true,

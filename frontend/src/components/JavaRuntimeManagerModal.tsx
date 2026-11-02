@@ -26,8 +26,14 @@ interface JavaRuntimeManagerModalProps {
   selectedRuntimeId?: string;
   /** 选择某个运行时；不传则渲染为只读列表。 */
   onSelectRuntime?: (runtimeId: string) => void;
-  /** 重新探测本机 Java；不传则「环境测试」按钮不可用。 */
+  /** 重新探测设置中指定的 Java 路径；不传则「环境测试」按钮不可用。 */
   onReload?: () => Promise<void>;
+  /** 当前已指定的外部 Java 路径；空串表示未指定（只用启动器安装的运行时）。 */
+  javaPath?: string;
+  /** 让用户选择并校验一个 Java 可执行文件；返回是否成功与提示文案。 */
+  onChooseJavaPath?: () => Promise<{ ok: boolean; message: string }>;
+  /** 清除已指定的路径，回到「只用启动器安装的运行时」。 */
+  onClearJavaPath?: () => Promise<void>;
 }
 
 export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = ({
@@ -39,7 +45,10 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
   onOpenFolder,
   selectedRuntimeId,
   onSelectRuntime,
-  onReload
+  onReload,
+  javaPath,
+  onChooseJavaPath,
+  onClearJavaPath
 }) => {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; msg: string } | null>(null);
@@ -48,15 +57,19 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
   const [selectedVendor, setSelectedVendor] = useState('Eclipse Temurin (Adoptium)');
   // 许可必须由用户显式勾选：后端在 acceptLicense 为 false 时直接拒绝安装。
   const [licenseAccepted, setLicenseAccepted] = useState(false);
+  // 手动指定 Java 的交互结果：成功与失败都回显，不做静默处理。
+  const [javaPathMessage, setJavaPathMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [choosingPath, setChoosingPath] = useState(false);
 
-  const majorVersions: { version: 8 | 17 | 21 | 25; mcMatch: string; desc: string }[] = [
-    { version: 21, mcMatch: 'MC 1.20.5 ~ 1.21.4+', desc: '现代 Minecraft 正式版强制要求，提供最先进的 ZGC 垃圾回收' },
-    { version: 17, mcMatch: 'MC 1.17 ~ 1.20.4', desc: '过渡期主流版本必备运行时，兼顾稳定与模组生态' },
-    { version: 8, mcMatch: 'MC 1.7.10 ~ 1.16.5', desc: '怀旧黄金时代模组包（如 1.7.10/1.12.2）唯一兼容环境' },
-    { version: 25, mcMatch: '未来快照 / 实验分支', desc: 'Java 25 Early Access，探索前沿高性能 JIT 编译' }
+  // 只保留大版本号：MC 版本对应关系与文案说明不在这个列表里展示。
+  const majorVersions: { version: 8 | 17 | 21 | 25 }[] = [
+    { version: 21 },
+    { version: 17 },
+    { version: 8 },
+    { version: 25 }
   ];
 
-  // 本机真实装的可能不在这四档里（例如 Java 11、16），必须另起一组单独展示，
+  // 手动指定的可能不在这四档里（例如 Java 11、16），必须另起一组单独展示，
   // 否则探测到了却看不见。
   const extraRuntimes = runtimes.filter(
     (r) => !majorVersions.some((item) => item.version === r.majorVersion)
@@ -79,6 +92,33 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
       setTestResult({ id: runtime.id, success: false, msg: `重新探测失败：${message}` });
     } finally {
       setTestingId(null);
+    }
+  };
+
+  const handleChooseJavaPath = async () => {
+    if (!onChooseJavaPath) return;
+    setChoosingPath(true);
+    setJavaPathMessage(null);
+    try {
+      const result = await onChooseJavaPath();
+      setJavaPathMessage({ ok: result.ok, text: result.message });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setJavaPathMessage({ ok: false, text: `选择 Java 失败：${message}` });
+    } finally {
+      setChoosingPath(false);
+    }
+  };
+
+  const handleClearJavaPath = async () => {
+    if (!onClearJavaPath) return;
+    setJavaPathMessage(null);
+    try {
+      await onClearJavaPath();
+      setJavaPathMessage({ ok: true, text: '已清除指定路径，只使用启动器安装的运行时。' });
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setJavaPathMessage({ ok: false, text: `清除失败：${message}` });
     }
   };
 
@@ -106,7 +146,7 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">Java Runtime 独立管理中心</h2>
               <p className="text-[11px] text-slate-500 dark:text-neutral-400">
-                本机已安装的 Java 只记录位置、不复制文件；由启动器下载的运行时放在数据根下的 <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">runtimes/</code>
+                外部 Java 需在设置里显式指定路径后才会出现在这里，只记录位置、不复制文件；由启动器下载的运行时放在数据根下的 <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">runtimes/</code>
               </p>
             </div>
           </div>
@@ -129,18 +169,59 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
         </div>
 
         {/* Action strip */}
-        <div className="px-6 py-3 border-b border-slate-200 dark:border-neutral-800/80 bg-slate-100/70 dark:bg-neutral-950/40 flex items-center justify-between text-xs">
-          <span className="text-slate-600 dark:text-neutral-400">
-            启动器会自动根据游戏实例选择对应大版本的 <code className="text-slate-900 dark:text-neutral-200 font-bold">bin/java</code>
-          </span>
+        <div className="px-6 py-3 border-b border-slate-200 dark:border-neutral-800/80 bg-slate-100/70 dark:bg-neutral-950/40 space-y-2.5 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-slate-600 dark:text-neutral-400">
+              启动器会自动根据游戏实例选择对应大版本的 <code className="text-slate-900 dark:text-neutral-200 font-bold">bin/java</code>
+            </span>
 
-          <button
-            onClick={() => setDownloadModalOpen(true)}
-            className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span>下载缺失的 Java 运行时</span>
-          </button>
+            <button
+              onClick={() => setDownloadModalOpen(true)}
+              className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 transition-all shadow-sm cursor-pointer shrink-0"
+            >
+              <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>下载缺失的 Java 运行时</span>
+            </button>
+          </div>
+
+          {/* 外部 Java 不自动发现：不读 JAVA_HOME、不扫 PATH、不遍历安装根，必须显式指定。 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-slate-600 dark:text-neutral-400 shrink-0">外部 Java：</span>
+            <code className="flex-1 min-w-0 truncate font-mono text-[11px] px-2 py-1 rounded bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 text-slate-700 dark:text-neutral-300">
+              {javaPath && javaPath.length > 0 ? javaPath : '未指定（只用启动器安装的运行时）'}
+            </code>
+            <button
+              onClick={() => void handleChooseJavaPath()}
+              disabled={choosingPath || !onChooseJavaPath}
+              className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-neutral-800 hover:bg-slate-300 dark:hover:bg-neutral-700 text-slate-700 dark:text-neutral-200 font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              title="选择一个 java 可执行文件；选定后会校验可执行性并写入设置"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span>{choosingPath ? '选择中…' : '选择 Java…'}</span>
+            </button>
+            {javaPath && javaPath.length > 0 ? (
+              <button
+                onClick={() => void handleClearJavaPath()}
+                disabled={!onClearJavaPath}
+                className="px-3 py-1.5 rounded-lg text-slate-600 dark:text-neutral-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                title="清除指定路径，回到只使用启动器安装的运行时"
+              >
+                清除
+              </button>
+            ) : null}
+          </div>
+
+          {javaPathMessage ? (
+            <div
+              className={`font-mono text-[11px] leading-relaxed ${
+                javaPathMessage.ok
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : 'text-red-600 dark:text-red-400'
+              }`}
+            >
+              {javaPathMessage.text}
+            </div>
+          ) : null}
         </div>
 
         {/* Runtime Major Versions List */}
@@ -167,16 +248,12 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
                     <div>
                       <div className="flex items-center gap-2">
                         <h3 className="text-sm font-bold text-slate-900 dark:text-neutral-100">Java {item.version} 运行时</h3>
-                        <span className="text-[11px] font-mono text-slate-600 dark:text-neutral-400 bg-slate-200 dark:bg-neutral-800 px-2 py-0.5 rounded">
-                          {item.mcMatch}
-                        </span>
                         {isInstalled && (
                           <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
                             已就绪
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-neutral-400 mt-0.5">{item.desc}</p>
                     </div>
                   </div>
 
@@ -222,8 +299,8 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
                         {r.binaryPath
                           ? `路径: ${r.binaryPath}`
                           : r.isDownloadedByLauncher
-                            ? '由启动器安装（后端不下发具体路径）'
-                            : '本机已安装（后端不下发具体路径）'}
+                            ? '由启动器安装'
+                            : '手动指定'}
                       </div>
                     </div>
 
@@ -244,7 +321,7 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
                         onClick={() => void handleTestJava(r)}
                         disabled={testingId === r.id || !onReload}
                         className="px-2.5 py-1 rounded bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-slate-700 dark:text-neutral-300 hover:text-slate-900 dark:hover:text-white flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="重新探测本机 Java（后端不提供执行 java -version 的接口）"
+                        title="重新探测设置中指定的 Java 路径（后端不提供执行 java -version 的接口）"
                       >
                         {testingId === r.id ? (
                           <RefreshCw className="w-3 h-3 animate-spin text-emerald-500 dark:text-emerald-400" />
@@ -258,7 +335,7 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
                         onClick={() => r.folderPath && onOpenFolder(r.folderPath)}
                         disabled={!r.folderPath}
                         className="p-1.5 rounded bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-slate-500 dark:text-neutral-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                        title={r.folderPath ? '打开此版本文件夹' : '后端不下发运行时路径，无法直接打开'}
+                        title={r.folderPath ? '打开此版本文件夹' : '未记录此运行的安装目录，无法直接打开'}
                       >
                         <FolderOpen className="w-3.5 h-3.5" />
                       </button>
@@ -285,13 +362,13 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
             );
           })}
 
-          {/* 本机真实装但不在上述四档内的版本（如 Java 11、16）单独列出，
-              否则探测到了却看不见。 */}
+          {/* 手动指定但不在上述四档内的版本（如 Java 11、16）单独列出，
+              否则指定了却看不见。 */}
           {extraRuntimes.length > 0 && (
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/40 border border-slate-200 dark:border-neutral-800 space-y-2">
               <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold text-slate-800 dark:text-neutral-200">
-                  其他已检测到的版本
+                  其他已指定的版本
                 </div>
                 <span className="text-[10px] text-slate-500 dark:text-neutral-500">
                   不在 Java 8 / 17 / 21 / 25 四档内
@@ -313,7 +390,7 @@ export const JavaRuntimeManagerModal: React.FC<JavaRuntimeManagerModalProps> = (
                       </span>
                     </div>
                     <div className="text-[11px] text-slate-500 dark:text-neutral-500 font-mono truncate max-w-xl">
-                      {r.isDownloadedByLauncher ? '由启动器安装（后端不下发具体路径）' : '本机已安装（后端不下发具体路径）'}
+                      {r.isDownloadedByLauncher ? '由启动器安装' : '手动指定'}
                     </div>
                   </div>
                   {onSelectRuntime && (

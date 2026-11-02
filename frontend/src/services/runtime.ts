@@ -64,7 +64,7 @@ export interface RuntimeBindingsApi {
 
 /** 运行时服务门面。 */
 export interface RuntimeService {
-  /** 探测本机 Java；refresh 为 true 时绕过 5 分钟缓存。 */
+  /** 探测设置中指定的 Java 路径；refresh 为 true 时绕过 5 分钟缓存。 */
   detect: (refresh?: boolean) => Promise<RuntimeProbeResult>
 
   /** 列出可用运行时（命中缓存时不重新探测）。 */
@@ -326,7 +326,7 @@ export function createRuntimeService(api: RuntimeBindingsApi): RuntimeService {
   }
 
   return {
-    /** 探测本机 Java。 */
+    /** 探测设置中指定的 Java 路径。 */
     async detect(refresh = false): Promise<RuntimeProbeResult> {
       return call(() => api.DetectRuntimes({ refresh }), normalizeRuntimeProbeResult)
     },

@@ -2,8 +2,8 @@
  * Java 运行时数据钩子。
  *
  * 把后端 `RuntimeService` 的真实探测结果接到设计稿的界面上：
- * - `list()` 只读缓存、不联网（命中 5 分钟探测缓存时不重新扫盘）；
- * - `detect(true)` 会真正重新扫描本机 Java。
+ * - `list()` 只读缓存、不联网（命中 5 分钟探测缓存时不重新探测）；
+ * - `detect(true)` 会重新探测设置中指定的 Java 路径。
  *
  * 后端 DTO 有意不下发绝对路径与安装体积，因此这两个字段在映射后为空，
  * 界面必须显示「—」而不是编造内容。
@@ -58,7 +58,7 @@ function toDesignRuntime(item: RuntimeSummary): JavaRuntime {
 
 /** Java 运行时钩子的返回值。 */
 export interface JavaRuntimesState {
-  /** 本机探测到的运行时。 */
+  /** 探测到的指定路径运行时。 */
   runtimes: JavaRuntime[];
   /** 当前选中的运行时标识；空串表示尚未选择。 */
   selectedRuntimeId: string;
