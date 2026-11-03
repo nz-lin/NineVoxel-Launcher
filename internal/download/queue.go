@@ -117,7 +117,7 @@ type QueueOptions struct {
 	// PerHostConcurrency 为同主机并发上限，≤0 时取默认值 2。
 	PerHostConcurrency int
 
-	// MaxRetries 为最大重试次数，<0 时取默认值 3。
+	// MaxRetries 为最大重试次数；0 表示禁用重试，<0 时取默认值 3。
 	MaxRetries int
 
 	// BackoffBase 为退避基准，≤0 时取默认值 1s；测试传 time.Millisecond。

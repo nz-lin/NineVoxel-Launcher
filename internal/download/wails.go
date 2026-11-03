@@ -101,6 +101,7 @@ func sharedDownloadQueue() (*Queue, *Error) {
 		transport := NewHTTPTransport(HTTPTransportOptions{Sink: NewStagingSink(root)})
 		committer := NewCommitter(CommitOptions{DataRoot: root})
 		queue := NewQueue(QueueOptions{
+			MaxRetries: defaultMaxRetries,
 			PlanSource: configuredPlanSource,
 			Transfer: func(ctx context.Context, task Task) TransferResult {
 				target, pathErr := artifact.ResolveInsideRoot(root, task.TargetRelPath)

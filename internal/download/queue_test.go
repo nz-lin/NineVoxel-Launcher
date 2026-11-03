@@ -233,6 +233,7 @@ func TestRetryBackoffThenSuccess(t *testing.T) {
 	queue := newTestQueue(t, QueueOptions{
 		PlanSource:  singleItemPlan("https://retry.example/client.jar"),
 		Commit:      instantCommit,
+		MaxRetries:  defaultMaxRetries,
 		BackoffBase: time.Millisecond,
 		Transfer: func(context.Context, Task) TransferResult {
 			current := atomic.AddInt32(&attempts, 1)
