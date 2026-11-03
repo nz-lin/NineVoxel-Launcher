@@ -455,7 +455,9 @@ func ValidateRelativePath(rel string) (string, *Error) {
 
 	// 统一成正斜杠后再 Clean：Windows 允许 `\` 与 `/` 混用，
 	// 不先转换会导致同一路径在两种分隔符下产生两份缓存。
-	slash := filepath.ToSlash(filepath.Clean(filepath.FromSlash(trimmed)))
+	// filepath.FromSlash 在 POSIX 上不会处理反斜杠，因此这里必须显式替换。
+	portable := strings.ReplaceAll(trimmed, "\\", "/")
+	slash := filepath.ToSlash(filepath.Clean(filepath.FromSlash(portable)))
 	if slash == "." {
 		return "", newInputError(ErrorCodeArtifactPath, messagePathEmpty)
 	}
@@ -532,20 +534,34 @@ func ResolveInsideRoot(root, rel string) (string, *Error) {
 	if err := EnsureWithinRoot(trimmedRoot, joined); err != nil {
 		return "", err
 	}
+	// macOS commonly exposes temporary paths through aliases such as
+	// /var -> /private/var. Compare resolved paths against the resolved root,
+	// otherwise an internal symlink can look like an escape.
+	rootBoundary := filepath.Clean(trimmedRoot)
+	if resolvedRoot, evalErr := filepath.EvalSymlinks(trimmedRoot); evalErr == nil {
+		rootBoundary = filepath.Clean(resolvedRoot)
+	}
 
 	// Missing leaves still require validating the nearest existing ancestor.
 	// An unresolved link is rejected rather than treated as a missing directory.
 	for ancestor := joined; ; ancestor = filepath.Dir(ancestor) {
 		resolved, evalErr := filepath.EvalSymlinks(ancestor)
 		if evalErr == nil {
-			if err := EnsureWithinRoot(trimmedRoot, resolved); err != nil {
+			if err := EnsureWithinRoot(rootBoundary, resolved); err != nil {
 				return "", err
 			}
 			suffix, relErr := filepath.Rel(ancestor, joined)
 			if relErr != nil {
 				return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
 			}
-			return filepath.Join(resolved, suffix), nil
+			resolvedCandidate := filepath.Join(resolved, suffix)
+			relativeToRoot, relErr := filepath.Rel(rootBoundary, resolvedCandidate)
+			if relErr != nil {
+				return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
+			}
+			// Preserve the caller's root spelling (/var vs /private/var) while
+			// still returning the symlink-resolved internal target.
+			return filepath.Join(trimmedRoot, relativeToRoot), nil
 		}
 		if info, statErr := os.Lstat(ancestor); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
 			return "", newInputError(ErrorCodeArtifactPath, messagePathEscape)
