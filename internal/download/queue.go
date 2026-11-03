@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -98,6 +99,13 @@ const (
 
 	// progressEmitDelta 为进度事件的最小增量（0~1）。
 	progressEmitDelta = 0.01
+
+	// speedSampleIntervalMs 是速度采样的最小时间窗口。
+	//
+	// 传输接缝只在单个文件完成后返回字节数。大量小文件并发完成时，若每次
+	// 完成都刷新采样基线，几毫秒内就会产生几十 MB 的“瞬时速度”。速度必须
+	// 按至少 500ms 的窗口计算，才能与界面上的总大小和实际耗时相符。
+	speedSampleIntervalMs = 500
 
 	// maxListLimit 为任务列表单页上限（冻结清单 §1.3）。
 	maxListLimit = 100
@@ -537,11 +545,7 @@ func (q *Queue) transferWithRetry(ctx context.Context, id string) bool {
 			return true
 		}
 		if !result.Retryable || retries >= q.options.MaxRetries {
-			code := result.ErrorCode
-			if code == "" {
-				code = ErrorCodeNetwork
-			}
-			q.failTask(id, newExternalError(code, messageTransferNotImplemented, result.Retryable))
+			q.failTask(id, transferFailureError(result))
 			return false
 		}
 		retries++
@@ -549,6 +553,50 @@ func (q *Queue) transferWithRetry(ctx context.Context, id string) bool {
 		if !q.waitBackoff(ctx, retries) {
 			return false
 		}
+	}
+}
+
+// transferFailureError preserves the structured error returned by the real
+// transport. Falling back to a generic message only when no safe error exists
+// avoids hiding actionable codes such as DOWNLOAD_SIZE_001.
+func transferFailureError(result TransferResult) *Error {
+	var cause *Error
+	if errors.As(result.Err, &cause) && cause != nil {
+		preserved := *cause
+		if strings.TrimSpace(preserved.Code) == "" {
+			preserved.Code = strings.TrimSpace(result.ErrorCode)
+		}
+		if preserved.Code == "" {
+			preserved.Code = ErrorCodeNetwork
+		}
+		if strings.TrimSpace(preserved.Message) == "" {
+			preserved.Message = transferFailureMessage(preserved.Code)
+		}
+		return &preserved
+	}
+	code := strings.TrimSpace(result.ErrorCode)
+	if code == "" {
+		code = ErrorCodeNetwork
+	}
+	return newExternalError(code, transferFailureMessage(code), result.Retryable)
+}
+
+func transferFailureMessage(code string) string {
+	switch code {
+	case ErrorCodeSize:
+		return messageExpectedSizeInvalid
+	case ErrorCodeSource:
+		return messageSourceRejected
+	case ErrorCodeResume:
+		return "续传信息已失效，请重新下载。"
+	case ErrorCodeSpace:
+		return "磁盘空间不足，无法继续下载。"
+	case ErrorCodeVerify:
+		return "下载文件校验失败，已放弃本次任务。"
+	case ErrorCodeNetwork:
+		return messageNetworkInterrupted
+	default:
+		return "下载失败，请稍后重试。"
 	}
 }
 
@@ -601,21 +649,13 @@ func (q *Queue) applyTransferResult(id string, result TransferResult) {
 	}
 	task.RetryCount = 0
 	task.UpdatedAtMs = q.now()
-	if task.lastSampleAtMs > 0 && task.UpdatedAtMs > task.lastSampleAtMs {
-		delta := task.DownloadedSize - task.lastSampleBytes
-		elapsedMs := task.UpdatedAtMs - task.lastSampleAtMs
-		if delta > 0 && elapsedMs > 0 {
-			instant := delta * 1000 / elapsedMs
-			if task.SpeedBytesPerSecond <= 0 {
-				task.SpeedBytesPerSecond = instant
-			} else {
-				// 指数平滑，避免单个小文件把瞬时速度拉成尖峰。
-				task.SpeedBytesPerSecond = (task.SpeedBytesPerSecond*3 + instant) / 4
-			}
-		}
-	}
-	task.lastSampleAtMs = task.UpdatedAtMs
-	task.lastSampleBytes = task.DownloadedSize
+	updateSpeedSample(
+		&task.SpeedBytesPerSecond,
+		&task.lastSampleAtMs,
+		&task.lastSampleBytes,
+		task.DownloadedSize,
+		task.UpdatedAtMs,
+	)
 	snapshot := *task
 	shouldEmit := q.shouldEmitProgressLocked(snapshot)
 	q.mu.Unlock()
@@ -824,20 +864,13 @@ func (q *Queue) bumpParent(id string) {
 		}
 	}
 	nowMs := q.now()
-	if parent.lastSampleAtMs > 0 && nowMs > parent.lastSampleAtMs {
-		delta := downloadedBytes - parent.lastSampleBytes
-		elapsedMs := nowMs - parent.lastSampleAtMs
-		if delta > 0 && elapsedMs > 0 {
-			instant := delta * 1000 / elapsedMs
-			if parent.SpeedBytesPerSecond <= 0 {
-				parent.SpeedBytesPerSecond = instant
-			} else {
-				parent.SpeedBytesPerSecond = (parent.SpeedBytesPerSecond*3 + instant) / 4
-			}
-		}
-	}
-	parent.lastSampleAtMs = nowMs
-	parent.lastSampleBytes = downloadedBytes
+	updateSpeedSample(
+		&parent.SpeedBytesPerSecond,
+		&parent.lastSampleAtMs,
+		&parent.lastSampleBytes,
+		downloadedBytes,
+		nowMs,
+	)
 	parent.DownloadedSize = int64(completed)
 	parent.ExpectedSize = int64(total)
 	if total > 0 && completed+failed+cancelled >= total && !IsTerminal(parent.State) {
@@ -866,6 +899,39 @@ func (q *Queue) bumpParent(id string) {
 	if shouldEmit {
 		q.emit(snapshot)
 	}
+}
+
+// updateSpeedSample 以固定时间窗口更新速度。
+//
+// 采样窗口未满时只累计字节，不刷新基线；窗口满后按实际窗口内的字节增量
+// 计算速度，并做一次指数平滑。这样并发小文件不会因为完成时间过于接近
+// 而被误算成极高的瞬时速度。
+func updateSpeedSample(speed *int64, lastSampleAtMs *int64, lastSampleBytes *int64, downloadedBytes int64, nowMs int64) {
+	if speed == nil || lastSampleAtMs == nil || lastSampleBytes == nil {
+		return
+	}
+	if *lastSampleAtMs <= 0 {
+		*lastSampleAtMs = nowMs
+		*lastSampleBytes = downloadedBytes
+		return
+	}
+	elapsedMs := nowMs - *lastSampleAtMs
+	if elapsedMs < speedSampleIntervalMs {
+		return
+	}
+	delta := downloadedBytes - *lastSampleBytes
+	if delta <= 0 {
+		*speed = 0
+	} else {
+		instant := delta * 1000 / elapsedMs
+		if *speed <= 0 {
+			*speed = instant
+		} else {
+			*speed = (*speed*3 + instant) / 4
+		}
+	}
+	*lastSampleAtMs = nowMs
+	*lastSampleBytes = downloadedBytes
 }
 
 // EnqueuePlan 按安装计划创建父任务与全部子任务，并返回父任务受理结果。

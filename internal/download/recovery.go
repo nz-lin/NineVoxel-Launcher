@@ -238,6 +238,11 @@ func Recover(ctx context.Context, options RecoveryOptions) (RecoveryResult, *Err
 		liveTaskIDs[task.ID] = struct{}{}
 		if IsTerminal(task.State) {
 			terminalTaskIDs[task.ID] = struct{}{}
+			// 终态任务不会被恢复改写。跳过 observeDisk，避免为了一个必然
+			// keep 的结论去 stat / 哈希大量已完成的游戏资源文件；这正是
+			// 大体量数据目录启动恢复变慢的主要来源。
+			result.Decisions = append(result.Decisions, DecideRecovery(task, DiskObservation{}))
+			continue
 		}
 
 		observation, observeErr := observeDisk(options.DataRoot, task)

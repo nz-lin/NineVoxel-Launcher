@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -309,6 +310,36 @@ func TestNonRetryableFailureStopsImmediately(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Fatalf("传输调用次数 = %d，期望 1", got)
+	}
+}
+
+// TestTransferFailurePreservesStructuredError 校验队列不会用「传输未接入」
+// 覆盖真实传输错误，否则 DOWNLOAD_SIZE_001 等可操作错误会被误导性文案掩盖。
+func TestTransferFailurePreservesStructuredError(t *testing.T) {
+	queue := newTestQueue(t, QueueOptions{
+		PlanSource: singleItemPlan("https://retry.example/client.jar"),
+		Commit:     instantCommit,
+		Transfer: func(context.Context, Task) TransferResult {
+			return TransferResult{
+				Err:       newInputError(ErrorCodeSize, messageExpectedSizeInvalid),
+				ErrorCode: ErrorCodeSize,
+				Retryable: false,
+			}
+		},
+	})
+	if _, enqueueErr := queue.EnqueuePlan(context.Background(), StartDownloadPlanRequest{VersionID: "1.20.1"}); enqueueErr != nil {
+		t.Fatalf("入队失败：%s", enqueueErr.Code)
+	}
+	children := waitForAllChildrenTerminal(t, queue, 10*time.Second)
+	child := children[0]
+	if child.State != StateFailed || child.ErrorCode != ErrorCodeSize {
+		t.Fatalf("最终状态 = %s，错误码 = %s", child.State, child.ErrorCode)
+	}
+	if child.ErrorMessageSafe != messageExpectedSizeInvalid {
+		t.Fatalf("错误文案 = %q，期望保留传输层的明确说明", child.ErrorMessageSafe)
+	}
+	if strings.Contains(child.ErrorMessageSafe, "传输尚未接入") {
+		t.Fatalf("真实传输错误被覆盖：%q", child.ErrorMessageSafe)
 	}
 }
 

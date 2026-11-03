@@ -43,7 +43,8 @@ const (
 
 // rewritableOfficialHosts 是可被镜像重写的官方 host 白名单。
 //
-// 与 internal/version 的 manifestAllowedHosts 保持一致；新增官方制品域名时同步更新两处。
+// Mojang 条目与 internal/version 的 manifestAllowedHosts 保持一致；
+// 加载器官方 Maven 域名也在此登记，因为它们会出现在继承版本的 libraries 中。
 var rewritableOfficialHosts = map[string]bool{
 	"piston-meta.mojang.com":           true,
 	"piston-data.mojang.com":           true,
@@ -51,6 +52,10 @@ var rewritableOfficialHosts = map[string]bool{
 	"launchermeta.mojang.com":          true,
 	"resources.download.minecraft.net": true,
 	"libraries.minecraft.net":          true,
+	"maven.fabricmc.net":               true,
+	"maven.quiltmc.org":                true,
+	"maven.minecraftforge.net":         true,
+	"maven.neoforged.net":              true,
 }
 
 // MirrorEndpoint 描述一个镜像源。

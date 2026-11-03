@@ -75,6 +75,40 @@ func TestApplyTransferResultComputesSpeed(t *testing.T) {
 	}
 }
 
+// TestSpeedSamplingUsesMinimumWindow 验证并发小文件不会制造瞬时速度尖峰。
+func TestSpeedSamplingUsesMinimumWindow(t *testing.T) {
+	nowMs := int64(1000)
+	queue := NewQueue(QueueOptions{Now: func() int64 { return nowMs }})
+	queue.tasks["task-1"] = &Task{
+		ID:              "task-1",
+		State:           StateDownloading,
+		ExpectedSize:    4 << 20,
+		lastSampleAtMs:  1000,
+		lastSampleBytes: 0,
+	}
+
+	nowMs = 1100
+	queue.applyTransferResult("task-1", TransferResult{Downloaded: 1 << 20, TotalSize: 4 << 20})
+
+	queue.mu.Lock()
+	speedAfterFirst := queue.tasks["task-1"].SpeedBytesPerSecond
+	queue.mu.Unlock()
+	if speedAfterFirst != 0 {
+		t.Fatalf("窗口未满时不应产出速度，实际 %d B/s", speedAfterFirst)
+	}
+
+	nowMs = 1600
+	queue.applyTransferResult("task-1", TransferResult{Downloaded: 1 << 20, TotalSize: 4 << 20})
+
+	queue.mu.Lock()
+	speedAfterWindow := queue.tasks["task-1"].SpeedBytesPerSecond
+	queue.mu.Unlock()
+	const expected = int64(2<<20) * 1000 / 600
+	if speedAfterWindow != expected {
+		t.Fatalf("窗口速度 = %d B/s，期望 %d B/s", speedAfterWindow, expected)
+	}
+}
+
 // TestClearCompletedRemovesCompletedTasks 验证清除已完成任务会同时清理父子记录。
 func TestClearCompletedRemovesCompletedTasks(t *testing.T) {
 	queue := newTestQueue(t, QueueOptions{

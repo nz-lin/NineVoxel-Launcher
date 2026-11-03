@@ -62,6 +62,9 @@ const (
 
 	// TaskTypeAsset 表示资源对象。
 	TaskTypeAsset = "asset"
+
+	// TaskTypeLoader 表示 Forge / NeoForge 官方安装器。
+	TaskTypeLoader = "loader"
 )
 
 // 目标路径根类别，与迁移文件中 target_kind 的取值一致。
@@ -226,6 +229,8 @@ func priorityOf(taskType string) int {
 		return PriorityAssetIndex
 	case TaskTypeAsset:
 		return PriorityAssetObject
+	case TaskTypeLoader:
+		return PriorityLibrary
 	default:
 		// 未知类型排到最后：调度器不应因为类型表扩展而崩溃。
 		return PriorityAssetObject + 1
@@ -249,6 +254,8 @@ func taskTypeTitle(taskType string) string {
 		return "资源索引"
 	case TaskTypeAsset:
 		return "资源文件"
+	case TaskTypeLoader:
+		return "模组加载器安装器"
 	default:
 		return "下载任务"
 	}
