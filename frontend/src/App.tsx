@@ -16,6 +16,7 @@ import { InstanceDetailModal } from './components/InstanceDetailModal';
 import { AccountManagerModal } from './components/AccountManagerModal';
 import { JavaRuntimeManagerModal } from './components/JavaRuntimeManagerModal';
 import { DownloadsDrawer } from './components/DownloadsDrawer';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import {
   Instance,
   Account,
@@ -31,6 +32,7 @@ import { useLauncherSettings } from './hooks/useLauncherSettings';
 import { useJavaRuntimes } from './hooks/useJavaRuntimes';
 import { useDownloadTasks } from './hooks/useDownloadTasks';
 import { useInstances } from './hooks/useInstances';
+import { useInstanceGroups } from './hooks/useInstanceGroups';
 import { instanceService, type InstanceConfig } from './services/instance';
 import { useAccounts } from './hooks/useAccounts';
 import { runtimeService } from './services/runtime';
@@ -83,6 +85,7 @@ export default function App() {
   const appRuntime = useAppRuntime();
   const [currentTab, setCurrentTab] = useState<NavTab>('launch');
   const instancesState = useInstances();
+  const groupsState = useInstanceGroups();
   const instances = instancesState.instances;
   const currentInstanceId = instancesState.selectedId;
   // 账号改为真实后端：列表、当前账号、登录流程全部来自 AccountService（凭证不出后端）。
@@ -116,6 +119,7 @@ export default function App() {
   // Modals & Drawers
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [detailInstance, setDetailInstance] = useState<Instance | null>(null);
+  const [pendingDeleteInstance, setPendingDeleteInstance] = useState<Instance | null>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [javaManagerOpen, setJavaManagerOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
@@ -226,6 +230,7 @@ export default function App() {
     const created = await instanceService.create(config);
     // Creation is durable even if starting the download fails; retain a retry entry.
     await instancesState.reload();
+    void groupsState.reload();
     try {
       await instanceService.select(created.id);
       await instanceService.install(created.id);
@@ -238,12 +243,20 @@ export default function App() {
   };
 
   const handleDeleteInstance = (id: string) => {
-    if (!window.confirm('移除此实例？游戏文件将保留在数据目录的 instances/.trash 中。')) return;
+    const target = instances.find((item) => item.id === id);
+    if (target) setPendingDeleteInstance(target);
+  };
+
+  const confirmDeleteInstance = () => {
+    const target = pendingDeleteInstance;
+    if (!target) return;
+    setPendingDeleteInstance(null);
     void (async () => {
       try {
-        await instanceService.remove(id);
-        if (detailInstance?.id === id) setDetailInstance(null);
+        await instanceService.remove(target.id);
+        if (detailInstance?.id === target.id) setDetailInstance(null);
         await instancesState.reload();
+        void groupsState.reload();
         showToast('实例已移除，原文件已归档到 instances/.trash。');
       } catch (cause) { reportError(cause); }
     })();
@@ -257,7 +270,19 @@ export default function App() {
     const persisted = await instanceService.update(updated);
     setDetailInstance(persisted);
     await instancesState.reload();
+    void groupsState.reload();
     showToast('实例配置已保存。');
+  };
+
+  const handleCreateGroup = async (name: string) => {
+    await groupsState.createGroup(name);
+    showToast(`已创建分组「${name}」。`);
+  };
+
+  const handleDeleteGroup = async (name: string, moveTo?: string) => {
+    await groupsState.deleteGroup(name, moveTo);
+    await instancesState.reload();
+    showToast(moveTo ? `已将实例迁移到「${moveTo}」并删除分组「${name}」。` : `已删除分组「${name}」。`);
   };
 
   const handleRetryInstall = (inst: Instance) => {
@@ -276,11 +301,12 @@ export default function App() {
 
   // Manage Java Runtimes：安装走真实下载（Adoptium 元数据 + SHA-256 校验），
   // 这里只负责发起与提示，进度由后端 download.task.changed.v1 事件驱动。
-  const handleDownloadRuntime = (majorVersion: 8 | 17 | 21 | 25, vendor: string) => {
+  const handleDownloadRuntime = (majorVersion: number, vendor: string) => {
     void (async () => {
       try {
         const accepted = await runtimeService.installSource({
           majorVersion,
+          vendor,
           acceptLicense: true,
         });
         showToast(`已开始下载 ${vendor} Java ${majorVersion}，任务 ${accepted.taskId}`);
@@ -310,15 +336,18 @@ export default function App() {
 
   // Downloads drawer：操作全部走后端，不再本地改状态。
   const handleClearCompletedDownloads = () => {
-    // 后端没有「批量清除已完成任务」的接口，任务记录属于审计痕迹，不能由界面删。
-    showToast('后端暂不提供清除已完成任务的接口，任务记录会保留');
+    void downloadTasksState.clearCompleted()
+      .then(() => showToast('已清除已结束的下载任务记录'))
+      .catch(reportError);
   };
 
   const handleToggleTaskPause = (id: string) => {
     const task = downloadTasks.find((t) => t.id === id);
     if (!task) return;
-    // downloading → 暂停；paused → 恢复。其余状态（排队中/校验中/已结束）不可直接操作。
-    if (task.status === 'downloading' && task.rawState === 'downloading') {
+    // 计划任务的父状态会一直是 queued，实际由子任务推进；这里按展示状态判断，
+    // 仅在校验/提交阶段禁止暂停。
+    const rawState = task.rawState ?? '';
+    if (task.status === 'downloading' && rawState !== 'verifying' && rawState !== 'committing') {
       void downloadTasksState.pause(id);
     } else if (task.status === 'paused') {
       void downloadTasksState.resume(id);
@@ -400,6 +429,10 @@ export default function App() {
               onDuplicateInstance={handleDuplicateInstance}
               onRetryInstall={handleRetryInstall}
               onOpenFolder={handleOpenFolder}
+              groups={groupsState.groups}
+              defaultGroup={groupsState.defaultGroup}
+              onCreateGroup={handleCreateGroup}
+              onDeleteGroup={handleDeleteGroup}
             />
           )}
 
@@ -474,6 +507,8 @@ export default function App() {
         <CreateInstanceModal
           onClose={() => setCreateModalOpen(false)}
           onCreate={handleCreateInstance}
+          groups={groupsState.groups}
+          defaultGroup={groupsState.defaultGroup}
         />
       )}
 
@@ -486,6 +521,8 @@ export default function App() {
           onUpdateInstance={handleUpdateInstance}
           onOpenFolder={handleOpenFolder}
           javaRuntimes={javaRuntimes}
+          groups={groupsState.groups}
+          defaultGroup={groupsState.defaultGroup}
         />
       )}
 
@@ -510,6 +547,17 @@ export default function App() {
         onClearJavaPath={handleClearJavaPath}
         installProgress={javaRuntimesState.installProgress}
       />
+
+      {pendingDeleteInstance && (
+        <ConfirmDialog
+          title="移除实例"
+          message={`确认移除「${pendingDeleteInstance.name}」？游戏文件会归档到 instances/.trash，不会立即删除。`}
+          confirmLabel="移除"
+          danger
+          onConfirm={confirmDeleteInstance}
+          onCancel={() => setPendingDeleteInstance(null)}
+        />
+      )}
 
       <DownloadsDrawer
         isOpen={downloadsOpen}

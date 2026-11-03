@@ -15,8 +15,8 @@ import {
 } from '../services/version'
 import type { ManifestStatus, VersionSummary, VersionType } from '../types/version'
 
-/** 版本类型过滤值，空字符串表示「正式版 + 快照」的默认集合。 */
-export type VersionTypeFilter = VersionType | ''
+/** 版本类型过滤值，空字符串表示「正式版 + 快照」的默认集合；支持逗号分隔多类型。 */
+export type VersionTypeFilter = VersionType | '' | string
 
 /** 清单区块需要的全部状态。 */
 export interface VersionCatalogState {
@@ -81,7 +81,7 @@ function toErrorInfo(error: unknown): { code: string; message: string } {
  * 首次加载流程：先查清单状态，不可用就触发一次联网刷新，再取列表。
  * 这样用户第一次打开页面就能看到数据，而不用自己去点「刷新清单」。
  */
-export function useVersions(pageSize = DEFAULT_LIMIT): VersionCatalogController {
+export function useVersions(pageSize = DEFAULT_LIMIT, initialType: VersionTypeFilter = ''): VersionCatalogController {
   const [items, setItems] = useState<VersionSummary[]>([])
   const [total, setTotal] = useState(0)
   const [stale, setStale] = useState(false)
@@ -91,7 +91,7 @@ export function useVersions(pageSize = DEFAULT_LIMIT): VersionCatalogController 
   const [loading, setLoading] = useState(true)
   const [errorCode, setErrorCode] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [typeFilter, setTypeFilterState] = useState<VersionTypeFilter>('')
+  const [typeFilter, setTypeFilterState] = useState<VersionTypeFilter>(initialType)
   const [limit] = useState(pageSize)
 
   // 用于丢弃过期请求的回写：快速切换过滤时只认最后一次。
@@ -169,7 +169,7 @@ export function useVersions(pageSize = DEFAULT_LIMIT): VersionCatalogController 
   )
 
   useEffect(() => {
-    void load('', false)
+    void load(initialType, false)
     // 只在挂载时跑一次；后续由 reload / setTypeFilter 显式触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

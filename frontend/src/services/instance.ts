@@ -1,6 +1,6 @@
 import { InstanceService } from '../../bindings/example.com/ninevoxel/launcher/internal/instance'
 import type { Config, Instance as StoredInstance } from '../../bindings/example.com/ninevoxel/launcher/internal/instance/models'
-import type { Instance } from '../types/launcher'
+import type { Instance, InstanceGroup, InstanceGroupList } from '../types/launcher'
 import { toAppError } from './errors'
 
 export type InstanceConfig = Pick<Instance, 'name' | 'mcVersion' | 'loader' | 'partition' | 'icon' | 'memoryMb' | 'jvmArgs' | 'description' | 'isFavorite' | 'customJavaPath'>
@@ -27,6 +27,18 @@ async function call<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation() } catch (cause) { throw toAppError(cause) }
 }
 
+function toGroupList(raw: { items: InstanceGroup[] | null; defaultGroup: string }): InstanceGroupList {
+  return {
+    items: (raw.items ?? []).map((group) => ({
+      name: group.name,
+      isDefault: group.isDefault,
+      instanceCount: group.instanceCount,
+      createdAtMs: group.createdAtMs,
+    })),
+    defaultGroup: raw.defaultGroup,
+  }
+}
+
 export const instanceService = {
   async list() {
     const result = await call(() => InstanceService.ListInstances())
@@ -38,4 +50,13 @@ export const instanceService = {
   async openFolder(id: string) { await call(() => InstanceService.OpenInstanceFolder({ instanceId: id })) },
   async remove(id: string) { await call(() => InstanceService.DeleteInstance({ instanceId: id })) },
   async install(id: string) { return toInstance(await call(() => InstanceService.InstallInstance({ instanceId: id }))) },
+  async listGroups() {
+    return toGroupList(await call(() => InstanceService.ListInstanceGroups()))
+  },
+  async createGroup(name: string) {
+    return toGroupList(await call(() => InstanceService.CreateInstanceGroup({ name })))
+  },
+  async deleteGroup(name: string, moveTo = '') {
+    return toGroupList(await call(() => InstanceService.DeleteInstanceGroup({ name, moveTo })))
+  },
 }

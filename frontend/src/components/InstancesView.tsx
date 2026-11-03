@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Plus,
   Search,
@@ -13,8 +13,8 @@ import {
   Grid,
   Layers
 } from 'lucide-react';
-import { Instance } from '../types/launcher';
-import { VersionCatalogPanel } from './VersionCatalogPanel';
+import { Instance, InstanceGroup } from '../types/launcher';
+import { GroupManagerModal } from './GroupManagerModal';
 
 interface InstancesViewProps {
   instances: Instance[];
@@ -27,6 +27,10 @@ interface InstancesViewProps {
   onRetryInstall: (instance: Instance) => void;
   onDuplicateInstance: (instance: Instance) => void;
   onOpenFolder: (path: string) => void;
+  groups: InstanceGroup[];
+  defaultGroup: string;
+  onCreateGroup: (name: string) => Promise<void>;
+  onDeleteGroup: (name: string, moveTo?: string) => Promise<void>;
 }
 
 export const InstancesView: React.FC<InstancesViewProps> = ({
@@ -39,15 +43,28 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
   onDeleteInstance,
   onDuplicateInstance,
   onRetryInstall,
-  onOpenFolder
+  onOpenFolder,
+  groups,
+  defaultGroup,
+  onCreateGroup,
+  onDeleteGroup
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedPartition, setSelectedPartition] = useState<string>('all');
   const [selectedLoader, setSelectedLoader] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'grouped' | 'grid'>('grouped');
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
 
-  // Distinct partitions
-  const partitions = Array.from(new Set(instances.map(i => i.partition || '默认分区')));
+  const groupNames = groups.length > 0
+    ? groups.map((group) => group.name)
+    : Array.from(new Set(instances.map((instance) => instance.partition || defaultGroup)));
+  const countForGroup = (name: string) => instances.filter((instance) => (instance.partition || defaultGroup) === name).length;
+
+  useEffect(() => {
+    if (selectedPartition !== 'all' && !groupNames.includes(selectedPartition)) {
+      setSelectedPartition('all');
+    }
+  }, [groupNames, selectedPartition]);
 
   const filteredInstances = instances.filter((inst) => {
     const matchesSearch =
@@ -55,7 +72,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
       inst.mcVersion.includes(searchQuery) ||
       inst.loader.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (inst.partition && inst.partition.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesPartition = selectedPartition === 'all' || inst.partition === selectedPartition;
+    const matchesPartition = selectedPartition === 'all' || (inst.partition || defaultGroup) === selectedPartition;
     const matchesLoader = selectedLoader === 'all' || inst.loader === selectedLoader;
     return matchesSearch && matchesPartition && matchesLoader;
   });
@@ -66,14 +83,11 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-neutral-800/80">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-bold text-slate-900 dark:text-neutral-100">多实例独立分区管理</h1>
+            <h1 className="text-xl font-bold text-slate-900 dark:text-neutral-100">实例管理</h1>
             <span className="text-xs font-mono font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5" /> 沙盒完全物理隔离
+              <ShieldCheck className="w-3.5 h-3.5" /> 实例隔离
             </span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1">
-            参考 Prism Launcher 与 PCL2 架构设计，每个实例专属独立目录（.minecraft/mods, saves, config），多版本互不污染
-          </p>
         </div>
 
         {/* Primary Action: Create Instance */}
@@ -85,10 +99,10 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
               className={`px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
                 viewMode === 'grouped' ? 'bg-slate-100 dark:bg-neutral-800 text-slate-900 dark:text-white font-bold' : 'text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
               }`}
-              title="按分区模块聚合展示"
+              title="按分组模块聚合展示"
             >
               <Layers className="w-3.5 h-3.5" />
-              <span>分区聚合</span>
+              <span>分组聚合</span>
             </button>
             <button
               onClick={() => setViewMode('grid')}
@@ -103,6 +117,14 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           </div>
 
           <button
+            onClick={() => setGroupModalOpen(true)}
+            className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-200 font-bold text-xs flex items-center gap-2 transition-colors shrink-0 cursor-pointer"
+          >
+            <Layers className="w-4 h-4" />
+            <span>分组管理</span>
+          </button>
+
+          <button
             onClick={onOpenCreateModal}
             className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-500/20 active:scale-98 transition-all shrink-0 cursor-pointer"
           >
@@ -111,9 +133,6 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           </button>
         </div>
       </div>
-
-      {/* 版本清单区块：接后端 VersionService，展示官方真实版本与兼容性判定 */}
-      <VersionCatalogPanel />
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -124,7 +143,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="搜索实例名称、分区、MC 版本或加载器..."
+            placeholder="搜索实例名称、分组、MC 版本或加载器..."
             className="w-full pl-9 pr-4 py-2 bg-white dark:bg-neutral-900/80 border border-slate-200 dark:border-neutral-800 rounded-lg text-xs text-slate-900 dark:text-neutral-200 placeholder-slate-400 dark:placeholder-neutral-500 focus:outline-none focus:border-emerald-500 transition-colors shadow-xs"
           />
         </div>
@@ -139,9 +158,9 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
                 : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200 hover:bg-slate-200/60 dark:hover:bg-neutral-900/60'
             }`}
           >
-            全部分区 ({instances.length})
+            全部分组 ({instances.length})
           </button>
-          {partitions.map((p) => (
+          {groupNames.map((p) => (
             <button
               key={p}
               onClick={() => setSelectedPartition(p)}
@@ -151,7 +170,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
                   : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-neutral-200 hover:bg-slate-200/60 dark:hover:bg-neutral-900/60'
               }`}
             >
-              {p}
+              {p} ({countForGroup(p)})
             </button>
           ))}
         </div>
@@ -160,9 +179,9 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
       {/* INSTANCES RENDERING: GROUPED OR GRID */}
       {viewMode === 'grouped' ? (
         <div className="space-y-8">
-          {(selectedPartition === 'all' ? partitions : [selectedPartition]).map((partitionName) => {
-            const partitionInstances = filteredInstances.filter(i => (i.partition || '默认分区') === partitionName);
-            if (partitionInstances.length === 0) return null;
+          {(selectedPartition === 'all' ? groupNames : [selectedPartition]).map((partitionName) => {
+            const partitionInstances = filteredInstances.filter(i => (i.partition || defaultGroup) === partitionName);
+            if (partitionInstances.length === 0 && searchQuery.trim() !== '') return null;
 
             return (
               <div key={partitionName} className="space-y-3">
@@ -179,9 +198,15 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {partitionInstances.map((inst) => renderInstanceCard(inst))}
-                </div>
+                {partitionInstances.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 dark:border-neutral-700 p-6 text-center text-xs text-slate-500 dark:text-neutral-400">
+                    该分组暂无实例
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {partitionInstances.map((inst) => renderInstanceCard(inst))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -195,11 +220,21 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
       {filteredInstances.length === 0 && (
         <div className="text-center py-16 space-y-3 bg-white dark:bg-neutral-900/30 rounded-2xl border border-slate-200 dark:border-neutral-800/60 shadow-xs">
           <HardDrive className="w-8 h-8 text-slate-400 dark:text-neutral-600 mx-auto" />
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-neutral-300">此分区暂无匹配实例</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-neutral-300">此分组暂无匹配实例</h3>
           <p className="text-xs text-slate-500 dark:text-neutral-500 max-w-sm mx-auto">
             点击右上角创建原版实例，游戏资源会下载到独立目录。
           </p>
         </div>
+      )}
+
+      {groupModalOpen && (
+        <GroupManagerModal
+          onClose={() => setGroupModalOpen(false)}
+          groups={groups}
+          defaultGroup={defaultGroup}
+          onCreateGroup={onCreateGroup}
+          onDeleteGroup={onDeleteGroup}
+        />
       )}
     </div>
   );
@@ -231,14 +266,14 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
                   <Star className="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0" />
                 )}
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-neutral-400 mt-0.5">
-                <span className="font-semibold text-slate-700 dark:text-neutral-300">MC {inst.mcVersion}</span>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-neutral-400 mt-0.5">
+                <span className="font-semibold text-slate-700 dark:text-neutral-300 whitespace-nowrap">MC {inst.mcVersion}</span>
                 <span>·</span>
-                <span className="font-mono text-emerald-600 dark:text-emerald-400 uppercase text-[10px] font-bold">
+                <span className="font-mono text-emerald-600 dark:text-emerald-400 uppercase text-[10px] font-bold whitespace-nowrap">
                   {inst.loader} {inst.loaderVersion}
                 </span>
                 <span>·</span>
-                <span className="text-slate-500 dark:text-neutral-500 text-[10px] bg-slate-100 dark:bg-neutral-800 px-1 rounded">
+                <span className="text-slate-500 dark:text-neutral-500 text-[10px] bg-slate-100 dark:bg-neutral-800 px-1 rounded whitespace-nowrap">
                   {inst.partition}
                 </span>
               </div>
@@ -295,12 +330,12 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           {inst.installationState === 'installing' && <progress aria-label="实例安装进度" className="w-full h-1.5 accent-emerald-500" max={1} value={inst.installationProgress ?? 0} />}
         </div>
         {/* Bottom Actions */}
-        <div className="flex items-center justify-between gap-2 pt-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
           {/* Secondary tools */}
           <div className="flex items-center gap-1 text-slate-500 dark:text-neutral-400">
             <button
               onClick={() => onOpenManageInstance(inst)}
-              className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-xs text-slate-800 dark:text-neutral-200 flex items-center gap-1 transition-colors cursor-pointer"
+              className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-xs text-slate-800 dark:text-neutral-200 flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
               title="修改实例配置"
             >
               <Settings className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -338,7 +373,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           <button
             onClick={() => inst.installationState === 'installed' ? onLaunchInstance(inst) : onRetryInstall(inst)}
             disabled={inst.installationState === 'installing'}
-            className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500 text-emerald-800 dark:text-emerald-300 hover:text-neutral-950 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+            className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500 text-emerald-800 dark:text-emerald-300 hover:text-neutral-950 font-bold text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all cursor-pointer"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
             <span>{inst.installationState === 'installing' ? '安装中…' : inst.installationState === 'failed' ? '重试安装' : inst.installationState === 'installed' ? '启动' : '安装'}</span>

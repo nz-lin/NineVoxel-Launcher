@@ -159,9 +159,6 @@ func TestInstallationFailureRetryAndIdempotence(t *testing.T) {
 	if repeated, err := s.InstallInstance(IDRequest{InstanceID: item.ID}); err != nil || repeated.InstallationState != "installing" {
 		t.Fatalf("duplicate install: %+v %v", repeated, err)
 	}
-	if _, err := s.DeleteInstance(IDRequest{InstanceID: item.ID}); err == nil {
-		t.Fatal("removed installing instance")
-	}
 	close(release)
 	s.workers.Wait()
 	list, err := s.ListInstances()
@@ -182,6 +179,38 @@ func TestInstallationFailureRetryAndIdempotence(t *testing.T) {
 	}
 	if list.Items[0].InstallationState != "installed" || list.Items[0].InstallationProgress != 1 || list.Items[0].InstallationError != "" {
 		t.Fatalf("retry failed: %+v", list)
+	}
+}
+
+func TestDeleteInstallingInstanceCancelsInstall(t *testing.T) {
+	s := testService(t)
+	entered := make(chan struct{})
+	exited := make(chan struct{})
+	s.installer = func(ctx context.Context, _ Instance) error {
+		close(entered)
+		<-ctx.Done()
+		close(exited)
+		return ctx.Err()
+	}
+	item, err := s.CreateInstance(testConfig("delete-installing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InstallInstance(IDRequest{InstanceID: item.ID}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	list, err := s.DeleteInstance(IDRequest{InstanceID: item.ID})
+	if err != nil {
+		t.Fatalf("删除安装中的实例失败：%v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("实例未被删除：%+v", list.Items)
+	}
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("安装协程未在取消后退出")
 	}
 }
 

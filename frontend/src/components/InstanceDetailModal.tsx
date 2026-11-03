@@ -28,8 +28,10 @@ import {
   LoaderType,
   ShaderPackItem,
   ResourcePackItem,
-  JavaRuntime
+  JavaRuntime,
+  InstanceGroup
 } from '../types/launcher';
+import { AppSelect } from './AppSelect';
 import { MOCK_MODS, MOCK_SHADERS, MOCK_RESOURCEPACKS } from '../data/mockData';
 
 interface InstanceDetailModalProps {
@@ -39,6 +41,8 @@ interface InstanceDetailModalProps {
   onUpdateInstance: (updated: Instance) => Promise<void>;
   onOpenFolder: (path: string) => void;
   javaRuntimes: JavaRuntime[];
+  groups: InstanceGroup[];
+  defaultGroup: string;
 }
 
 export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
@@ -46,7 +50,9 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   onClose,
   onUpdateInstance,
   onOpenFolder,
-  javaRuntimes
+  javaRuntimes,
+  groups,
+  defaultGroup
 }) => {
   const [activeTab, setActiveTab] = useState<'loaders' | 'mods' | 'shaders' | 'resourcepacks' | 'saves' | 'settings'>('settings');
 
@@ -65,7 +71,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   const [memoryMb, setMemoryMb] = useState(instance.memoryMb);
   const [jvmArgs, setJvmArgs] = useState(instance.jvmArgs);
   const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || '');
-  const [partitionName, setPartitionName] = useState(instance.partition || '常用模组包');
+  const [partitionName, setPartitionName] = useState(instance.partition || defaultGroup);
 
   // Mod Search & Filter
   const [modSearch, setModSearch] = useState('');
@@ -749,29 +755,22 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
               {/* Partition / Grouping */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-2">
                 <label className="text-xs font-semibold text-slate-800 dark:text-neutral-200 block">
-                  实例分区 / 分组 (Instance Partition)
+                  实例分组
                 </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={partitionName}
-                    onChange={(e) => setPartitionName(e.target.value)}
-                    placeholder="输入分区名称，如: 常用模组包、大型科技服..."
-                    className="flex-1 px-3 py-2 bg-white dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 rounded-lg text-xs text-slate-800 dark:text-neutral-200 focus:outline-none focus:border-emerald-500"
-                  />
-                  <div className="flex gap-1.5">
-                    {['常用模组包', '大型科技服', '纯净与测试', '怀旧经典'].map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => setPartitionName(p)}
-                        className="px-2.5 py-1 text-[11px] rounded bg-slate-200 dark:bg-neutral-800 hover:bg-slate-300 dark:hover:bg-neutral-700 text-slate-700 dark:text-neutral-300 cursor-pointer transition-colors"
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <AppSelect
+                  value={partitionName}
+                  onChange={setPartitionName}
+                  options={groups.map((group) => ({
+                    value: group.name,
+                    label: group.name,
+                    hint: group.isDefault ? '默认分组' : `${group.instanceCount} 个实例`,
+                  }))}
+                  ariaLabel="实例分组"
+                  placeholder={defaultGroup || '选择分组'}
+                />
+                <p className="text-[11px] text-slate-500 dark:text-neutral-500">
+                  分组在版本实例页的「分组管理」中创建和删除。
+                </p>
               </div>
 
               <p className="text-xs text-slate-500">Java 运行时请在启动器的 Java 管理中选择，实例专属 Java 选择尚待启动链路接入。</p>
