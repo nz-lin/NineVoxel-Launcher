@@ -20,6 +20,7 @@ interface SidebarProps {
   currentAccount: Account;
   onOpenAccountModal: () => void;
   activeInstance?: Instance;
+  instanceCount: number;
   /**
    * 下载镜像开关的真实状态。
    *
@@ -35,6 +36,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentAccount,
   onOpenAccountModal,
   activeInstance,
+  instanceCount,
   mirrorEnabled = null
 }) => {
   const navItems = [
@@ -67,9 +69,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 <Icon className={`w-4 h-4 ${isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-neutral-500'}`} />
                 <span>{item.label}</span>
-                {item.id === 'instances' && (
+                {item.id === 'instances' && instanceCount > 0 && (
                   <span className="ml-auto text-[11px] font-mono text-slate-500 dark:text-neutral-500 bg-slate-200/80 dark:bg-neutral-800/80 px-1.5 py-0.5 rounded">
-                    5
+                    {instanceCount}
                   </span>
                 )}
                 {item.id === 'console' && activeInstance?.status === 'running' && (

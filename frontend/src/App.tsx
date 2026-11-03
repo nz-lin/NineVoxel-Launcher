@@ -388,6 +388,7 @@ export default function App() {
           currentAccount={currentAccount}
           onOpenAccountModal={() => setAccountModalOpen(true)}
           activeInstance={currentInstance}
+          instanceCount={instances.length}
           mirrorEnabled={appRuntime.snapshot?.downloadMirrorEnabled ?? null}
         />
 
