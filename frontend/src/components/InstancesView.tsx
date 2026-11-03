@@ -7,6 +7,7 @@ import {
   FolderOpen,
   Copy,
   Trash2,
+  ArchiveRestore,
   Star,
   HardDrive,
   ShieldCheck,
@@ -23,6 +24,7 @@ interface InstancesViewProps {
   onLaunchInstance: (instance: Instance) => void;
   onOpenManageInstance: (instance: Instance) => void;
   onOpenCreateModal: () => void;
+  onOpenTrash: () => void;
   onDeleteInstance: (id: string) => void;
   onRetryInstall: (instance: Instance) => void;
   onDuplicateInstance: (instance: Instance) => void;
@@ -40,6 +42,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
   onLaunchInstance,
   onOpenManageInstance,
   onOpenCreateModal,
+  onOpenTrash,
   onDeleteInstance,
   onDuplicateInstance,
   onRetryInstall,
@@ -122,6 +125,15 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           >
             <Layers className="w-4 h-4" />
             <span>分组管理</span>
+          </button>
+
+          <button
+            onClick={onOpenTrash}
+            className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 hover:bg-slate-50 dark:hover:bg-neutral-800 text-slate-700 dark:text-neutral-200 font-bold text-xs flex items-center gap-2 transition-colors shrink-0 cursor-pointer"
+            title="查看、还原或永久删除已移除的实例"
+          >
+            <ArchiveRestore className="w-4 h-4" />
+            <span>实例回收站</span>
           </button>
 
           <button
@@ -362,7 +374,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
               <button
                 onClick={() => onDeleteInstance(inst.id)}
                 className="p-1.5 rounded-lg hover:text-red-600 dark:hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
-                title="移除实例并归档文件"
+                title="移入实例回收站"
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>

@@ -45,6 +45,20 @@ export interface InstanceGroupList {
   defaultGroup: string;
 }
 
+/** 实例回收站条目（对应后端 TrashItem）。 */
+export interface InstanceTrashItem {
+  trashId: string;
+  instanceId: string;
+  name: string;
+  mcVersion: string;
+  loader: string;
+  icon: string;
+  deletedAtMs: number;
+  sizeBytes: number;
+  restorable: boolean;
+  errorMessage?: string;
+}
+
 export interface Instance {
   installationState?: 'not_installed' | 'installing' | 'installed' | 'failed';
   installationProgress?: number;

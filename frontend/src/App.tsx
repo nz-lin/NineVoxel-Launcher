@@ -15,6 +15,7 @@ import { CreateInstanceModal } from './components/CreateInstanceModal';
 import { InstanceDetailModal } from './components/InstanceDetailModal';
 import { AccountManagerModal } from './components/AccountManagerModal';
 import { JavaRuntimeManagerModal } from './components/JavaRuntimeManagerModal';
+import { InstanceTrashModal } from './components/InstanceTrashModal';
 import { DownloadsDrawer } from './components/DownloadsDrawer';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import {
@@ -122,6 +123,7 @@ export default function App() {
   const [pendingDeleteInstance, setPendingDeleteInstance] = useState<Instance | null>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [javaManagerOpen, setJavaManagerOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
 
   // Toast notification
@@ -257,7 +259,7 @@ export default function App() {
         if (detailInstance?.id === target.id) setDetailInstance(null);
         await instancesState.reload();
         void groupsState.reload();
-        showToast('实例已移除，原文件已归档到 instances/.trash。');
+        showToast('已移入实例回收站，可随时还原。');
       } catch (cause) { reportError(cause); }
     })();
   };
@@ -293,6 +295,11 @@ export default function App() {
     const inst = instances.find(item => item.folderPath === folderPath);
     if (inst) { void instanceService.openFolder(inst.id).catch(reportError); }
     else { showToast('此目录的打开入口尚未接入。'); }
+  };
+
+  const handleTrashChanged = async () => {
+    await instancesState.reload();
+    void groupsState.reload();
   };
 
   const handleInstallMod = (_mod: ModItem) => {
@@ -425,6 +432,7 @@ export default function App() {
               }}
               onOpenManageInstance={(inst) => setDetailInstance(inst)}
               onOpenCreateModal={() => setCreateModalOpen(true)}
+              onOpenTrash={() => setTrashOpen(true)}
               onDeleteInstance={handleDeleteInstance}
               onDuplicateInstance={handleDuplicateInstance}
               onRetryInstall={handleRetryInstall}
@@ -548,11 +556,19 @@ export default function App() {
         installProgress={javaRuntimesState.installProgress}
       />
 
+      {trashOpen && (
+        <InstanceTrashModal
+          isOpen={trashOpen}
+          onClose={() => setTrashOpen(false)}
+          onChanged={handleTrashChanged}
+        />
+      )}
+
       {pendingDeleteInstance && (
         <ConfirmDialog
-          title="移除实例"
-          message={`确认移除「${pendingDeleteInstance.name}」？游戏文件会归档到 instances/.trash，不会立即删除。`}
-          confirmLabel="移除"
+          title="移入实例回收站"
+          message={`确认把「${pendingDeleteInstance.name}」移入回收站？游戏存档会保留，可随时还原或永久删除。`}
+          confirmLabel="移入回收站"
           danger
           onConfirm={confirmDeleteInstance}
           onCancel={() => setPendingDeleteInstance(null)}

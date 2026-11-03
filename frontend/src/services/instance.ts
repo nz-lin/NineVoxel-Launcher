@@ -1,6 +1,6 @@
 import { InstanceService } from '../../bindings/example.com/ninevoxel/launcher/internal/instance'
-import type { Config, Instance as StoredInstance } from '../../bindings/example.com/ninevoxel/launcher/internal/instance/models'
-import type { Instance, InstanceGroup, InstanceGroupList } from '../types/launcher'
+import type { Config, Instance as StoredInstance, TrashItem as StoredTrashItem } from '../../bindings/example.com/ninevoxel/launcher/internal/instance/models'
+import type { Instance, InstanceGroup, InstanceGroupList, InstanceTrashItem } from '../types/launcher'
 import { toAppError } from './errors'
 
 export type InstanceConfig = Pick<Instance, 'name' | 'mcVersion' | 'loader' | 'partition' | 'icon' | 'memoryMb' | 'jvmArgs' | 'description' | 'isFavorite' | 'customJavaPath'>
@@ -21,6 +21,25 @@ function toInstance(item: StoredInstance): Instance {
     status: 'ready', isolatedDirectory: true,
     installationState: item.installationState as Instance['installationState'],
   }
+}
+
+function toTrashItem(item: StoredTrashItem): InstanceTrashItem {
+  return {
+    trashId: item.trashId,
+    instanceId: item.instanceId,
+    name: item.name,
+    mcVersion: item.mcVersion,
+    loader: item.loader,
+    icon: item.icon,
+    deletedAtMs: item.deletedAtMs,
+    sizeBytes: item.sizeBytes,
+    restorable: item.restorable,
+    errorMessage: item.errorMessage || undefined,
+  }
+}
+
+function toTrashItems(raw: { items: StoredTrashItem[] | null }) {
+  return (raw.items ?? []).map(toTrashItem)
 }
 
 async function call<T>(operation: () => Promise<T>): Promise<T> {
@@ -50,6 +69,19 @@ export const instanceService = {
   async openFolder(id: string) { await call(() => InstanceService.OpenInstanceFolder({ instanceId: id })) },
   async remove(id: string) { await call(() => InstanceService.DeleteInstance({ instanceId: id })) },
   async install(id: string) { return toInstance(await call(() => InstanceService.InstallInstance({ instanceId: id }))) },
+  async listTrash() {
+    return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))
+  },
+  async restoreTrash(trashId: string) {
+    const result = await call(() => InstanceService.RestoreInstanceFromTrash({ trashId }))
+    return { items: (result.items ?? []).map(toInstance), selectedInstanceId: result.selectedInstanceId }
+  },
+  async deleteTrash(trashId: string) {
+    return toTrashItems(await call(() => InstanceService.DeleteInstancePermanently({ trashId })))
+  },
+  async emptyTrash() {
+    return toTrashItems(await call(() => InstanceService.EmptyInstanceTrash()))
+  },
   async listGroups() {
     return toGroupList(await call(() => InstanceService.ListInstanceGroups()))
   },
