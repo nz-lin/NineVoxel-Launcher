@@ -98,7 +98,8 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 		if file.Extract {
 			err = extractNatives(ctx, source, target, file.Exclude)
 		} else {
-			err = copyFile(ctx, source, target)
+			// 优先硬链接：多个实例共用同一份库与客户端 JAR 时只占一份磁盘。
+			err = materializeFile(ctx, source, target)
 		}
 		if err != nil {
 			return err
@@ -121,7 +122,7 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 		if err != nil {
 			return err
 		}
-		if err := copyFile(ctx, source, target); err != nil {
+		if err := materializeFile(ctx, source, target); err != nil {
 			return err
 		}
 		if index.Virtual {
@@ -129,7 +130,7 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 			if err != nil {
 				return err
 			}
-			if err := copyFile(ctx, source, target); err != nil {
+			if err := materializeFile(ctx, source, target); err != nil {
 				return err
 			}
 		}
