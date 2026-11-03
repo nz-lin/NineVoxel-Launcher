@@ -109,6 +109,10 @@ var manifestAllowedHosts = map[string]bool{
 	"launchermeta.mojang.com":          true,
 	"resources.download.minecraft.net": true,
 	"libraries.minecraft.net":          true,
+	"maven.fabricmc.net":               true,
+	"maven.quiltmc.org":                true,
+	"maven.minecraftforge.net":         true,
+	"maven.neoforged.net":              true,
 }
 
 // DataRootProvider 由外部注入数据根解析函数，避免本包在编译期依赖 artifact 包。

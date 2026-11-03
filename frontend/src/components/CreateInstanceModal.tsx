@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Download, AlertCircle, ListChecks } from 'lucide-react';
 import type { InstanceConfig } from '../services/instance';
-import type { InstanceGroup } from '../types/launcher';
+import type { InstanceGroup, LoaderType } from '../types/launcher';
+import { MOD_LOADER_OPTIONS, type ModLoaderType } from '../types/loader';
+import { useLoaderVersions } from '../hooks/useLoaderVersions';
 import { AppSelect } from './AppSelect';
 import { VersionSelectorModal } from './VersionSelectorModal';
 
@@ -20,6 +22,8 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
 }) => {
   const [name, setName] = useState('我的全新世界');
   const [version, setVersion] = useState('');
+  const [loaderType, setLoaderType] = useState<LoaderType>('vanilla');
+  const [loaderVersion, setLoaderVersion] = useState('');
   const [icon, setIcon] = useState('🟩');
   const [partition, setPartition] = useState(defaultGroup);
   const [memoryMb, setMemoryMb] = useState(4096);
@@ -27,6 +31,23 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [selectorOpen, setSelectorOpen] = useState(false);
   const field = 'w-full px-3 py-2 rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-700 text-sm';
+  const modLoader = loaderType === 'vanilla' ? '' : loaderType as ModLoaderType;
+  const loaderCatalog = useLoaderVersions(modLoader, version);
+
+  useEffect(() => {
+    if (loaderType === 'vanilla') {
+      setLoaderVersion('');
+      return;
+    }
+    if (loaderCatalog.data?.loader !== loaderType || loaderCatalog.data?.minecraftVersion !== version) {
+      setLoaderVersion('');
+      return;
+    }
+    const available = loaderCatalog.data?.versions ?? [];
+    if (available.some((item) => item.version === loaderVersion)) return;
+    const recommended = loaderCatalog.data?.recommended;
+    setLoaderVersion(recommended || available[0]?.version || '');
+  }, [loaderCatalog.data, loaderType, loaderVersion]);
 
   const groupOptions = groups.map((group) => ({
     value: group.name,
@@ -40,7 +61,7 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
     setSaving(true);
     setError(null);
     try {
-      await onCreate({ name: name.trim(), mcVersion: version.trim(), loader: 'vanilla', partition, icon, memoryMb, jvmArgs: '-XX:+UseG1GC', description: '', isFavorite: false, customJavaPath: '' });
+      await onCreate({ name: name.trim(), mcVersion: version.trim(), loader: loaderType, loaderVersion: loaderType === 'vanilla' ? '' : loaderVersion, partition, icon, memoryMb, jvmArgs: '-XX:+UseG1GC', description: '', isFavorite: false, customJavaPath: '', customJavaRuntimeId: '' });
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -75,7 +96,39 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
             </div>
           </div>
 
-          <div className="rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 p-3 text-xs space-y-1"><p className="font-semibold">Vanilla 原版</p><p className="text-slate-500">Fabric、Forge、NeoForge 和 Quilt 安装尚未接入。</p></div>
+          <div className="space-y-2">
+            <span className="text-xs">游戏核心 / 模组加载器</span>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              <button type="button" onClick={() => { setLoaderType('vanilla'); setLoaderVersion(''); }} className={`p-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${loaderType === 'vanilla' ? 'bg-emerald-500/15 border-emerald-500 text-emerald-700 dark:text-emerald-300' : 'bg-slate-50 dark:bg-neutral-950 border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-400'}`}>Vanilla</button>
+              {MOD_LOADER_OPTIONS.map((option) => (
+                <button key={option.value} type="button" onClick={() => { setLoaderType(option.value); setLoaderVersion(''); }} className={`p-2.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${loaderType === option.value ? 'bg-emerald-500/15 border-emerald-500 text-emerald-700 dark:text-emerald-300' : 'bg-slate-50 dark:bg-neutral-950 border-slate-200 dark:border-neutral-800 text-slate-600 dark:text-neutral-400'}`}>{option.label}</button>
+              ))}
+            </div>
+            {loaderType !== 'vanilla' && (
+              <div className="rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold">{MOD_LOADER_OPTIONS.find((item) => item.value === loaderType)?.label} 版本</span>
+                  {loaderCatalog.loading && <span className="text-slate-500">正在读取官方版本…</span>}
+                </div>
+                {loaderCatalog.error ? (
+                  <div className="flex items-start gap-2 text-rose-500"><AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /><span>{loaderCatalog.error}</span></div>
+                ) : (
+                  <AppSelect
+                    value={loaderVersion}
+                    onChange={setLoaderVersion}
+                    options={(loaderCatalog.data?.versions ?? []).map((item) => ({
+                      value: item.version,
+                      label: item.version,
+                      hint: item.recommended ? '推荐' : item.stable ? '稳定' : '预览',
+                    }))}
+                    ariaLabel="加载器版本"
+                    placeholder={loaderCatalog.loading ? '正在加载…' : '请选择加载器版本'}
+                  />
+                )}
+                <p className="text-slate-500">将基于 Minecraft {version || '所选版本'} 的官方元数据安装；Fabric/Quilt 加载器版本独立于游戏版本，Forge/NeoForge 候选版本按游戏版本筛选。</p>
+              </div>
+            )}
+          </div>
 
           <div className="space-y-1.5">
             <span className="text-xs">分组</span>
@@ -95,14 +148,14 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
         {error && <div role="alert" className="px-6 pb-4 flex gap-2 text-xs text-rose-500"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
         <div className="px-6 py-4 border-t border-slate-200 dark:border-neutral-800 flex justify-end gap-3">
           <button type="button" disabled={saving} onClick={onClose} className="text-xs px-3 py-2 cursor-pointer">取消</button>
-          <button type="submit" disabled={saving || !name.trim() || !version.trim()} className="px-4 py-2 rounded-lg bg-emerald-500 text-neutral-950 font-bold text-xs flex gap-2 items-center disabled:opacity-40 cursor-pointer"><Download className="w-4 h-4" />{saving ? '正在创建…' : '创建并安装'}</button>
+          <button type="submit" disabled={saving || !name.trim() || !version.trim() || (loaderType !== 'vanilla' && !loaderVersion)} className="px-4 py-2 rounded-lg bg-emerald-500 text-neutral-950 font-bold text-xs flex gap-2 items-center disabled:opacity-40 cursor-pointer"><Download className="w-4 h-4" />{saving ? '正在创建…' : '创建并安装'}</button>
         </div>
       </form>
 
       {selectorOpen && (
         <VersionSelectorModal
           selectedVersion={version}
-          onSelect={setVersion}
+          onSelect={(value) => { setVersion(value); setLoaderVersion(''); }}
           onClose={() => setSelectorOpen(false)}
         />
       )}

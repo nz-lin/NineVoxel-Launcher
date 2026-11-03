@@ -52,9 +52,6 @@ func PrepareInstallation(versionID string) (Installation, error) {
 	if appErr != nil {
 		return Installation{}, appErr
 	}
-	if len(merged.InheritChain) != 1 {
-		return Installation{}, fmt.Errorf("暂不支持继承版本或模组加载器安装")
-	}
 	if len(plan.Warnings) > 0 {
 		return Installation{}, fmt.Errorf("版本安装计划不完整：%s", plan.Warnings[0].Message)
 	}
@@ -96,7 +93,13 @@ func PrepareInstallation(versionID string) (Installation, error) {
 	if len(result.Plan.Items) == 0 {
 		return Installation{}, fmt.Errorf("安装计划为空")
 	}
-	result.Files = append(result.Files, InstallFile{Source: "versions/" + versionID + "/" + versionID + ".json", Target: "versions/" + versionID + "/" + versionID + ".json"})
+	for _, chainID := range merged.InheritChain {
+		if _, err := artifact.ValidateRelativePath(chainID); err != nil {
+			return Installation{}, fmt.Errorf("继承版本标识无效")
+		}
+		jsonRel := "versions/" + chainID + "/" + chainID + ".json"
+		result.Files = append(result.Files, InstallFile{Source: jsonRel, Target: jsonRel})
+	}
 	return result, nil
 }
 

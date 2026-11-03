@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   X,
   Package,
@@ -33,12 +33,21 @@ import {
 } from '../types/launcher';
 import { AppSelect } from './AppSelect';
 import { MOCK_MODS, MOCK_SHADERS, MOCK_RESOURCEPACKS } from '../data/mockData';
+import { instanceService } from '../services/instance';
+import { useLoaderVersions } from '../hooks/useLoaderVersions';
+import {
+  MOD_LOADER_OPTIONS,
+  isModLoaderType,
+  loaderDisplayName,
+  type ModLoaderType
+} from '../types/loader';
 
 interface InstanceDetailModalProps {
   /** 当前要管理的实例；组件只在实例存在时挂载，因此这里是必填。 */
   instance: Instance;
   onClose: () => void;
   onUpdateInstance: (updated: Instance) => Promise<void>;
+  onInstanceChanged: (updated: Instance) => void;
   onOpenFolder: (path: string) => void;
   javaRuntimes: JavaRuntime[];
   groups: InstanceGroup[];
@@ -49,6 +58,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   instance,
   onClose,
   onUpdateInstance,
+  onInstanceChanged,
   onOpenFolder,
   javaRuntimes,
   groups,
@@ -71,6 +81,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   const [memoryMb, setMemoryMb] = useState(instance.memoryMb);
   const [jvmArgs, setJvmArgs] = useState(instance.jvmArgs);
   const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || '');
+  const [selectedJavaRuntimeId, setSelectedJavaRuntimeId] = useState(instance.customJavaRuntimeId || '');
   const [partitionName, setPartitionName] = useState(instance.partition || defaultGroup);
 
   // Mod Search & Filter
@@ -78,10 +89,31 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   const [modFilter, setModFilter] = useState<'all' | 'enabled' | 'disabled' | 'update'>('all');
 
   // Loaders upgrade / switch state
-  const [isUpdatingLoader, setIsUpdatingLoader] = useState(false);
+  const [loaderActionBusy, setLoaderActionBusy] = useState(false);
+  const [loaderActionError, setLoaderActionError] = useState<string | null>(null);
   const [loaderInstallOpen, setLoaderInstallOpen] = useState(false);
-  const [newLoaderType, setNewLoaderType] = useState<LoaderType>('fabric');
-  const [newLoaderVer, setNewLoaderVer] = useState('0.16.14');
+  const [newLoaderType, setNewLoaderType] = useState<ModLoaderType>('fabric');
+  const [newLoaderVer, setNewLoaderVer] = useState('');
+  const currentModLoader: ModLoaderType | '' = isModLoaderType(currentLoader) ? currentLoader : '';
+  const catalogLoader: ModLoaderType | '' = loaderInstallOpen
+    ? newLoaderType
+    : activeTab === 'loaders'
+      ? currentModLoader
+      : '';
+  const loaderCatalog = useLoaderVersions(catalogLoader, instance.mcVersion);
+  const currentCatalog = !loaderInstallOpen &&
+    loaderCatalog.data?.loader === currentModLoader &&
+    loaderCatalog.data?.minecraftVersion === instance.mcVersion
+    ? loaderCatalog.data
+    : null;
+  const installCatalog = loaderInstallOpen &&
+    loaderCatalog.data?.loader === newLoaderType &&
+    loaderCatalog.data?.minecraftVersion === instance.mcVersion
+    ? loaderCatalog.data
+    : null;
+  const installVersions = installCatalog?.versions ?? [];
+  const isInstalling = instance.installationState === 'installing';
+  const isLoaderBusy = loaderActionBusy || isInstalling;
 
   const [notification, setNotification] = useState<string | null>(null);
 
@@ -90,30 +122,87 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
     setTimeout(() => setNotification(null), 2500);
   };
 
+  useEffect(() => {
+    setCurrentLoader(instance.loader);
+    setLoaderVersion(instance.loaderVersion);
+  }, [instance.loader, instance.loaderVersion]);
+
+  useEffect(() => {
+    if (!loaderInstallOpen) return;
+    setNewLoaderType(isModLoaderType(instance.loader) ? instance.loader : 'fabric');
+    setNewLoaderVer('');
+    setLoaderActionError(null);
+  }, [loaderInstallOpen]);
+
+  useEffect(() => {
+    if (!loaderInstallOpen || !installCatalog) return;
+    if (installCatalog.versions.some((item) => item.version === newLoaderVer)) return;
+    setNewLoaderVer(installCatalog.recommended || installCatalog.versions[0]?.version || '');
+  }, [installCatalog, loaderInstallOpen, newLoaderVer]);
+
   // --- Loader Operations ---
-  const handleUpdateLoader = (targetVer: string) => {
-    setIsUpdatingLoader(true);
-    setTimeout(() => {
-      setIsUpdatingLoader(false);
-      setLoaderVersion(targetVer);
-      showNotify(`已将 ${currentLoader.toUpperCase()} 加载器升级至 v${targetVer}`);
-    }, 1000);
+  const changeLoader = async (kind: ModLoaderType, version: string, successMessage: string) => {
+    if (isLoaderBusy) return;
+    setLoaderActionBusy(true);
+    setLoaderActionError(null);
+    try {
+      const updated = await instanceService.updateLoader(instance.id, kind, version);
+      setCurrentLoader(updated.loader);
+      setLoaderVersion(updated.loaderVersion);
+      onInstanceChanged(updated);
+      setLoaderInstallOpen(false);
+      showNotify(successMessage);
+    } catch (cause) {
+      setLoaderActionError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setLoaderActionBusy(false);
+    }
+  };
+
+  const handleUpdateLoader = (targetVersion: string) => {
+    if (!isModLoaderType(currentLoader) || !targetVersion) return;
+    void changeLoader(currentLoader, targetVersion, `已开始将 ${loaderDisplayName(currentLoader)} 更新至 v${targetVersion}`);
   };
 
   const handleInstallLoader = () => {
-    setCurrentLoader(newLoaderType);
-    setLoaderVersion(newLoaderVer);
-    setLoaderInstallOpen(false);
-    showNotify(`已成功为实例安装 ${newLoaderType.toUpperCase()} v${newLoaderVer} 加载器`);
+    if (!installCatalog || !newLoaderVer) return;
+    void changeLoader(newLoaderType, newLoaderVer, `已开始安装 ${loaderDisplayName(newLoaderType)} v${newLoaderVer}`);
   };
 
   const handleUninstallLoader = () => {
-    if (confirm('确认卸载当前模组加载器并回退为原版 (Vanilla) 吗？已有模组将被自动停用。')) {
-      setCurrentLoader('vanilla');
-      setLoaderVersion('Release');
-      setModsList(prev => prev.map(m => ({ ...m, enabled: false })));
-      showNotify('已卸载加载器，实例已切换为原版纯净模式');
-    }
+    if (isLoaderBusy || !confirm('确认卸载当前模组加载器并回退为原版 (Vanilla) 吗？已有 .jar 模组将被停用。')) return;
+    void (async () => {
+      setLoaderActionBusy(true);
+      setLoaderActionError(null);
+      try {
+        const updated = await instanceService.uninstallLoader(instance.id);
+        setCurrentLoader(updated.loader);
+        setLoaderVersion(updated.loaderVersion);
+        onInstanceChanged(updated);
+        showNotify('已卸载加载器，实例已切换为原版纯净模式');
+      } catch (cause) {
+        setLoaderActionError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setLoaderActionBusy(false);
+      }
+    })();
+  };
+
+  const handleRetryLoaderInstall = () => {
+    if (isLoaderBusy) return;
+    void (async () => {
+      setLoaderActionBusy(true);
+      setLoaderActionError(null);
+      try {
+        const updated = await instanceService.install(instance.id);
+        onInstanceChanged(updated);
+        showNotify('已重新开始安装加载器。');
+      } catch (cause) {
+        setLoaderActionError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setLoaderActionBusy(false);
+      }
+    })();
   };
 
   // --- Mod Operations ---
@@ -253,7 +342,17 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
     setSaving(true);
     setSaveError(null);
     try {
-      await onUpdateInstance({ ...instance, name, description, isFavorite: favorite, partition: partitionName, memoryMb, jvmArgs, customJavaPath: selectedJavaPath });
+      await onUpdateInstance({
+        ...instance,
+        name,
+        description,
+        isFavorite: favorite,
+        partition: partitionName,
+        memoryMb,
+        jvmArgs,
+        customJavaPath: selectedJavaRuntimeId ? '' : selectedJavaPath,
+        customJavaRuntimeId: selectedJavaRuntimeId,
+      });
       onClose();
     } catch (cause) {
       setSaveError(cause instanceof Error ? cause.message : String(cause));
@@ -281,7 +380,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-bold text-slate-900 dark:text-neutral-100">{instance.name}</h2>
                 <span className="text-[10px] font-mono uppercase bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 px-2 py-0.5 rounded font-bold">
-                  {currentLoader} {loaderVersion}
+                  {loaderDisplayName(currentLoader)}{currentLoader !== 'vanilla' && loaderVersion ? ` ${loaderVersion}` : ''}
                 </span>
                 <span className="text-[10px] bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-400 px-2 py-0.5 rounded font-medium">
                   分区: {partitionName}
@@ -296,7 +395,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => onOpenFolder(instance.folderPath)}
+              onClick={() => onOpenFolder(instance.id)}
               className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-xs text-slate-700 dark:text-neutral-300 flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <FolderOpen className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-400" />
@@ -314,7 +413,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
         {/* Tab Navigation */}
         <div className="flex items-center gap-1 px-6 border-b border-slate-200 dark:border-neutral-800 bg-slate-100/60 dark:bg-neutral-950/40 text-xs font-medium overflow-x-auto">
           {[
-            { id: 'loaders' as const, label: `加载器 (${currentLoader.toUpperCase()})`, icon: Layers },
+            { id: 'loaders' as const, label: `加载器 (${currentLoader === 'vanilla' ? '原版' : currentLoader.toUpperCase()})`, icon: Layers },
             { id: 'mods' as const, label: `模组管理 (${modsList.length})`, icon: Package },
             { id: 'shaders' as const, label: `光影包 (${shaderList.length})`, icon: Sun },
             { id: 'resourcepacks' as const, label: `资源材质包 (${resourcePackList.length})`, icon: Palette },
@@ -325,8 +424,8 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
             return (
               <button
                 key={tab.id}
-                disabled={tab.id !== 'settings'}
-                title={tab.id === 'settings' ? '修改持久化实例配置' : '尚未接入'}
+                disabled={tab.id !== 'settings' && tab.id !== 'loaders'}
+                title={tab.id === 'settings' ? '修改持久化实例配置' : tab.id === 'loaders' ? '安装、更新或卸载模组加载器' : '尚未接入'}
                 onClick={() => setActiveTab(tab.id)}
                 className={`py-3 px-3.5 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                   isActive
@@ -346,6 +445,12 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
           {/* TAB 1: LOADERS MANAGEMENT (Install, Uninstall, Update) */}
           {activeTab === 'loaders' && (
             <div className="space-y-5">
+              {loaderActionError && (
+                <div role="alert" className="flex items-start gap-2 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{loaderActionError}</span>
+                </div>
+              )}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
@@ -356,9 +461,11 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                       <span className="text-lg font-bold text-slate-900 dark:text-neutral-100">
                         {currentLoader === 'vanilla' ? '原版纯净核心 (Vanilla)' : `${currentLoader.toUpperCase()} 加载器`}
                       </span>
-                      <span className="text-xs font-mono bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-bold">
-                        v{loaderVersion}
-                      </span>
+                      {currentLoader !== 'vanilla' && (
+                        <span className="text-xs font-mono bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-bold">
+                          v{loaderVersion || '—'}
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-600 dark:text-neutral-400 mt-1">
                       基于独立实例目录隔离运行，更换或卸载加载器不会影响其它游戏版本。
@@ -368,7 +475,8 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setLoaderInstallOpen(true)}
-                      className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                      disabled={isLoaderBusy}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       <Layers className="w-3.5 h-3.5" />
                       <span>更换/安装新加载器</span>
@@ -377,7 +485,8 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                     {currentLoader !== 'vanilla' && (
                       <button
                         onClick={handleUninstallLoader}
-                        className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500 text-red-600 dark:text-red-300 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
+                        disabled={isLoaderBusy}
+                        className="px-3 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500 text-red-600 dark:text-red-300 hover:text-white font-semibold text-xs transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         卸载加载器 (回退原版)
                       </button>
@@ -385,54 +494,59 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                   </div>
                 </div>
 
-                {/* Update Available Banner if applicable */}
-                {currentLoader === 'fabric' && loaderVersion === '0.16.10' && (
+                {isInstalling && (
+                  <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-2" role="status">
+                    <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-semibold">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>正在安装 {loaderDisplayName(currentLoader)}，已完成 {Math.round((instance.installationProgress ?? 0) * 100)}%</span>
+                    </div>
+                    <progress aria-label="加载器安装进度" className="w-full h-1.5 accent-emerald-500" max={1} value={instance.installationProgress ?? 0} />
+                    <p className="text-slate-500 dark:text-neutral-400">请勿关闭启动器。下载与安装进度也会显示在下载中心。</p>
+                  </div>
+                )}
+
+                {instance.installationState === 'failed' && (
+                  <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-3 text-xs">
+                    <div className="flex items-start gap-2 text-rose-700 dark:text-rose-300">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span>加载器安装失败：{instance.installationError || '请重试'}</span>
+                    </div>
+                    <button onClick={handleRetryLoaderInstall} disabled={isLoaderBusy} className="px-3 py-1 rounded bg-rose-500 hover:bg-rose-400 text-white font-bold text-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
+                      重试安装
+                    </button>
+                  </div>
+                )}
+
+                {!isInstalling && currentLoader !== 'vanilla' && currentCatalog?.recommended && currentCatalog.recommended !== loaderVersion && (
                   <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300">
                       <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
-                      <span>检测到 Fabric Loader 官方发布了最新稳定版本 <strong>v0.16.14</strong></span>
+                      <span>{loaderDisplayName(currentLoader)} 官方推荐稳定版为 <strong>v{currentCatalog.recommended}</strong></span>
                     </div>
                     <button
-                      onClick={() => handleUpdateLoader('0.16.14')}
-                      disabled={isUpdatingLoader}
-                      className="px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-sm"
+                      onClick={() => handleUpdateLoader(currentCatalog.recommended)}
+                      disabled={isLoaderBusy}
+                      className="px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-neutral-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      {isUpdatingLoader ? (
-                        <>
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                          <span>更新中...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Download className="w-3 h-3" />
-                          <span>一键更新加载器</span>
-                        </>
-                      )}
+                      <Download className="w-3 h-3" />
+                      <span>切换到推荐版本</span>
                     </button>
                   </div>
                 )}
               </div>
 
-              {/* Supported Loaders Overview for this Minecraft Version */}
-              <div>
-                <h3 className="text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-2">
-                  MC {instance.mcVersion} 可用的主要加载器生态支持
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                  {[
-                    { name: 'Fabric', ver: '0.16.14', desc: '轻量高效，加载迅速，适合现代优化与客户端功能', rec: true },
-                    { name: 'NeoForge', ver: '21.1.80', desc: 'Forge 新分支生态，兼容大型复杂系统模组', rec: false },
-                    { name: 'Forge', ver: '47.3.12', desc: '传统工业与大型科技模组常用加载器', rec: false },
-                  ].map((item, idx) => (
-                    <div key={idx} className="p-3 rounded-xl bg-slate-50 dark:bg-neutral-950/40 border border-slate-200 dark:border-neutral-800 space-y-1">
-                      <div className="flex items-center justify-between font-bold text-slate-800 dark:text-neutral-200">
-                        <span>{item.name}</span>
-                        <span className="font-mono text-[11px] text-slate-500 dark:text-neutral-400">v{item.ver}</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 dark:text-neutral-400">{item.desc}</p>
-                    </div>
-                  ))}
+              {currentLoader !== 'vanilla' && !loaderInstallOpen && loaderCatalog.error && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-800 dark:text-amber-300">
+                  <span>无法读取 {loaderDisplayName(currentLoader)} 官方版本：{loaderCatalog.error}</span>
+                  <button type="button" onClick={() => { void loaderCatalog.reload(); }} className="underline font-semibold shrink-0 cursor-pointer">重试</button>
                 </div>
+              )}
+
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/40 border border-slate-200 dark:border-neutral-800 text-xs text-slate-600 dark:text-neutral-400 space-y-2">
+                <p className="font-semibold text-slate-800 dark:text-neutral-200">关于加载器版本</p>
+                <p>版本列表来自 Fabric、Quilt、Forge 与 NeoForge 官方元数据。安装与更新会真实下载依赖；Forge/NeoForge 还会执行官方安装器。</p>
+                <p>Fabric/Quilt 的加载器版本独立于游戏版本，官方目录会为当前 Minecraft 版本生成对应 profile；Forge/NeoForge 的候选版本则按游戏版本筛选。</p>
+                <p>新加载器安装成功前不会删除旧版本目录；卸载加载器会移除加载器专属版本文件，并把 .jar 模组重命名停用，不会删除存档。</p>
               </div>
             </div>
           )}
@@ -773,7 +887,31 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                 </p>
               </div>
 
-              <p className="text-xs text-slate-500">Java 运行时请在启动器的 Java 管理中选择，实例专属 Java 选择尚待启动链路接入。</p>
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-2">
+                <label className="text-xs font-semibold text-slate-800 dark:text-neutral-200 block">
+                  实例专属 Java
+                </label>
+                <AppSelect
+                  value={selectedJavaRuntimeId}
+                  onChange={setSelectedJavaRuntimeId}
+                  options={[
+                    { value: '', label: '跟随全局 Java 设置', hint: '使用设置页或 Java 管理器选择的运行时' },
+                    ...javaRuntimes
+                      .filter((runtime) => runtime.status === 'ready')
+                      .map((runtime) => ({
+                        value: runtime.id,
+                        label: `${runtime.vendor} ${runtime.majorVersion}`,
+                        hint: `${runtime.versionString} · ${runtime.architecture}`,
+                      })),
+                  ]}
+                  ariaLabel="实例专属 Java"
+                  placeholder="跟随全局 Java 设置"
+                />
+                <p className="text-[11px] text-slate-500 dark:text-neutral-500">
+                  仅保存运行时标识；实际可执行文件路径由后端解析，不会下发到界面。
+                  {!selectedJavaRuntimeId && selectedJavaPath && ' 当前另有已保存的实例 Java 路径，将在跟随全局时继续使用。'}
+                </p>
+              </div>
 
               {/* Dedicated RAM Allocation */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-3">
@@ -851,7 +989,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                 <Layers className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
                 <span>安装 / 更换模组加载器</span>
               </h3>
-              <button onClick={() => setLoaderInstallOpen(false)} className="text-slate-400 hover:text-slate-700 dark:text-neutral-400 dark:hover:text-white cursor-pointer">
+              <button onClick={() => setLoaderInstallOpen(false)} disabled={isLoaderBusy} className="text-slate-400 hover:text-slate-700 dark:text-neutral-400 dark:hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -862,23 +1000,19 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                   选择加载器类型
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { id: 'fabric' as LoaderType, name: 'Fabric (推荐)' },
-                    { id: 'neoforge' as LoaderType, name: 'NeoForge' },
-                    { id: 'forge' as LoaderType, name: 'Forge' },
-                    { id: 'quilt' as LoaderType, name: 'Quilt' },
-                  ].map((l) => (
+                  {MOD_LOADER_OPTIONS.map((option) => (
                     <button
-                      key={l.id}
+                      key={option.value}
                       type="button"
-                      onClick={() => setNewLoaderType(l.id)}
+                      disabled={isLoaderBusy}
+                      onClick={() => { setNewLoaderType(option.value); setNewLoaderVer(''); }}
                       className={`p-2.5 rounded-lg text-xs font-bold text-left transition-all cursor-pointer ${
-                        newLoaderType === l.id
+                        newLoaderType === option.value
                           ? 'bg-emerald-500/20 border border-emerald-500 dark:border-emerald-400 text-emerald-700 dark:text-emerald-300'
                           : 'bg-slate-100 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 text-slate-700 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
-                      }`}
+                      } disabled:opacity-40 disabled:cursor-not-allowed`}
                     >
-                      {l.name}
+                      {option.label}
                     </button>
                   ))}
                 </div>
@@ -888,24 +1022,43 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
                 <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block mb-1.5">
                   版本选择
                 </label>
-                <input
-                  type="text"
-                  value={newLoaderVer}
-                  onChange={(e) => setNewLoaderVer(e.target.value)}
-                  placeholder="如: 0.16.14"
-                  className="w-full px-3 py-2 bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 rounded-lg text-xs text-slate-800 dark:text-neutral-200 font-mono focus:outline-none focus:border-emerald-500"
-                />
+                {loaderCatalog.loading ? (
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-slate-500 dark:text-neutral-400">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>正在读取 {loaderDisplayName(newLoaderType)} 官方版本…</span>
+                  </div>
+                ) : loaderCatalog.error ? (
+                  <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300 space-y-2">
+                    <p>{loaderCatalog.error}</p>
+                    <button type="button" onClick={() => { void loaderCatalog.reload(); }} className="underline font-semibold cursor-pointer">重新读取</button>
+                  </div>
+                ) : (
+                  <AppSelect
+                    value={newLoaderVer}
+                    onChange={setNewLoaderVer}
+                    options={installVersions.map((item) => ({
+                      value: item.version,
+                      label: item.version,
+                      hint: item.recommended ? '官方推荐' : item.stable ? '稳定版' : '预览版',
+                    }))}
+                    placeholder={installVersions.length > 0 ? '请选择加载器版本' : '该 Minecraft 版本暂无可用版本'}
+                    disabled={isLoaderBusy || installVersions.length === 0}
+                    ariaLabel="加载器版本"
+                  />
+                )}
               </div>
 
               <div className="p-3 rounded-lg bg-slate-100 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 text-[11px] text-slate-600 dark:text-neutral-400">
-                安装后将自动重构实例启动配置文件，旧模组若存在兼容性问题可在模组列表中停用。
+                将基于 Minecraft {instance.mcVersion} 的官方元数据真实下载并安装。Forge/NeoForge 需要可用的 Java 来运行官方安装器；新版本成功前不会删除当前加载器。
               </div>
 
               <button
+                type="button"
                 onClick={handleInstallLoader}
-                className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs transition-all cursor-pointer shadow-md"
+                disabled={isLoaderBusy || !installCatalog || !newLoaderVer}
+                className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-neutral-950 font-bold text-xs transition-all cursor-pointer shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                立即开始下载并安装加载器
+                {loaderActionBusy ? '正在提交安装…' : `安装 ${loaderDisplayName(newLoaderType)}${newLoaderVer ? ` v${newLoaderVer}` : ''}`}
               </button>
             </div>
           </div>

@@ -13,20 +13,48 @@ import (
 
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/download"
+	"example.com/ninevoxel/launcher/internal/loader"
 	"example.com/ninevoxel/launcher/internal/version"
 )
 
 func (s *InstanceService) install(ctx context.Context, item Instance) error {
-	prepared, err := version.PrepareInstallation(item.MCVersion)
+	kind, err := loader.ParseKind(item.Loader)
+	if err != nil {
+		return err
+	}
+	switch kind {
+	case loader.KindVanilla:
+		if err := s.installPreparedVersion(ctx, item, item.MCVersion, 1); err != nil {
+			return err
+		}
+		return s.setResolvedVersionID(item.ID, item.MCVersion)
+	case loader.KindFabric, loader.KindQuilt:
+		return s.installProfileLoader(ctx, item, kind)
+	case loader.KindForge, loader.KindNeoForge:
+		return s.installInstallerLoader(ctx, item, kind)
+	default:
+		return errors.New("暂不支持该游戏核心")
+	}
+}
+
+func (s *InstanceService) installPreparedVersion(ctx context.Context, item Instance, versionID string, maxProgress float64) error {
+	prepared, err := version.PrepareInstallation(versionID)
 	if err != nil {
 		return fmt.Errorf("解析版本安装信息失败：%w", err)
 	}
-	return s.installPrepared(ctx, item, prepared, s.runPlan)
+	return s.installPreparedRange(ctx, item, prepared, s.runPlan, maxProgress)
 }
 
 // installPrepared assembles only verified downloads into the isolated game layout.
 func (s *InstanceService) installPrepared(ctx context.Context, item Instance, prepared version.Installation, runPlan func(context.Context, string, download.TransferPlan, float64, float64) error) error {
-	if err := runPlan(ctx, item.ID, prepared.Plan, 0, 0.35); err != nil {
+	return s.installPreparedRange(ctx, item, prepared, runPlan, 1)
+}
+
+func (s *InstanceService) installPreparedRange(ctx context.Context, item Instance, prepared version.Installation, runPlan func(context.Context, string, download.TransferPlan, float64, float64) error, maxProgress float64) error {
+	if maxProgress <= 0 || maxProgress > 1 {
+		maxProgress = 1
+	}
+	if err := runPlan(ctx, item.ID, prepared.Plan, 0, 0.35*maxProgress); err != nil {
 		return err
 	}
 	index, appErr := download.LoadAssetIndex(s.root, prepared.AssetIndexID)
@@ -42,7 +70,7 @@ func (s *InstanceService) installPrepared(ctx context.Context, item Instance, pr
 	}
 	if len(expansion.Items) > 0 {
 		assets := download.TransferPlan{VersionID: item.MCVersion, PlanHash: prepared.Plan.PlanHash + "-assets", Items: expansion.Items}
-		if err := runPlan(ctx, item.ID, assets, 0.35, 0.5); err != nil {
+		if err := runPlan(ctx, item.ID, assets, 0.35*maxProgress, 0.5*maxProgress); err != nil {
 			return err
 		}
 	}
@@ -106,12 +134,12 @@ func (s *InstanceService) installPrepared(ctx context.Context, item Instance, pr
 			}
 		}
 		if i%100 == 0 {
-			if err := s.progress(item.ID, "", 0.85+0.14*float64(i+1)/float64(len(index.Objects)), prepared.JavaMajor); err != nil {
+			if err := s.progress(item.ID, "", maxProgress*(0.85+0.14*float64(i+1)/float64(len(index.Objects))), prepared.JavaMajor); err != nil {
 				return err
 			}
 		}
 	}
-	return s.progress(item.ID, "", 0.99, prepared.JavaMajor)
+	return s.progress(item.ID, "", 0.99*maxProgress, prepared.JavaMajor)
 }
 
 func (s *InstanceService) runPlan(ctx context.Context, id string, plan download.TransferPlan, base, span float64) error {
