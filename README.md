@@ -2,7 +2,7 @@
 
 NineVoxel Launcher 是面向 Minecraft Java Edition 的跨平台桌面启动器，基于 Wails v3（Go 后端 + WebView 前端）构建。
 
-当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；账号子系统（账号 SPI：微软 PKCE 浏览器登录 + 设备码回退、离线、自定 Yggdrasil、Ninevoxel 占位）已实现并接入前端账号管理与启动身份（皮肤上传、authlib-injector 注入待后续）；原版实例已支持 SQLite 持久化、独立游戏目录、版本资源安装与失败重试；主界面的真实游戏进程启动仍待接线，模组加载器安装、插件/模组市场尚未实现。具体以代码为准。
+当前仓库为 **P3 阶段代码基线**：版本清单与安装计划、下载队列、Java 运行时管理、启动参数预览与进程监督、启动配置、设置与日志等后端能力已落地；账号子系统（账号 SPI：微软 PKCE 浏览器登录 + 设备码回退、离线、自定 Yggdrasil、Ninevoxel 占位）已实现并接入前端账号管理与启动身份（皮肤上传、authlib-injector 注入待后续）；原版实例支持本地清单持久化、独立游戏目录、版本资源安装与失败重试，并已接通真实游戏启动、状态/停止控制与游戏控制台；模组加载器安装、插件/模组市场尚未实现。具体以代码为准。
 
 ## 技术栈
 
@@ -71,19 +71,20 @@ wails3 task package               # 当前平台安装包
 
 ## 原版实例
 
-从“版本实例”创建原版实例，选择官方清单中的版本或输入完整版本号。配置保存在 SQLite 的 `instances` 表，独立游戏目录为数据根下的 `instances/<id>/.minecraft/`；显示名称与分组不会参与路径拼接。
+从“版本实例”创建原版实例，选择官方清单中的版本或输入完整版本号。实例配置保存在数据根下的 `instances/<id>/instance.json`，SQLite 只保存可重建索引与选中状态；独立游戏目录为 `instances/<id>/.minecraft/`，显示名称与分组不会参与路径拼接。
 
 安装依次获取版本元数据、客户端、当前平台依赖和资源索引，再下载资源对象并组装标准游戏目录；旧式本地库会检查路径和大小后解压。列表显示真实安装状态和进度，失败可重试；应用中断后会标记为待重试，已校验缓存可复用。移除实例会将原目录归档到 `instances/.trash/`，复制操作仅复制配置并安装新实例，不复制存档。
 
-当前只支持 Vanilla 原版；继承版本、加载器安装及 `map_to_resources` 旧式布局会明确报错。资源安装完成后，主界面的游戏启动按钮仍会提示待接线，尚不启动 JVM。
+当前只支持 Vanilla 原版；继承版本、加载器安装及 `map_to_resources` 旧式布局会明确报错。资源安装完成后，主界面会按实例清单解析 Java、内存与 JVM 参数并启动 JVM；支持普通停止、强制结束、退出/崩溃提示，以及实时游戏 stdout/stderr 控制台。游戏退出后仍可按本次 `launchId` 回读最近一次会话日志。
 
 ## 数据与日志位置
 
 应用数据根（SQLite `app.db`、`versions/`、`artifacts/`、`downloads/`、`runtimes/`）：
 
+- 便携模式：可执行文件同级 `data/` 已存在时优先使用；该目录不可写时直接报错，不回退
 - macOS：`~/Library/Application Support/NineVoxel-Launcher/data`
 - Windows：`%AppData%\NineVoxel-Launcher\data`
-- 兜底：可执行文件同级 `data/`；便携版以该目录已存在为判定依据
+- 兜底：用户配置目录不可写时使用可执行文件同级 `data/`
 
 日志目录（`launcher.log`、`app-YYYYMMDD[-序号].log`、`game-<launchId>-YYYYMMDD[-序号].log`）：
 

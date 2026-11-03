@@ -24,6 +24,15 @@ Build frontend assets before root Go checks: `main.go` embeds `frontend/dist`, w
 
 Format Go with `gofmt`; use lowercase package names and exported `PascalCase` identifiers. Use two-space indentation for TypeScript/TSX, `PascalCase` component filenames, and `useCamelCase` hook names. Follow surrounding quote and semicolon conventions. Frontend `lint` performs type checking; no ESLint or Prettier configuration is present.
 
+### Comments
+
+Write comment prose in Chinese; keep identifiers, commands, and API names in English. Explain intent, constraints, and the reason behind a non-obvious choice instead of restating the code.
+
+- Go packages that own real behavior ship a `doc.go` whose package comment opens with `// Package <name> 提供…`. Group the following paragraphs under `#` headings covering design goals, hard constraints (especially security boundaries such as "credentials never reach the frontend"), relationships to sibling packages, and explicit non-goals. Exported identifiers get a comment that starts with the identifier's own name.
+- Frontend components, hooks, and services open with a multi-line `/** */` block describing the module's role. Document member-level intent with a single-line `/** … */` on state variables, derived values, and helpers, and record the rule's source when there is one, for example `/** 离线玩家名规则：3-16 位字母、数字或下划线（与后端离线来源的输入校验一致）。 */`.
+- Group long files with `// ===== 主题 =====` separators and cite the decision record or task id when a block implements one.
+- Skip comments that merely restate a signature or a mechanical statement, and update or delete comments that no longer match behavior.
+
 ## Testing Guidelines
 
 Use Go's standard `testing` package, `*_test.go` filenames, and `TestXxx` functions; table-driven cases are common. Run focused checks such as `go test ./internal/runtime` during development, then the full suite. No coverage threshold or frontend test runner is configured. Desktop windows, frontend/backend events, and real interactions require manual acceptance testing.
