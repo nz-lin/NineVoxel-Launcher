@@ -2,7 +2,7 @@
 //
 // 分工：连接建立与 DSN pragma 全部复用 internal/database（ADR-002 的唯一实现），
 // 本文件只负责三件事：
-//  1. 解析数据库文件路径（<用户配置目录>/NineVoxel-Launcher/data/app.db，回退 <exe 目录>/data/app.db）；
+//  1. 解析数据库文件路径（复用 artifact.DataRoot，确保 app.db 与制品缓存使用同一数据根）；
 //  2. 打开数据库并执行迁移（复用 database.Open 与 database.Migrate）；
 //  3. 以 key-value 形式读写 app_settings 表。
 //
@@ -20,6 +20,7 @@ import (
 	"sort"
 	"time"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/platform"
 )
@@ -91,41 +92,44 @@ const (
 	PathKindUnavailable = "unavailable"
 )
 
-// ResolveDatabasePath 按接口冻结清单 §8.9 解析数据库文件路径。
+// ResolveDatabasePath 解析数据库文件路径。
 //
-// 优先级（不得调整）：
-//  1. `<用户配置目录>/NineVoxel-Launcher/data/app.db`（os.UserConfigDir）；
-//  2. 回退 `<exe 目录>/data/app.db`；
-//  3. 两处都不可用 → 返回空路径，调用方应报 PATH_INVALID_001。
+// 数据根以 artifact.DataRoot 为唯一权威：exe 同级 `data/` 已存在时优先使用
+// 便携目录；否则使用用户配置目录，用户目录不可写时再回退 exe 同级目录。
+// 这样 app.db 不会与实例、版本和下载缓存分裂到两个数据目录。
 //
 // 可写性判定复用 platform.ProbeWritable，与 P1-01 的目录探测保持同一套语义
 // （真实创建临时文件，而不是只看目录是否存在）。
 func ResolveDatabasePath() DatabasePathStatus {
-	// 第一步：用户配置目录。配置目录跨平台由 os.UserConfigDir 提供，
-	// Windows 为 %AppData%，macOS/Linux 为 ~/.config 一族。
-	if configDir, err := os.UserConfigDir(); err == nil {
-		dir := filepath.Join(configDir, appDataDirName, dataSubDirName)
-		if platform.ProbeWritable(dir) {
-			return DatabasePathStatus{
-				Path: filepath.Join(dir, databaseFileName),
-				Kind: PathKindUserConfig,
-			}
-		}
+	root, rootErr := artifact.DataRoot()
+	if rootErr != nil || root == "" {
+		return DatabasePathStatus{Kind: PathKindUnavailable}
 	}
 
-	// 第二步：回退到可执行文件同级目录（便携版场景）。
-	if exePath, err := os.Executable(); err == nil {
-		dir := filepath.Join(filepath.Dir(exePath), dataSubDirName)
-		if platform.ProbeWritable(dir) {
-			return DatabasePathStatus{
-				Path: filepath.Join(dir, databaseFileName),
-				Kind: PathKindExeDir,
-			}
-		}
+	// artifact.DataRoot 只做不创建目录的探测；这里创建数据根并再次确认可写，
+	// 因为 SQLite 无法在尚不存在的目录中创建 app.db。
+	if !platform.ProbeWritable(root) {
+		return DatabasePathStatus{Kind: PathKindUnavailable}
 	}
 
-	// 第三步：两处都不可用。
-	return DatabasePathStatus{Kind: PathKindUnavailable}
+	return DatabasePathStatus{
+		Path: filepath.Join(root, databaseFileName),
+		Kind: databasePathKind(root),
+	}
+}
+
+// databasePathKind 根据数据根位置返回数据库目录来源类别。
+//
+// artifact.DataRoot 只会返回用户配置目录或 exe 同级便携目录；无法匹配
+// 用户配置目录时按 exe 目录归类，供前端展示而不暴露绝对路径。
+func databasePathKind(root string) string {
+	if configDir, err := os.UserConfigDir(); err == nil && configDir != "" {
+		userRoot := filepath.Join(configDir, appDataDirName, dataSubDirName)
+		if filepath.Clean(root) == filepath.Clean(userRoot) {
+			return PathKindUserConfig
+		}
+	}
+	return PathKindExeDir
 }
 
 // OpenSQLiteStore 打开（必要时创建）SQLite 设置存储并执行迁移。

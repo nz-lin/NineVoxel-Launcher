@@ -396,6 +396,21 @@ func (s *Service) StringSetting(key, fallback string) string {
 	return stringValue(s.snapshot, key, fallback)
 }
 
+// IntSetting 读取当前设置快照中的整数项。
+//
+// 参数 key 为设置项标识，fallback 为缺失、未初始化或类型不符时的回退值。
+// 与 BoolSetting / StringSetting 一样只读内存快照，不做磁盘 IO。
+func (s *Service) IntSetting(key string, fallback int) int {
+	if s == nil {
+		return fallback
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return intValue(s.snapshot, key, fallback)
+}
+
 // Enabled 返回当前是否处于持久化模式。
 //
 // 供装配层与前端提示使用：false 表示设置只在本次会话内有效。

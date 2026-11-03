@@ -219,3 +219,11 @@ func StringSetting(key, fallback string) string {
 	}
 	return fallback
 }
+
+// IntSetting 读取进程内设置快照里的整数项，供装配层注入为 Provider。
+func IntSetting(key string, fallback int) int {
+	if service := Svc(); service != nil {
+		return service.IntSetting(key, fallback)
+	}
+	return fallback
+}

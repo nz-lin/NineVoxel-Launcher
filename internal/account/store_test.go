@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -816,6 +817,14 @@ func TestStoreConcurrentSetSelected(t *testing.T) {
 
 // TestStoreDefaultDatabasePath 验证路径解析结果的形式（环境不可用时接受明确报错）。
 func TestStoreDefaultDatabasePath(t *testing.T) {
+	tempDir := t.TempDir()
+	if goruntime.GOOS == "windows" {
+		t.Setenv("AppData", tempDir)
+	} else {
+		t.Setenv("HOME", tempDir)
+		t.Setenv("XDG_CONFIG_HOME", tempDir)
+	}
+
 	path, pathErr := DefaultDatabasePath()
 	if pathErr != nil {
 		// 沙箱/CI 中用户配置目录与 exe 目录都可能不可写，此时允许返回存储错误。
@@ -830,5 +839,8 @@ func TestStoreDefaultDatabasePath(t *testing.T) {
 	}
 	if !strings.HasSuffix(path, "app.db") {
 		t.Fatalf("数据库路径期望以 app.db 结尾，实际 %q", path)
+	}
+	if !strings.HasPrefix(path, tempDir) {
+		t.Fatalf("数据库路径未落在临时目录: %s", path)
 	}
 }
