@@ -36,9 +36,11 @@ const (
 	// 来源：决策记录第五节冻结表：`LAUNCH_ARGS_001`（启动参数构建失败），首个使用卡 P2-04。
 	ErrorCodeLaunchArgs = "LAUNCH_ARGS_001"
 
-	// ErrorCodeLaunchArgsTooLong 表示参数总长度超限。
+	// ErrorCodeLaunchArgsTooLong 表示参数总长度超限且无法改用参数文件。
 	//
 	// 来源：决策记录第五节冻结表：`LAUNCH_ARGS_002`（参数总长度超限），首个使用卡 P2-04。
+	// 校验点已前移到进程层（argfile.go）：Java 9+ 会改写为 `@argfile`，
+	// 只有 Java 8 或 Java 版本未知时才会返回该错误码。
 	ErrorCodeLaunchArgsTooLong = "LAUNCH_ARGS_002"
 
 	// ===== D-12：arguments.rules 最小语义（2026-11-01 补强，决策记录第七节）=====
@@ -80,10 +82,12 @@ const (
 
 	// maxTotalArgumentBytes 是「所有参数字符总长」的上限。
 	//
-	// 取 32767（Windows CreateProcess 的传统命令行长度上限）：虽然 Go 的 exec 在
-	// Windows 上通过 CreateProcess 传递参数、实际分发给 Java 的是同一份命令行，
-	// 超过该长度会被系统拒绝。**在软件层提前拦住**可以给出明确错误，
-	// 而不是让进程创建以难以理解的方式失败。
+	// 取 32767（Windows CreateProcess 的传统命令行长度上限）：Go 的 exec 在
+	// Windows 上通过 CreateProcess 传递参数，超过该长度会被系统拒绝。
+	//
+	// 校验点放在进程层（start 之前）：那里才知道所选 Java 的主版本，可以在
+	// 超限时改用 `@argfile` 把参数移出命令行（见 argfile.go）；本包构建计划时
+	// 不拦截，否则装加载器的实例连预览都会被拒。
 	// 说明：该上限按「参数文本总字节数」计算，不追求逐字节模拟系统计数规则，
 	// 只作为「明显过长」的防线。
 	maxTotalArgumentBytes = 32767
@@ -1004,9 +1008,6 @@ const (
 	// messageClassPathEmpty 表示 classpath 为空（无法启动）。
 	messageClassPathEmpty = "classpath 为空，无法启动游戏（客户端 JAR 与依赖库均未就绪）。"
 
-	// messageArgsTooLong 是参数总长度超限的提示模板。
-	messageArgsTooLong = "启动参数总长度 %d 字节，超过上限 %d 字节。"
-
 	// messageNativesMissing 表示 natives 目录缺失（blocking）。
 	messageNativesMissing = "未找到 natives 目录，游戏将无法加载本地库；P2 不解压，需由后续阶段补齐。"
 
@@ -1037,8 +1038,10 @@ const (
 //
 // 失败情形（返回 *Error）：
 //   - classpath 为空 → `LAUNCH_ARGS_001`；
-//   - 附加参数非法 → `LAUNCH_ARGS_001`；
-//   - 参数总长度超限 → `LAUNCH_ARGS_002`。
+//   - 附加参数非法 → `LAUNCH_ARGS_001`。
+//
+// 参数总长度**不在此校验**：Windows 命令行上限只在进程启动时生效，而超限可否
+// 绕过取决于所选 Java 的主版本（Java 9+ 可用 `@argfile`），见 argfile.go。
 //
 // 成功情形也可能 `SafeToLaunch=false`：存在未解析占位符或 blocking 警告时，
 // 计划本身可展示，但不应交给进程层执行。
@@ -1062,7 +1065,7 @@ func buildLaunchPlan(root, versionID string, merged *mergedVersion, additionalJv
 // additionalJvmArgs / additionalGameArgs 为可选附加参数（来自前端，需逐项校验）；
 // identity 为所选账号的启动身份（零值表示未选账号）。
 //
-// 失败情形与 `buildLaunchPlan` 完全相同（classpath / 附加参数 / 长度）。
+// 失败情形与 `buildLaunchPlan` 完全相同（classpath 为空 / 附加参数非法）。
 // 只读：不创建目录、不写文件、不解压。
 func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string, identity AccountIdentity) (*LaunchPlan, *Error) {
 	if merged == nil {
@@ -1084,22 +1087,8 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 	classPathEntries := make([]string, 0, len(merged.Libraries)+2)
 	missingLibraries := make([]string, 0, 8)
 
-	// 客户端 JAR：按 `jar` 优先、`id` 回退的标识定位；两个位置都尝试。
-	clientJarPath := ""
-	jarRelative := dirVersions + fileSeparatorSlash + merged.ID + fileSeparatorSlash + merged.ClientJarID + ".jar"
-	if absolute, resolveErr := resolveInside(root, jarRelative); resolveErr == nil {
-		if isRegularNonEmptyFile(absolute) {
-			clientJarPath = absolute
-		}
-	}
-	if clientJarPath == "" && merged.ClientJarID != merged.ID {
-		altRelative := dirVersions + fileSeparatorSlash + merged.ID + fileSeparatorSlash + merged.ID + ".jar"
-		if absolute, resolveErr := resolveInside(root, altRelative); resolveErr == nil {
-			if isRegularNonEmptyFile(absolute) {
-				clientJarPath = absolute
-			}
-		}
-	}
+	// 客户端 JAR：自身目录优先，缺失时按 inheritsFrom 回退父版本目录。
+	clientJarPath := resolveClientJarPath(root, merged)
 	if clientJarPath != "" {
 		classPathEntries = append(classPathEntries, clientJarPath)
 	}
@@ -1248,14 +1237,11 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 		Severity: warningSeverityInfo,
 	})
 
-	// 8. 参数总长度校验（`LAUNCH_ARGS_002`）。
-	totalBytes := totalArgumentBytes(jvmParts) + totalArgumentBytes(gameParts)
-	if totalBytes > maxTotalArgumentBytes {
-		return nil, newInputError(ErrorCodeLaunchArgsTooLong,
-			fmt.Sprintf(messageArgsTooLong, totalBytes, maxTotalArgumentBytes))
-	}
-
-	// 9. 组装 LaunchPlan。
+	// 8. 组装 LaunchPlan。
+	//
+	// 参数总长度**不在这里校验**：Windows 的 32767 字符是「交给系统时」的限制，
+	// 由进程层负责（可改用 `@argfile` 绕过，见 argfile.go）。在这里提前拒绝
+	// 会让装加载器的实例连预览都打不开，而它们恰恰是最需要预览的。
 	// 安全判定：有未解析占位符，或存在 blocking 级警告时不可启动。
 	safeToLaunch := len(unresolved) == 0 && !hasBlockingWarning(warnings)
 
@@ -1276,17 +1262,6 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 	}
 
 	return plan, nil
-}
-
-// totalArgumentBytes 计算参数数组中所有值文本的总字节数。
-//
-// 参数 parts 为参数数组；返回总字节数（不计算分隔符与引号，仅作长度防线）。
-func totalArgumentBytes(parts []ArgumentPart) int {
-	total := 0
-	for _, part := range parts {
-		total += len(part.Value)
-	}
-	return total
 }
 
 // hasBlockingWarning 判断警告列表中是否存在 blocking 级警告。

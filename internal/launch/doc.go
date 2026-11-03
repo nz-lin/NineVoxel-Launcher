@@ -22,4 +22,16 @@
 // 日志约定：成功与失败各记一条 `component=launch` 的 info/warn，
 // `attributes` 只放 `javaExecutableName`、`javaMajorVersion` 等非敏感键，
 // **不放完整路径、不放版本输出全文**。
+//
+// # 启动参数如何交给 JVM
+//
+// 命令行只放「JVM 启动前就必须知道」的内容：JVM 参数、classpath、引导器入口类。
+// **游戏主类与全部游戏参数经 stdin 传给引导器**（launcher part，见 launcherpart.go），
+// 由引导器在同一个 JVM 内反射调用游戏主类。这样：
+//   - 不受 Windows 32767 字符命令行上限约束（装加载器的实例依赖库极多）；
+//   - `--accessToken` 等凭据不出现在进程命令行里，任务管理器与 `ps` 都看不到。
+//
+// classpath 与 JVM 参数本身仍可能超长（例如 NeoForge 的 `-p` 模块路径），
+// 此时改用 `@argfile`（Java 9+，见 argfile.go）；Java 8 不支持该语法，
+// 只能返回 `LAUNCH_ARGS_002` 并提示缩短游戏目录路径。
 package launch

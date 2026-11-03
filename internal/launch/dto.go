@@ -469,6 +469,13 @@ type LaunchPlan struct {
 	// **仅供进程层内部使用**，绝不进入任何前端 DTO
 	// （预览走 `LaunchPlanPreview`，启动走 `LaunchAcceptedResult` / `LaunchStatusResult`）。
 	JavaExecutablePath string `json:"-"`
+
+	// JavaMajorVersion 为本次启动所用 Java 的主版本号（进程层追加）。
+	//
+	// 用途：命令行超长时判断能否改用 `@argfile`（Java 9 起支持）。
+	// 0 表示未知，按「不支持」处理，宁可报错也不赌。
+	// 仅供进程层内部使用，绝不进入任何前端 DTO。
+	JavaMajorVersion int `json:"-"`
 }
 
 // LaunchPlanPreviewRequest 是「预览启动计划」的入参。

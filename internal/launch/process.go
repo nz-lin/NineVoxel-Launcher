@@ -11,8 +11,9 @@
 //  2. **为什么不能继承 stdio 的 stdin**：GUI 进程没有真实控制台 stdin，
 //     若让子进程继承它，会出现「两个进程抢同一个句柄」的未定义行为；
 //     更实际的问题是继承来的 stdin 可能指向启动器的调用者（例如某些 IDE），
-//     写入会互相干扰。因此这里显式建立**可写管道**并交给 P2-06——
-//     优雅停止（D-3）需要能关闭它。
+//     写入会互相干扰。因此这里显式建立**可写管道**：它承担两件事——
+//     写入启动脚本（游戏主类与游戏参数，见 launcherpart.go），
+//     以及作为 P2-06 优雅停止（D-3）的关闭信号。
 //
 //  3. **为什么环境变量要白名单化**：直接继承 `os.Environ()` 会把启动器进程的
 //     全部环境（可能含用户凭据类变量、代理配置、调试开关）带给游戏子进程，
@@ -26,7 +27,6 @@ package launch
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -117,14 +117,41 @@ const (
 	// messageProcessNativesCreateFailed 表示无法创建 natives 目录。
 	messageProcessNativesCreateFailed = "无法创建 natives 目录，请确认游戏目录可写。"
 
-	// messageProcessArgsTooLong 是参数总长超限的提示模板。
+	// messageProcessArgsTooLong 表示参数总长超限且当前 Java 不支持参数文件。
 	//
-	// 这是真实常见场景（classpath 含大量库时会变长），必须给出可读原因，
-	// 而不是把 Windows 的原始命令行错误直接抛给用户。
-	messageProcessArgsTooLong = "启动参数过长（%d 字节，上限 %d 字节），通常由依赖库过多导致。请检查该版本是否完整安装。"
+	// 只在 Java 8 或版本未知时出现：Java 9 及以上会用 `@argfile` 兜底，
+	// 用户不会看到这条错误。提示里先给「缩短路径」这一条 Java 8 用户可执行的
+	// 建议，再说明版本限制——直接让 1.12.2 玩家升级 Java 会让游戏起不来。
+	messageProcessArgsTooLong = "启动参数过长（%d 字节，上限 %d 字节），无法交给系统执行；请尝试把游戏目录移到更短的路径。当前 Java 版本过低，不能自动改用参数文件（需要 Java 9 及以上才能启用该机制）。"
+
+	// messageArgFileCreateFailed 表示参数文件的临时目录或文件创建失败。
+	messageArgFileCreateFailed = "无法创建启动参数文件（临时目录不可写），请检查系统临时目录的权限。"
+
+	// messageArgFileUnencodable 表示参数文本含系统代码页无法表达的字符。
+	//
+	// 简体中文 Windows 的系统代码页是 GBK，emoji 等字符无法表示；此时给出
+	// 「改为纯英文路径」这一条用户可执行的建议，而不是让 JVM 读到乱码。
+	messageArgFileUnencodable = "启动参数过长，且参数中的字符无法按系统编码写入参数文件；请把游戏目录改为纯英文路径后重试。"
 
 	// messageProcessEmptyCommand 表示没有任何可执行的参数（主类缺失）。
 	messageProcessEmptyCommand = "启动参数为空，无法启动游戏（缺少主类或参数）。"
+
+	// messageLauncherPartUnavailable 表示引导器字节码无法落地（临时目录不可写）。
+	//
+	// 引导器是**唯一**把游戏参数送出命令行的通道；它不可用时不静默退回旧形态，
+	// 因为旧形态会重新引入命令行长度上限与令牌外泄。
+	messageLauncherPartUnavailable = "无法准备启动引导器（临时目录不可写），请检查系统临时目录的权限。"
+
+	// messageLauncherPartScriptInvalid 表示启动脚本里有无法按行协议传递的内容。
+	//
+	// 行协议以换行分隔参数，值里一旦含换行就无法区分「一个参数」与「两个参数」；
+	// 这类内容只可能来自被篡改的版本 JSON 或附加参数，直接拒绝比默默截断安全。
+	messageLauncherPartScriptInvalid = "启动参数含无法通过引导器传递的字符（换行符），请检查该版本的参数配置。"
+
+	// messageLauncherPartScriptFailed 表示脚本写入子进程 stdin 失败。
+	//
+	// 通常意味着 Java 进程刚起来就退出了（classpath 缺失、引导器类加载失败）。
+	messageLauncherPartScriptFailed = "无法把启动参数交给游戏进程，请检查该版本是否完整安装。"
 )
 
 // GameProcess 是一次已启动的游戏进程及其 stdio 采集状态。
@@ -158,8 +185,23 @@ type GameProcess struct {
 	// readsDone 在两个读取 goroutine 都结束后关闭。
 	readsDone chan struct{}
 
+	// cleanupTemp 删除启动时生成的临时文件（引导器目录、参数文件）；无需清理时为 nil。
+	cleanupTemp func()
+
 	// waitReadsOnce 保证 WaitReads 可安全重复调用。
 	waitReadsOnce sync.Once
+}
+
+// CleanupTempFiles 删除启动时生成的临时文件（引导器目录与参数文件）。
+//
+// 仅在命令行超长、改用 `@argfile` 时才存在临时文件；JVM 只在启动瞬间读取它，
+// 因此必须在进程退出后删除，不能提前。可安全重复调用（清理后会置空）。
+func (p *GameProcess) CleanupTempFiles() {
+	if p == nil || p.cleanupTemp == nil {
+		return
+	}
+	p.cleanupTemp()
+	p.cleanupTemp = nil
 }
 
 // WaitReads 等待 stdout 与 stderr 的读取 goroutine 结束。
@@ -219,13 +261,22 @@ func (p *GameProcess) StdoutPipeCount() int {
 //
 // 返回 `*GameProcess`（交接给 P2-06）与错误（`*Error`，带稳定错误码）。
 //
+// 启动流程（顺序不可调整）：
+//  1. 校验工作目录；
+//  2. 落地引导器字节码、组装命令行（只有 JVM 参数 + classpath + 引导器类名）；
+//  3. 命令行仍超长时改用 `@argfile`（Java 9+），否则报错；
+//  4. 创建进程；
+//  5. 把**游戏主类与游戏参数**写入 stdin，并保持管道打开。
+//
 // 失败时的错误码（见报告的错误码表）：
 //   - 工作目录不存在 / 不是目录 → `PATH_INVALID_001`；
-//   - 参数总长超 32767 字节 → `LAUNCH_ARGS_002`；
+//   - 参数总长超 32767 字节且无法改用参数文件 → `LAUNCH_ARGS_002`；
 //   - 参数为空（无主类）→ `LAUNCH_ARGS_001`；
 //   - `cmd.Start()` 失败（可执行文件不存在/无权限）→ `LAUNCH_PROCESS_001`。
 //
 // 本函数不调用 `cmd.Wait()`：进程生命周期由 P2-06 管理。
+// 唯一的例外是「脚本写入失败」——此时进程尚未交给 supervisor，必须就地回收。
+// 引导器目录与参数文件由调用方在进程退出后通过 `CleanupTempFiles` 清理。
 func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) {
 	if plan == nil {
 		return nil, newInputError(ErrorCodeLaunchArgs, messageProcessEmptyCommand)
@@ -241,24 +292,52 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 		return nil, dirErr
 	}
 
-	// 第二步：组装参数数组（classpath + JVM 参数 + 主类 + 游戏参数）。
-	args, argsErr := buildProcessArguments(plan)
+	// 第二步：准备引导器并组装命令行。
+	//
+	// 游戏主类与游戏参数不进命令行，改由 `buildLaunchScript` 生成脚本、启动后
+	// 写入子进程 stdin（见 launcherpart.go）。命令行因此只剩 JVM 参数 +
+	// classpath + 引导器类名。
+	launcherPartDir, cleanupPart, partErr := prepareLauncherPart()
+	if partErr != nil {
+		return nil, partErr
+	}
+	releasePart := func() {
+		if cleanupPart != nil {
+			cleanupPart()
+		}
+	}
+
+	args, argsErr := buildProcessArguments(plan, launcherPartDir)
 	if argsErr != nil {
+		releasePart()
 		return nil, argsErr
 	}
 
-	// 第三步：参数总长校验。
-	//
-	// Windows 的 `CreateProcess` 整体命令行上限为 32767 字节；classpath 含大量
-	// 依赖库时是真实常见场景。在这里提前拦住可给出可读原因，
-	// 而不是让 `cmd.Start()` 返回系统级错误。
-	totalBytes := 0
-	for _, arg := range args {
-		totalBytes += len(arg)
+	script, scriptErr := buildLaunchScript(plan.MainClass, plan.GameArguments)
+	if scriptErr != nil {
+		releasePart()
+		return nil, scriptErr
 	}
-	if totalBytes > maxTotalArgumentBytes {
-		return nil, newInputError(ErrorCodeLaunchArgsTooLong,
-			fmt.Sprintf(messageProcessArgsTooLong, totalBytes, maxTotalArgumentBytes))
+
+	// 第三步：参数总长校验与参数文件兜底。
+	//
+	// 把游戏参数挪到 stdin 之后，命令行里剩下的主要变量就是 classpath。
+	// 若它本身仍然超长（例如 NeoForge 的 `-p` 模块路径），Java 9 及以上可以
+	// 把整串参数移进 `@argfile`（见 argfile.go）；Java 8 不支持该语法，
+	// 只能提前拦住并给出可读原因，而不是让 `cmd.Start()` 返回系统级错误。
+	preparedArgs, argFileCleanup, prepareErr := prepareProcessArguments(args, plan.JavaMajorVersion)
+	if prepareErr != nil {
+		releasePart()
+		return nil, prepareErr
+	}
+	args = preparedArgs
+
+	// 后续任一步失败都要删掉已创建的临时文件（引导器与参数文件），避免残留。
+	releaseTemp := func() {
+		releasePart()
+		if argFileCleanup != nil {
+			argFileCleanup()
+		}
 	}
 
 	// 第三步半：确保 natives 目录真实存在。
@@ -275,6 +354,7 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 	// natives 文件的解压属于 P3 下载引擎。D-10 的「不自动解压」
 	// 不等于「连目录都不建」，此处修正此前的实现遗漏。
 	if nativesErr := ensureNativesDirectory(plan.NativesDirectory); nativesErr != nil {
+		releaseTemp()
 		return nil, nativesErr
 	}
 
@@ -296,6 +376,7 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 	stdinPipe, err := command.StdinPipe()
 	if err != nil {
 		// StdinPipe 失败属于进程创建层面的问题（句柄分配失败）。
+		releaseTemp()
 		return nil, newSystemError(ErrorCodeLaunchProcess, messageProcessStartFailed)
 	}
 
@@ -303,12 +384,15 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
 		_ = stdinPipe.Close()
+		releaseTemp()
 		return nil, newSystemError(ErrorCodeLaunchProcess, messageProcessStartFailed)
 	}
 
 	stderrPipe, err := command.StderrPipe()
 	if err != nil {
 		_ = stdinPipe.Close()
+		_ = stdoutPipe.Close()
+		releaseTemp()
 		return nil, newSystemError(ErrorCodeLaunchProcess, messageProcessStartFailed)
 	}
 
@@ -318,6 +402,9 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 		_ = stdinPipe.Close()
 		_ = stdoutPipe.Close()
 		_ = stderrPipe.Close()
+
+		// 进程没起来，参数文件已无用途，立即清理。
+		releaseTemp()
 
 		// 错误分类：可执行文件问题是 LAUNCH_PROCESS_001；
 		// 其余（含权限）同样归该类，因为对用户而言都是「进程起不来」。
@@ -339,9 +426,15 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 		StartedAt:   startedAt,
 		startedAtMs: startedAt.UnixMilli(),
 		readsDone:   make(chan struct{}),
+		cleanupTemp: releaseTemp,
 	}
 
 	// 第六步：启动两个读取 goroutine。
+	//
+	// **必须在写脚本之前启动**：脚本可能有几十 KB，超过管道缓冲时写入会阻塞。
+	// 如果此时子进程恰好因为类加载失败向 stderr 打了大量内容，它的 stderr 缓冲
+	// 也会写满 → 子进程卡住不再读 stdin → 双方互等。先开读取方，这条死锁路径
+	// 就不存在了。
 	//
 	// 每个流一个 goroutine：stdio 的两路各自独立，一路阻塞不应影响另一路。
 	// 读取结果交给 P2-07 的通道（通过 `dispatchGameOutput` 解耦）。
@@ -362,6 +455,32 @@ func StartGameProcess(plan *LaunchPlan, javaPath string) (*GameProcess, *Error) 
 		readers.Wait()
 		close(process.readsDone)
 	}()
+
+	// 第七步：把启动脚本写入子进程 stdin。
+	//
+	// 必须**在 Start 之后**：引导器进程起来后才会读 stdin。写完**不关闭**管道：
+	// 关闭 stdin 是 D-3 的优雅停止信号，这里提前关闭会让 supervisor 的停止
+	// 路径无从下手（关一个已关闭的管道不会给游戏任何信号）。
+	if _, writeErr := stdinPipe.Write([]byte(script)); writeErr != nil {
+		// 进程已起来但读不到脚本：只能收掉，否则会留下一个阻塞在 stdin 上的
+		// 孤儿 Java 进程。这里是**唯一**在 StartGameProcess 内 Wait 的分支：
+		// 进程尚未交给 supervisor，没人会替它回收句柄。
+		_ = process.Process.Kill()
+		_ = process.Cmd.Wait()
+		process.WaitReads()
+
+		_ = stdinPipe.Close()
+		releaseTemp()
+
+		logger().Warn("写入启动脚本失败", logging.Fields{
+			Event:     "launch.process.script.failed",
+			ErrorCode: ErrorCodeLaunchProcess,
+			Attributes: map[string]string{
+				"executableName": execBaseName(javaPath),
+			},
+		})
+		return nil, newSystemError(ErrorCodeLaunchProcess, messageLauncherPartScriptFailed)
+	}
 
 	logger().Info("游戏进程已启动", logging.Fields{
 		Event: "launch.process.started",
@@ -436,13 +555,16 @@ func validateProcessWorkDir(dir string) *Error {
 	return nil
 }
 
-// buildProcessArguments 把 LaunchPlan 的四路结构组装成参数数组。
+// buildProcessArguments 组装**传给 JVM 的命令行**（不含 javaPath 本身）。
 //
-// 组装顺序（与 JVM 命令行语义一致）：
+// 组装顺序：
 //  1. JVM 参数（版本 JSON 的 `arguments.jvm` 已解析结果 + 启动器附加）；
-//  2. `-cp <classpath>`：classpath 以 `os.PathListSeparator` 拼接；
-//  3. 主类；
-//  4. 游戏参数。
+//  2. `-cp <classpath>`：**引导器 classpath 根在前**，其后是计划里的 classpath，
+//     以 `os.PathListSeparator` 拼接；
+//  3. 引导器入口类 `com.ninezhou.ninevoxel.EntryPoint`。
+//
+// **游戏参数与游戏主类都不在这里**：它们走 stdin（见 buildLaunchScript）。
+// 这是绕开命令行长度上限、并把 accessToken 移出进程命令行的关键一步。
 //
 // 为什么 `-cp` 由这里注入而不是由 P2-04 注入：
 // P2-04 刻意保持「四路分离」，`classpath` 是**独立字段**而不是参数数组的一部分
@@ -450,9 +572,10 @@ func validateProcessWorkDir(dir string) *Error {
 // 因此把「独立字段 → 命令行参数」的转换放在唯一启动点，职责更清晰：
 // P2-04 负责「是什么」，本卡负责「怎么交给系统」。
 //
-// 参数 plan 为启动计划；返回参数数组（不含 javaPath 本身）与错误。
-func buildProcessArguments(plan *LaunchPlan) ([]string, *Error) {
-	args := make([]string, 0, len(plan.JVMMajorArgs)+len(plan.GameArguments)+3)
+// 参数 plan 为启动计划；launcherPartDir 为引导器 classpath 根目录。
+// 返回参数数组与错误。
+func buildProcessArguments(plan *LaunchPlan, launcherPartDir string) ([]string, *Error) {
+	args := make([]string, 0, len(plan.JVMMajorArgs)+3)
 
 	// 1. JVM 参数。
 	for _, part := range plan.JVMMajorArgs {
@@ -467,23 +590,22 @@ func buildProcessArguments(plan *LaunchPlan) ([]string, *Error) {
 	if len(plan.ClassPathEntries) == 0 {
 		return nil, newInputError(ErrorCodeLaunchArgs, messageClassPathEmpty)
 	}
-	classPath := strings.Join(plan.ClassPathEntries, string(os.PathListSeparator))
+	classPathEntries := make([]string, 0, len(plan.ClassPathEntries)+1)
+	// 引导器在最前：它的类名独立，位置只影响「同名类谁优先」，放最前语义最直观。
+	if strings.TrimSpace(launcherPartDir) != "" {
+		classPathEntries = append(classPathEntries, launcherPartDir)
+	}
+	classPathEntries = append(classPathEntries, plan.ClassPathEntries...)
+	classPath := strings.Join(classPathEntries, string(os.PathListSeparator))
 	args = append(args, "-cp", classPath)
 
-	// 3. 主类。
-	mainClass := strings.TrimSpace(plan.MainClass)
-	if mainClass == "" {
-		return nil, newInputError(ErrorCodeLaunchArgs, messageVersionMainClassMissing)
+	// 3. 引导器入口类（唯一的命令行位置参数）。
+	if strings.TrimSpace(launcherPartDir) == "" {
+		// 没有引导器就只能退回「主类 + 游戏参数都在命令行」的旧形态，
+		// 但那会重新引入长度上限与令牌外泄，因此这里直接拒绝而不是静默降级。
+		return nil, newSystemError(ErrorCodeLaunchProcess, messageLauncherPartUnavailable)
 	}
-	args = append(args, mainClass)
-
-	// 4. 游戏参数。
-	for _, part := range plan.GameArguments {
-		if strings.TrimSpace(part.Value) == "" {
-			continue
-		}
-		args = append(args, part.Value)
-	}
+	args = append(args, launcherPartMainClass)
 
 	if len(args) == 0 {
 		return nil, newInputError(ErrorCodeLaunchArgs, messageProcessEmptyCommand)

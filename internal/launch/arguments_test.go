@@ -671,8 +671,12 @@ func TestBuildLaunchPlanResolvesClientIDPlaceholders(t *testing.T) {
 	}
 }
 
-// TestBuildLaunchPlanTooLongArguments 验证参数总长度超限返回 LAUNCH_ARGS_002。
-func TestBuildLaunchPlanTooLongArguments(t *testing.T) {
+// TestBuildLaunchPlanAllowsLongArguments 验证构建计划时不再按命令行长度拒绝。
+//
+// 32767 字符是「交给系统时」的限制，且 Java 9 及以上可以用 `@argfile` 绕过；
+// 在计划层拒绝会让装加载器的实例连预览都打不开。实际的长度校验与兜底
+// 在进程层（见 argfile.go）。
+func TestBuildLaunchPlanAllowsLongArguments(t *testing.T) {
 	root := t.TempDir()
 	id := "v"
 
@@ -684,12 +688,21 @@ func TestBuildLaunchPlanTooLongArguments(t *testing.T) {
 	// 构造一个远超上限的附加参数（不含 shell 元字符以便通过逐项校验）。
 	huge := "-Dpad=" + strings.Repeat("x", maxTotalArgumentBytes+1024)
 
-	_, planErr := buildLaunchPlan(root, id, merged, []string{huge}, nil)
-	if planErr == nil {
-		t.Fatal("超长参数期望返回错误")
+	plan, planErr := buildLaunchPlan(root, id, merged, []string{huge}, nil)
+	if planErr != nil {
+		t.Fatalf("超长参数不应在计划层被拒绝，实际返回 %q: %s", planErr.Code, planErr.Message)
 	}
-	if planErr.Code != ErrorCodeLaunchArgsTooLong {
-		t.Fatalf("错误码期望 %q，实际 %q", ErrorCodeLaunchArgsTooLong, planErr.Code)
+
+	// 参数必须原样保留，交给进程层决定用命令行还是参数文件。
+	found := false
+	for _, part := range plan.JVMMajorArgs {
+		if part.Value == huge {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("超长附加参数未出现在启动计划中")
 	}
 }
 

@@ -689,6 +689,14 @@ func (s *supervisor) finalize(record *launchRecord, process *GameProcess) {
 		process.WaitReads()
 	}
 
+	// 第 2 步半：删除启动时生成的临时文件（引导器目录、参数文件）。
+	//
+	// 进程已退出，JVM 不再需要它们；提前删除（进程存活期间）可能让尚未打开
+	// 文件的 JVM 读不到参数。
+	if process != nil {
+		process.CleanupTempFiles()
+	}
+
 	// 第 3 步：关闭 stdin 写端。此时进程已退出，关闭不会影响它。
 	if process != nil && process.Stdin != nil {
 		if closeErr := process.Stdin.Close(); closeErr != nil {
@@ -856,8 +864,10 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 		return nil, newInputError(ErrorCodeLaunchRequest, reason)
 	}
 
-	// 记录 Java 路径供进程层使用（JSON 标签为 `-`，不会外泄）。
+	// 记录 Java 路径与主版本供进程层使用（JSON 标签为 `-`，不会外泄）。
+	// 主版本用于「命令行超长时能否改用 @argfile」的判断（见 argfile.go）。
 	plan.JavaExecutablePath = javaPath
+	plan.JavaMajorVersion = javaResult.MajorVersion
 
 	return plan, nil
 }

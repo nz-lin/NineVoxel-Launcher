@@ -152,25 +152,27 @@ func minimalPlan(dir string, classPath []string) *LaunchPlan {
 	}
 }
 
-// TestBuildProcessArgumentsOrder 验证参数组装顺序：JVM 参数 → -cp → 主类 → 游戏参数。
+// TestBuildProcessArgumentsOrder 验证命令行组装顺序：JVM 参数 → -cp → 引导器类。
 //
-// 顺序是 JVM 命令行语义的一部分：`-cp` 必须在主类之前，游戏参数在主类之后。
+// 顺序是 JVM 命令行语义的一部分：`-cp` 必须在入口类之前。**游戏参数不在命令行里**
+// （走 stdin），这是绕开 32767 字符上限与隐藏令牌的关键。
 func TestBuildProcessArgumentsOrder(t *testing.T) {
 	plan := minimalPlan(t.TempDir(), []string{"client.jar", "lib1.jar"})
+	launcherPartDir := t.TempDir()
 
-	args, err := buildProcessArguments(plan)
+	args, err := buildProcessArguments(plan, launcherPartDir)
 	if err != nil {
 		t.Fatalf("组装参数失败: %v", err)
 	}
 
-	// 断言关键位置：`-cp` 需要出现在主类之前。
+	// 断言关键位置：`-cp` 需要出现在入口类之前。
 	indexOfCp := -1
 	indexOfMainClass := -1
 	for index, arg := range args {
 		if arg == "-cp" {
 			indexOfCp = index
 		}
-		if arg == "net.minecraft.client.main.Main" {
+		if arg == launcherPartMainClass {
 			indexOfMainClass = index
 		}
 	}
@@ -179,10 +181,10 @@ func TestBuildProcessArgumentsOrder(t *testing.T) {
 		t.Fatalf("参数中缺少 -cp: %v", args)
 	}
 	if indexOfMainClass < 0 {
-		t.Fatalf("参数中缺少主类: %v", args)
+		t.Fatalf("参数中缺少引导器入口类: %v", args)
 	}
 	if indexOfCp >= indexOfMainClass {
-		t.Fatalf("-cp（索引 %d）必须位于主类（索引 %d）之前", indexOfCp, indexOfMainClass)
+		t.Fatalf("-cp（索引 %d）必须位于入口类（索引 %d）之前", indexOfCp, indexOfMainClass)
 	}
 
 	// 第一项应是 JVM 参数。
@@ -190,17 +192,25 @@ func TestBuildProcessArgumentsOrder(t *testing.T) {
 		t.Fatalf("首项期望 JVM 参数 -Xmx2G，实际 %q", args[0])
 	}
 
-	// `-cp` 之后紧跟 classpath 值，且用平台分隔符。
+	// `-cp` 之后紧跟 classpath 值：引导器目录在前，其后是计划的 classpath。
 	classPathValue := args[indexOfCp+1]
 	separator := string(os.PathListSeparator)
-	if !strings.Contains(classPathValue, separator) {
-		t.Fatalf("classpath 应含平台分隔符 %q，实际 %q", separator, classPathValue)
+	entries := strings.Split(classPathValue, separator)
+	if len(entries) != 3 {
+		t.Fatalf("classpath 期望 3 项（引导器 + 2 个库），实际 %d（%v）", len(entries), entries)
+	}
+	if entries[0] != launcherPartDir {
+		t.Fatalf("classpath 首项期望引导器目录 %q，实际 %q", launcherPartDir, entries[0])
 	}
 
-	// 主类之后是游戏参数。
-	afterMain := args[indexOfMainClass+1:]
-	if len(afterMain) == 0 || afterMain[0] != "--version" {
-		t.Fatalf("主类之后应是游戏参数，实际 %v", afterMain)
+	// 入口类**必须**是最后一个参数：游戏参数一个都不能出现在命令行。
+	if indexOfMainClass != len(args)-1 {
+		t.Fatalf("入口类应是最后一个参数，实际后面的内容: %v", args[indexOfMainClass+1:])
+	}
+	for _, arg := range args {
+		if arg == "--version" || arg == "1.21" {
+			t.Fatalf("游戏参数不应出现在命令行: %v", args)
+		}
 	}
 }
 
@@ -208,7 +218,7 @@ func TestBuildProcessArgumentsOrder(t *testing.T) {
 func TestBuildProcessArgumentsEmptyClassPath(t *testing.T) {
 	plan := minimalPlan(t.TempDir(), nil)
 
-	_, err := buildProcessArguments(plan)
+	_, err := buildProcessArguments(plan, t.TempDir())
 	if err == nil {
 		t.Fatal("空 classpath 期望返回错误")
 	}
@@ -217,17 +227,19 @@ func TestBuildProcessArgumentsEmptyClassPath(t *testing.T) {
 	}
 }
 
-// TestBuildProcessArgumentsMissingMainClass 验证缺主类被拒绝。
-func TestBuildProcessArgumentsMissingMainClass(t *testing.T) {
+// TestBuildProcessArgumentsRequiresLauncherPart 验证缺少引导器目录时拒绝。
+//
+// 不静默退回「主类 + 游戏参数都在命令行」的旧形态：那会重新引入命令行长度
+// 上限与令牌外泄，用户还会以为启动成功。
+func TestBuildProcessArgumentsRequiresLauncherPart(t *testing.T) {
 	plan := minimalPlan(t.TempDir(), []string{"client.jar"})
-	plan.MainClass = "   "
 
-	_, err := buildProcessArguments(plan)
+	_, err := buildProcessArguments(plan, "")
 	if err == nil {
-		t.Fatal("缺主类期望返回错误")
+		t.Fatal("缺引导器目录期望返回错误")
 	}
-	if err.Code != ErrorCodeLaunchArgs {
-		t.Fatalf("错误码期望 %q，实际 %q", ErrorCodeLaunchArgs, err.Code)
+	if err.Code != ErrorCodeLaunchProcess {
+		t.Fatalf("错误码期望 %q，实际 %q", ErrorCodeLaunchProcess, err.Code)
 	}
 }
 
@@ -238,7 +250,7 @@ func TestBuildProcessArgumentsSkipsBlankParts(t *testing.T) {
 		ArgumentPart{Value: "", Source: argumentSourceLauncher},
 		ArgumentPart{Value: "   ", Source: argumentSourceLauncher})
 
-	args, err := buildProcessArguments(plan)
+	args, err := buildProcessArguments(plan, t.TempDir())
 	if err != nil {
 		t.Fatalf("组装参数失败: %v", err)
 	}
@@ -252,7 +264,10 @@ func TestBuildProcessArgumentsSkipsBlankParts(t *testing.T) {
 
 // ===== 超长命令行的错误分支 =====
 
-// TestStartGameProcessRejectsTooLongArguments 验证参数总长超限时返回 LAUNCH_ARGS_002。
+// TestStartGameProcessRejectsTooLongArguments 验证 Java 8 下参数总长超限返回 LAUNCH_ARGS_002。
+//
+// Java 9 起可以用 `@argfile` 绕过 32767 字符的命令行上限（见 argfile.go），
+// 因此只有 Java 8 或 Java 版本未知时才会落到这个错误。
 //
 // 该用例在 `exec.Command` 之前就返回（参数总长检查在启动前），
 // 因此**不会真正创建进程**——符合「严禁启动真实游戏进程」的约束。
@@ -260,6 +275,7 @@ func TestStartGameProcessRejectsTooLongArguments(t *testing.T) {
 	// 构造超长 classpath：两个超长条目之和超过上限。
 	longEntry := strings.Repeat("x", maxTotalArgumentBytes/2+1000)
 	plan := minimalPlan(t.TempDir(), []string{longEntry, longEntry})
+	plan.JavaMajorVersion = 8
 
 	_, err := StartGameProcess(plan, "C:\\fake\\java.exe")
 	if err == nil {
@@ -495,6 +511,7 @@ func TestGameProcessNilSafety(t *testing.T) {
 
 	// 这些调用都不得 panic。
 	process.WaitReads()
+	process.CleanupTempFiles()
 	if got := process.StartedAtMillis(); got != 0 {
 		t.Fatalf("nil 的 StartedAtMillis 期望 0，实际 %d", got)
 	}
@@ -513,4 +530,118 @@ func TestWaitReadsIdempotent(t *testing.T) {
 	// 连续调用两次：第二次应被 sync.Once 短路。
 	process.WaitReads()
 	process.WaitReads()
+}
+
+// ===== 参数文件（@argfile）兜底 =====
+
+// TestPrepareProcessArgumentsKeepsShortCommandLine 验证未超限时不做任何改写。
+func TestPrepareProcessArgumentsKeepsShortCommandLine(t *testing.T) {
+	args := []string{"-Xmx2G", "-cp", "client.jar", "net.minecraft.client.main.Main"}
+
+	got, cleanup, err := prepareProcessArguments(args, 21)
+	if err != nil {
+		t.Fatalf("未超限不应返回错误，实际 %q", err.Code)
+	}
+	if cleanup != nil {
+		t.Fatal("未超限不应创建参数文件")
+	}
+	if len(got) != len(args) {
+		t.Fatalf("参数数量期望 %d，实际 %d", len(args), len(got))
+	}
+	for index := range args {
+		if got[index] != args[index] {
+			t.Fatalf("第 %d 项期望 %q，实际 %q", index, args[index], got[index])
+		}
+	}
+}
+
+// TestPrepareProcessArgumentsRejectsOldJava 验证 Java 8 无法使用参数文件时仍拒绝。
+func TestPrepareProcessArgumentsRejectsOldJava(t *testing.T) {
+	longEntry := strings.Repeat("x", maxTotalArgumentBytes+1)
+
+	_, cleanup, err := prepareProcessArguments([]string{longEntry}, 8)
+	if cleanup != nil {
+		t.Fatal("被拒绝时不应留下参数文件")
+	}
+	if err == nil {
+		t.Fatal("Java 8 超长参数期望返回错误")
+	}
+	if err.Code != ErrorCodeLaunchArgsTooLong {
+		t.Fatalf("错误码期望 %q，实际 %q", ErrorCodeLaunchArgsTooLong, err.Code)
+	}
+	if !strings.Contains(err.Message, "参数过长") {
+		t.Fatalf("提示应说明参数过长，实际 %q", err.Message)
+	}
+}
+
+// TestPrepareProcessArgumentsWritesArgFile 验证超限时改写为单个 `@文件` 参数。
+//
+// 参数全部使用 ASCII：Windows 上参数文件按系统代码页编码，ASCII 内容在任意
+// 代码页下字节一致，测试结果不会随机器的区域设置变化。
+func TestPrepareProcessArgumentsWritesArgFile(t *testing.T) {
+	longEntry := strings.Repeat("x", maxTotalArgumentBytes+1024)
+	args := []string{"-Xmx2G", "-cp", longEntry, "net.minecraft.client.main.Main"}
+
+	got, cleanup, err := prepareProcessArguments(args, 21)
+	if err != nil {
+		t.Fatalf("超长参数应改用参数文件，实际返回 %q: %s", err.Code, err.Message)
+	}
+	if cleanup == nil {
+		t.Fatal("超过上限后必须返回清理函数")
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], "@") {
+		t.Fatalf("期望单个 @文件 参数，实际 %v", got)
+	}
+
+	path := strings.TrimPrefix(got[0], "@")
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("参数文件应存在且可读: %v", readErr)
+	}
+
+	// 每个参数一行，顺序与内容必须完整保留（引用与转义见下方纯函数用例）。
+	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	if len(lines) != len(args) {
+		t.Fatalf("参数文件行数期望 %d，实际 %d", len(args), len(lines))
+	}
+	if lines[0] != `"-Xmx2G"` {
+		t.Fatalf("首行期望 %q，实际 %q", `"-Xmx2G"`, lines[0])
+	}
+	if lines[2] != `"`+longEntry+`"` {
+		t.Fatalf("超长参数未完整写入（长度 %d）", len(lines[2]))
+	}
+
+	// 清理后临时目录必须消失，避免每次启动都残留一份几十 KB 的参数文件。
+	directory := filepath.Dir(path)
+	cleanup()
+	if _, statErr := os.Stat(directory); !os.IsNotExist(statErr) {
+		t.Fatalf("清理后参数文件目录应不存在，实际 stat 结果: %v", statErr)
+	}
+}
+
+// TestCleanupTempFilesIdempotent 验证参数文件清理可重复调用。
+func TestCleanupTempFilesIdempotent(t *testing.T) {
+	calls := 0
+	process := &GameProcess{cleanupTemp: func() { calls++ }}
+
+	process.CleanupTempFiles()
+	process.CleanupTempFiles()
+
+	if calls != 1 {
+		t.Fatalf("清理函数期望只执行一次，实际 %d 次", calls)
+	}
+}
+
+// TestBuildArgFileTextEscapesWindowsPaths 验证参数文件的引用与转义规则。
+//
+// 规则来自 JDK 参数文件语法，并已用 Java 21 实测：
+// 引号内的反斜杠是转义字符，Windows 路径必须写成双反斜杠，
+// 否则 `C:\Program Files` 会被解析成 `C:Program Files`。
+func TestBuildArgFileTextEscapesWindowsPaths(t *testing.T) {
+	text := buildArgFileText([]string{`-Ddir=C:\Program Files\game "x"`, ""})
+
+	want := "\"-Ddir=C:\\\\Program Files\\\\game \\\"x\\\"\"\n\"\"\n"
+	if text != want {
+		t.Fatalf("参数文件内容期望 %q，实际 %q", want, text)
+	}
 }
