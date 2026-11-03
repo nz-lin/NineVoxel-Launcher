@@ -58,6 +58,8 @@ function toDesignTask(view: DownloadTaskView): DownloadTask {
     downloadedBytes: view.downloadedBytes,
     totalBytes: view.totalBytes ?? 0,
     speed: formatSpeed(view.speedBytesPerSecond),
+    speedBytesPerSecond: view.speedBytesPerSecond ?? undefined,
+    operationId: view.operationId || undefined,
     status,
     targetFolder: undefined,
     // 保留后端原始状态与计数，界面可据此显示「3/75」这类细节。
@@ -84,6 +86,8 @@ export interface DownloadTasksState {
   resume: (taskId: string) => Promise<void>;
   /** 取消任务（终态，不可恢复）。 */
   cancel: (taskId: string) => Promise<void>;
+  /** 清除所有已完成任务记录。 */
+  clearCompleted: () => Promise<void>;
 }
 
 /**
@@ -190,5 +194,15 @@ export function useDownloadTasks(): DownloadTasksState {
     pause: (taskId) => runAction(() => downloadService.pause(taskId)),
     resume: (taskId) => runAction(() => downloadService.resume(taskId)),
     cancel: (taskId) => runAction(() => downloadService.cancel(taskId)),
+    clearCompleted: async () => {
+      setError(null);
+      try {
+        await downloadService.clearCompleted();
+        await reload();
+      } catch (cause) {
+        if (cancelledRef.current) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    },
   };
 }

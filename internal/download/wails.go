@@ -217,6 +217,27 @@ func (s *DownloadService) CancelDownloadTask(req TaskIDRequest) (DownloadTaskVie
 	return view, nil
 }
 
+// ClearCompletedDownloadTasks 删除全部已完成任务及其持久化记录。
+func (s *DownloadService) ClearCompletedDownloadTasks() (ClearDownloadResult, error) {
+	queue, queueErr := queueOrError()
+	if queueErr != nil {
+		return ClearDownloadResult{}, queueErr
+	}
+	return ClearDownloadResult{Removed: queue.ClearCompleted(context.Background())}, nil
+}
+
+// CancelDownloadOperation 取消某个操作组下所有未结束的计划任务。
+//
+// 供实例删除等内部流程使用；operationId 由创建任务时写入。
+func CancelDownloadOperation(operationID string) error {
+	queue, err := queueOrError()
+	if err != nil {
+		return err
+	}
+	queue.CancelOperation(operationID)
+	return nil
+}
+
 // GetDownloadTask 查询单个任务。
 func (s *DownloadService) GetDownloadTask(req TaskIDRequest) (DownloadTaskView, error) {
 	queue, queueErr := queueOrError()
@@ -272,7 +293,7 @@ func StartTransferPlan(ctx context.Context, plan TransferPlan) (TaskAccepted, er
 	if err != nil {
 		return TaskAccepted{}, err
 	}
-	accepted, appErr := q.EnqueueTransferPlan(ctx, StartDownloadPlanRequest{VersionID: plan.VersionID, PlanHash: plan.PlanHash}, plan)
+	accepted, appErr := q.EnqueueTransferPlan(ctx, StartDownloadPlanRequest{VersionID: plan.VersionID, PlanHash: plan.PlanHash, OperationID: plan.OperationID}, plan)
 	if appErr != nil {
 		return TaskAccepted{}, appErr
 	}

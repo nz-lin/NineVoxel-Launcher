@@ -105,3 +105,9 @@ type AssetTaskProgress struct {
 	// UpdatedAtMs 是本条进度的采样时间（毫秒时间戳）。
 	UpdatedAtMs int64 `json:"updatedAtMs"`
 }
+
+// ClearDownloadResult 是清理已完成任务的结果。
+type ClearDownloadResult struct {
+	// Removed 为实际删除的任务记录数（含计划父任务与其子任务）。
+	Removed int `json:"removed"`
+}

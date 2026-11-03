@@ -119,6 +119,9 @@ export interface DownloadTaskView {
   /** 瞬时速度（字节/秒）；未知时为 null。 */
   speedBytesPerSecond: number | null
 
+  /** 操作分组标识；同一次安装的多个计划共享该值，空串表示不分组。 */
+  operationId: string
+
   /** 进度 0~1，由后端计算；未知时为 null。 */
   progress: number | null
 
@@ -139,6 +142,12 @@ export interface DownloadTaskView {
 
   /** 完成时间，UTC Unix 毫秒；未完成时为 0。 */
   completedAtMs: number
+}
+
+/** 清理已完成任务的结果。 */
+export interface ClearDownloadResult {
+  /** 实际删除的任务记录数（含计划父任务与子任务）。 */
+  removed: number
 }
 
 /** 任务分页列表。 */
@@ -178,6 +187,9 @@ export interface StartDownloadPlanRequest {
 
   /** 目标位置：shared（共享缓存）或 version（版本私有目录）。 */
   targetKind: string
+
+  /** 操作分组标识；同一次安装的多个计划共享它。 */
+  operationId?: string
 }
 
 /** 单任务操作请求。 */

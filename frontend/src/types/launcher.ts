@@ -31,6 +31,20 @@ export interface ShaderPackItem {
   fileSizeBytes: number;
 }
 
+/** 实例分组及其数量（对应后端 InstanceGroup）。 */
+export interface InstanceGroup {
+  name: string;
+  isDefault: boolean;
+  instanceCount: number;
+  createdAtMs: number;
+}
+
+/** 实例分组列表与默认分组名。 */
+export interface InstanceGroupList {
+  items: InstanceGroup[];
+  defaultGroup: string;
+}
+
 export interface Instance {
   installationState?: 'not_installed' | 'installing' | 'installed' | 'failed';
   installationProgress?: number;
@@ -133,6 +147,10 @@ export interface DownloadTask {
   downloadedBytes: number;
   totalBytes: number;
   speed: string; // e.g. "8.4 MB/s"
+  /** 瞬时速度的原始数值，用于底部总速率求和。 */
+  speedBytesPerSecond?: number;
+  /** 同一次安装的操作分组标识；相同值会在下载中心合并为一条。 */
+  operationId?: string;
   status: 'downloading' | 'completed' | 'paused' | 'failed';
   targetFolder?: string;
   /** 后端原始状态（九态之一），保留用于展示排队/校验/提交等细节。 */

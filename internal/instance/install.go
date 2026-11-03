@@ -118,6 +118,8 @@ func (s *InstanceService) runPlan(ctx context.Context, id string, plan download.
 	if err := ctx.Err(); err != nil {
 		return errors.New("安装已中断，请重试")
 	}
+	// 同一次实例安装会拆成多个计划：用实例 ID 作为操作组，界面据此合并下载条目。
+	plan.OperationID = id
 	accepted, err := download.StartTransferPlan(ctx, plan)
 	if err != nil {
 		return err

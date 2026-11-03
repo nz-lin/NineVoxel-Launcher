@@ -330,6 +330,19 @@ type Task struct {
 	// 该字段只在内存中维护（用于过滤与标题）；跨进程恢复时由父任务的
 	// plan_hash 关联得到，属 P3-07 的恢复矩阵范围。
 	VersionID string
+
+	// OperationID 把同一次安装产生的多个计划任务归为一组。
+	//
+	// 例如实例安装会拆成「版本文件」与「资源文件」两个计划任务；
+	// 二者共享同一个 OperationID，界面据此合并为一个下载条目。
+	OperationID string
+
+	// SpeedBytesPerSecond 为最近一次采样得到的瞬时速度（仅内存）。
+	SpeedBytesPerSecond int64
+
+	// lastSampleAtMs / lastSampleBytes 是速度采样的内部基线。
+	lastSampleAtMs  int64
+	lastSampleBytes int64
 }
 
 // Priority 返回任务的调度优先级。
@@ -381,6 +394,9 @@ type StartDownloadPlanRequest struct {
 	// 用于检测计划漂移：与后端重新解析出的 planHash 不一致时返回 ARTIFACT_PLAN_001，
 	// 提示用户刷新——拿旧计划下载会把新版本的文件放进旧目录。
 	PlanHash string `json:"planHash"`
+
+	// OperationID 把同一次安装的多个计划归为一组；空串表示不分组。
+	OperationID string `json:"operationId"`
 
 	// TargetKind 为共享/版本私有，空值按 shared 处理。
 	TargetKind string `json:"targetKind"`
@@ -459,6 +475,9 @@ type DownloadTaskView struct {
 	// SpeedBytesPerSecond 为瞬时速度（仅运行中提供）。
 	SpeedBytesPerSecond *int64 `json:"speedBytesPerSecond,omitempty"`
 
+	// OperationID 把同一次安装产生的多个任务归为一组；空串表示不分组。
+	OperationID string `json:"operationId,omitempty"`
+
 	// Progress 为 0~1 的进度，总大小未知时为 nil。
 	Progress *float64 `json:"progress,omitempty"`
 
@@ -494,9 +513,14 @@ func taskToView(task Task) DownloadTaskView {
 		Title:           task.Title(),
 		State:           string(task.State),
 		DownloadedBytes: task.DownloadedSize,
+		OperationID:     task.OperationID,
 		CreatedAtMs:     task.CreatedAtMs,
 		UpdatedAtMs:     task.UpdatedAtMs,
 		CompletedAtMs:   task.CompletedAtMs,
+	}
+	if task.SpeedBytesPerSecond > 0 && (task.State == StateDownloading || task.TaskType == TaskTypePlan) {
+		speed := task.SpeedBytesPerSecond
+		view.SpeedBytesPerSecond = &speed
 	}
 	if task.ExpectedSize > 0 {
 		total := task.ExpectedSize

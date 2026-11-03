@@ -30,6 +30,9 @@ type TaskStore interface {
 	// LoadAll 读取全部任务记录。
 	LoadAll(ctx context.Context) ([]Task, error)
 
+	// Delete 删除单条任务记录（用于清理已完成任务）。
+	Delete(ctx context.Context, id string) error
+
 	// Close 释放底层资源（内存实现为空操作）。
 	Close() error
 }
@@ -115,6 +118,15 @@ func (s *SQLiteTaskStore) Save(ctx context.Context, task Task) error {
 		task.UpdatedAtMs,
 		task.CompletedAtMs,
 	)
+	return err
+}
+
+// Delete 删除单条任务记录。
+func (s *SQLiteTaskStore) Delete(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return errors.New("download: 任务存储未初始化")
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM download_tasks WHERE id=?`, id)
 	return err
 }
 
@@ -229,6 +241,20 @@ func (s *memoryTaskStore) LoadAll(_ context.Context) ([]Task, error) {
 		}
 	}
 	return result, nil
+}
+
+// Delete 删除单条任务记录。
+func (s *memoryTaskStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tasks, id)
+	for index, existing := range s.order {
+		if existing == id {
+			s.order = append(s.order[:index], s.order[index+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 // Close 为空操作（无外部资源）。

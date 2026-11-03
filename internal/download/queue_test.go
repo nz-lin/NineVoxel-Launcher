@@ -600,17 +600,21 @@ func TestListFilterAndLimit(t *testing.T) {
 	if completedOnly.Total != 2 {
 		t.Fatalf("completed 过滤结果 = %d，期望 2", completedOnly.Total)
 	}
-	childViews := 0
+	byteViews := 0
 	for _, view := range completedOnly.Tasks {
 		if view.TotalBytes != nil {
-			childViews++
+			byteViews++
+			if *view.TotalBytes != 1024 {
+				t.Fatalf("任务总字节数 = %d，期望 1024", *view.TotalBytes)
+			}
 			if view.ArtifactCount != 1 || view.CompletedCount != 1 {
-				t.Fatalf("子任务视图字段不正确：%+v", view)
+				t.Fatalf("任务视图字段不正确：%+v", view)
 			}
 		}
 	}
-	if childViews != 1 {
-		t.Fatalf("带总字节数的子任务视图数 = %d，期望 1", childViews)
+	// 父任务现在也会聚合子任务的字节数，因此父、子两条视图都带 TotalBytes。
+	if byteViews != 2 {
+		t.Fatalf("带总字节数的任务视图数 = %d，期望 2", byteViews)
 	}
 	// limit 超过上限时被收敛到 100，不会返回错误。
 	capped := queue.List(DownloadTaskFilter{Limit: 500})
@@ -640,6 +644,29 @@ func TestBackoffDelaySequence(t *testing.T) {
 		if got := queue.backoffDelay(testCase.attempt); got != testCase.want {
 			t.Errorf("第 %d 次退避 = %s，期望 %s", testCase.attempt, got, testCase.want)
 		}
+	}
+}
+
+func TestMaxRetriesZeroDisablesRetry(t *testing.T) {
+	var attempts int32
+	queue := newTestQueue(t, QueueOptions{
+		PlanSource: singleItemPlan("https://retry.example/client.jar"),
+		Commit:     instantCommit,
+		MaxRetries: 0,
+		Transfer: func(context.Context, Task) TransferResult {
+			atomic.AddInt32(&attempts, 1)
+			return TransferResult{Err: context.DeadlineExceeded, Retryable: true, ErrorCode: ErrorCodeNetwork}
+		},
+	})
+	if _, enqueueErr := queue.EnqueuePlan(context.Background(), StartDownloadPlanRequest{VersionID: "1.20.1"}); enqueueErr != nil {
+		t.Fatalf("入队失败：%s", enqueueErr.Code)
+	}
+	children := waitForAllChildrenTerminal(t, queue, 10*time.Second)
+	if children[0].State != StateFailed {
+		t.Fatalf("最终状态 = %s，期望 failed", children[0].State)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("传输调用次数 = %d，期望 1", got)
 	}
 }
 

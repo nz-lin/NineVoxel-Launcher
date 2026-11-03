@@ -59,6 +59,9 @@ type TransferPlan struct {
 	// VersionID 为所属版本。
 	VersionID string
 
+	// OperationID 把同一次安装的多个计划归为一组；空串表示不分组。
+	OperationID string
+
 	// PlanHash 为计划哈希（D-26），用于幂等与计划漂移检测。
 	PlanHash string
 
@@ -217,7 +220,7 @@ func normalizeQueueOptions(options QueueOptions) QueueOptions {
 	if options.PerHostConcurrency > options.GlobalConcurrency {
 		options.PerHostConcurrency = options.GlobalConcurrency
 	}
-	if options.MaxRetries <= 0 {
+	if options.MaxRetries < 0 {
 		options.MaxRetries = defaultMaxRetries
 	}
 	if options.BackoffBase <= 0 {
@@ -598,6 +601,21 @@ func (q *Queue) applyTransferResult(id string, result TransferResult) {
 	}
 	task.RetryCount = 0
 	task.UpdatedAtMs = q.now()
+	if task.lastSampleAtMs > 0 && task.UpdatedAtMs > task.lastSampleAtMs {
+		delta := task.DownloadedSize - task.lastSampleBytes
+		elapsedMs := task.UpdatedAtMs - task.lastSampleAtMs
+		if delta > 0 && elapsedMs > 0 {
+			instant := delta * 1000 / elapsedMs
+			if task.SpeedBytesPerSecond <= 0 {
+				task.SpeedBytesPerSecond = instant
+			} else {
+				// 指数平滑，避免单个小文件把瞬时速度拉成尖峰。
+				task.SpeedBytesPerSecond = (task.SpeedBytesPerSecond*3 + instant) / 4
+			}
+		}
+	}
+	task.lastSampleAtMs = task.UpdatedAtMs
+	task.lastSampleBytes = task.DownloadedSize
 	snapshot := *task
 	shouldEmit := q.shouldEmitProgressLocked(snapshot)
 	q.mu.Unlock()
@@ -679,6 +697,13 @@ func (q *Queue) applyTransition(id string, to State) (Task, *Error) {
 	}
 	task.State = to
 	task.UpdatedAtMs = q.now()
+	if to == StateDownloading {
+		task.SpeedBytesPerSecond = 0
+		task.lastSampleAtMs = task.UpdatedAtMs
+		task.lastSampleBytes = task.DownloadedSize
+	} else {
+		task.SpeedBytesPerSecond = 0
+	}
 	if IsTerminal(to) && task.CompletedAtMs == 0 {
 		task.CompletedAtMs = task.UpdatedAtMs
 	}
@@ -772,12 +797,19 @@ func (q *Queue) bumpParent(id string) {
 		return
 	}
 	total, completed, failed, cancelled := 0, 0, 0, 0
+	var totalBytes, downloadedBytes int64
 	var failureCode, failureMessage string
 	for _, candidate := range q.tasks {
 		if candidate.ParentTaskID != child.ParentTaskID {
 			continue
 		}
 		total++
+		if candidate.ExpectedSize > 0 {
+			totalBytes += candidate.ExpectedSize
+		}
+		if candidate.DownloadedSize > 0 {
+			downloadedBytes += candidate.DownloadedSize
+		}
 		switch candidate.State {
 		case StateCompleted:
 			completed++
@@ -791,6 +823,21 @@ func (q *Queue) bumpParent(id string) {
 			cancelled++
 		}
 	}
+	nowMs := q.now()
+	if parent.lastSampleAtMs > 0 && nowMs > parent.lastSampleAtMs {
+		delta := downloadedBytes - parent.lastSampleBytes
+		elapsedMs := nowMs - parent.lastSampleAtMs
+		if delta > 0 && elapsedMs > 0 {
+			instant := delta * 1000 / elapsedMs
+			if parent.SpeedBytesPerSecond <= 0 {
+				parent.SpeedBytesPerSecond = instant
+			} else {
+				parent.SpeedBytesPerSecond = (parent.SpeedBytesPerSecond*3 + instant) / 4
+			}
+		}
+	}
+	parent.lastSampleAtMs = nowMs
+	parent.lastSampleBytes = downloadedBytes
 	parent.DownloadedSize = int64(completed)
 	parent.ExpectedSize = int64(total)
 	if total > 0 && completed+failed+cancelled >= total && !IsTerminal(parent.State) {
@@ -808,6 +855,7 @@ func (q *Queue) bumpParent(id string) {
 		}
 		parent.UpdatedAtMs = q.now()
 		parent.CompletedAtMs = parent.UpdatedAtMs
+		parent.SpeedBytesPerSecond = 0
 	}
 	parent.UpdatedAtMs = q.now()
 	snapshot := *parent
@@ -852,6 +900,7 @@ func (q *Queue) EnqueueTransferPlan(ctx context.Context, req StartDownloadPlanRe
 
 	now := q.now()
 	parentID := newTaskID(now)
+	operationID := firstNonEmpty(req.OperationID, plan.OperationID)
 
 	// 去重与路径校验：任何一条计划不合法都整体拒绝，避免半个计划落地。
 	q.mu.Lock()
@@ -887,18 +936,21 @@ func (q *Queue) EnqueueTransferPlan(ctx context.Context, req StartDownloadPlanRe
 	}
 
 	parent := &Task{
-		ID:             parentID,
-		TaskType:       TaskTypePlan,
-		State:          StateQueued,
-		TargetKind:     normalizeTargetKind(req.TargetKind),
-		PlanHash:       plan.PlanHash,
-		ExpectedSize:   int64(len(plan.Items)),
-		CreatedAtMs:    now,
-		UpdatedAtMs:    now,
-		VersionID:      req.VersionID,
-		SourceURI:      "",
-		TargetRelPath:  "",
-		DownloadedSize: 0,
+		ID:              parentID,
+		TaskType:        TaskTypePlan,
+		State:           StateQueued,
+		TargetKind:      normalizeTargetKind(req.TargetKind),
+		PlanHash:        plan.PlanHash,
+		ExpectedSize:    int64(len(plan.Items)),
+		CreatedAtMs:     now,
+		UpdatedAtMs:     now,
+		VersionID:       req.VersionID,
+		OperationID:     operationID,
+		SourceURI:       "",
+		TargetRelPath:   "",
+		DownloadedSize:  0,
+		lastSampleAtMs:  now,
+		lastSampleBytes: 0,
 	}
 
 	children := make([]Task, 0, len(plan.Items))
@@ -919,6 +971,7 @@ func (q *Queue) EnqueueTransferPlan(ctx context.Context, req StartDownloadPlanRe
 			CreatedAtMs:    now + int64(index) + 1,
 			UpdatedAtMs:    now + int64(index) + 1,
 			VersionID:      req.VersionID,
+			OperationID:    operationID,
 		}
 		children = append(children, child)
 	}
@@ -1113,16 +1166,7 @@ func (q *Queue) viewOf(id string) (DownloadTaskView, *Error) {
 	}
 	view := taskToView(snapshot)
 	if snapshot.TaskType == TaskTypePlan {
-		// 父任务的「已下载 / 总数」在 bumpParent 内被复用为「已完成 / 制品总数」，
-		// 这里换算成界面需要的 artifactCount / completedCount。
-		view.ArtifactCount = int(snapshot.ExpectedSize)
-		view.CompletedCount = int(snapshot.DownloadedSize)
-		view.TotalBytes = nil
-		view.Progress = nil
-		if view.ArtifactCount > 0 {
-			progress := float64(view.CompletedCount) / float64(view.ArtifactCount)
-			view.Progress = &progress
-		}
+		applyPlanAggregate(&view, snapshot, q.childrenOf(id))
 	} else {
 		view.ArtifactCount = 1
 		if snapshot.State == StateCompleted {
@@ -1130,6 +1174,111 @@ func (q *Queue) viewOf(id string) (DownloadTaskView, *Error) {
 		}
 	}
 	return view, nil
+}
+
+// childrenOf 返回某个父任务的全部子任务快照。
+func (q *Queue) childrenOf(parentID string) []Task {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	children := make([]Task, 0)
+	for _, task := range q.tasks {
+		if task.ParentTaskID == parentID {
+			children = append(children, *task)
+		}
+	}
+	return children
+}
+
+// applyPlanAggregate 用子任务的真实字节数与速度填充父任务视图。
+//
+// 父任务的 ExpectedSize / DownloadedSize 被 bumpParent 复用为「制品总数 /
+// 已完成数」，因此字节信息必须从子任务求和，不能读父任务本身。
+func applyPlanAggregate(view *DownloadTaskView, parent Task, children []Task) {
+	view.ArtifactCount = int(parent.ExpectedSize)
+	view.CompletedCount = int(parent.DownloadedSize)
+	if len(children) == 0 {
+		view.TotalBytes = nil
+		view.DownloadedBytes = 0
+		view.Progress = nil
+		return
+	}
+	var totalBytes, downloadedBytes int64
+	for _, child := range children {
+		if child.ExpectedSize > 0 {
+			totalBytes += child.ExpectedSize
+		}
+		if child.DownloadedSize > 0 {
+			downloadedBytes += child.DownloadedSize
+		}
+	}
+	if totalBytes > 0 {
+		view.TotalBytes = &totalBytes
+		view.DownloadedBytes = downloadedBytes
+		progress := float64(downloadedBytes) / float64(totalBytes)
+		if progress < 0 {
+			progress = 0
+		}
+		if progress > 1 {
+			progress = 1
+		}
+		view.Progress = &progress
+	} else {
+		view.TotalBytes = nil
+		view.DownloadedBytes = 0
+		view.Progress = nil
+		if view.ArtifactCount > 0 {
+			progress := float64(view.CompletedCount) / float64(view.ArtifactCount)
+			view.Progress = &progress
+		}
+	}
+}
+
+// ClearCompleted 删除所有已结束任务（completed / failed / cancelled）及其持久化记录。
+func (q *Queue) ClearCompleted(ctx context.Context) int {
+	q.mu.Lock()
+	ids := make([]string, 0)
+	for id, task := range q.tasks {
+		if IsTerminal(task.State) {
+			ids = append(ids, id)
+			delete(q.tasks, id)
+			delete(q.seq, id)
+			delete(q.progress, id)
+			delete(q.ownedPlans, id)
+		}
+	}
+	store := q.store
+	q.mu.Unlock()
+
+	if store != nil {
+		for _, id := range ids {
+			_ = store.Delete(ctx, id)
+		}
+	}
+	return len(ids)
+}
+
+// CancelOperation 取消某个操作组下未结束的计划任务。
+//
+// 返回实际取消的计划任务数量；没有匹配任务时返回 0。
+func (q *Queue) CancelOperation(operationID string) int {
+	if strings.TrimSpace(operationID) == "" {
+		return 0
+	}
+	q.mu.Lock()
+	ids := make([]string, 0)
+	for id, task := range q.tasks {
+		if task.OperationID == operationID && task.TaskType == TaskTypePlan && !IsTerminal(task.State) {
+			ids = append(ids, id)
+		}
+	}
+	q.mu.Unlock()
+	cancelled := 0
+	for _, id := range ids {
+		if _, err := q.Cancel(id); err == nil {
+			cancelled++
+		}
+	}
+	return cancelled
 }
 
 // List 返回任务列表（内存过滤 + 排序 + 分页）。
@@ -1151,6 +1300,16 @@ func (q *Queue) List(filter DownloadTaskFilter) DownloadTaskList {
 			continue
 		}
 		candidates = append(candidates, *task)
+	}
+	q.mu.Unlock()
+
+	// 计划任务的字节与速度需要子任务聚合；一次性构建索引，避免逐条加锁。
+	q.mu.Lock()
+	childrenByParent := make(map[string][]Task, 8)
+	for _, task := range q.tasks {
+		if task.ParentTaskID != "" {
+			childrenByParent[task.ParentTaskID] = append(childrenByParent[task.ParentTaskID], *task)
+		}
 	}
 	q.mu.Unlock()
 
@@ -1178,14 +1337,7 @@ func (q *Queue) List(filter DownloadTaskFilter) DownloadTaskList {
 	for index := offset; index < end; index++ {
 		view := taskToView(candidates[index])
 		if candidates[index].TaskType == TaskTypePlan {
-			view.ArtifactCount = int(candidates[index].ExpectedSize)
-			view.CompletedCount = int(candidates[index].DownloadedSize)
-			view.TotalBytes = nil
-			view.Progress = nil
-			if view.ArtifactCount > 0 {
-				progress := float64(view.CompletedCount) / float64(view.ArtifactCount)
-				view.Progress = &progress
-			}
+			applyPlanAggregate(&view, candidates[index], childrenByParent[candidates[index].ID])
 		} else {
 			view.ArtifactCount = 1
 			if candidates[index].State == StateCompleted {

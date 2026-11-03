@@ -1,5 +1,6 @@
 import { toAppError } from './errors'
 import type {
+  ClearDownloadResult,
   DownloadTaskError,
   DownloadTaskFilter,
   DownloadTaskList,
@@ -45,6 +46,9 @@ export interface DownloadBindingsApi {
 
   /** 对应 DownloadService.ListDownloadTasks。 */
   ListDownloadTasks: (filter: DownloadTaskFilter) => Promise<unknown>
+
+  /** 对应 DownloadService.ClearCompletedDownloadTasks。 */
+  ClearCompletedDownloadTasks: () => Promise<unknown>
 }
 
 /** 下载队列服务门面。 */
@@ -66,6 +70,9 @@ export interface DownloadService {
 
   /** 列出任务（分页，limit 会被收敛到 100）。 */
   list: (filter?: Partial<DownloadTaskFilter>) => Promise<DownloadTaskList>
+
+  /** 清除所有已完成任务记录。 */
+  clearCompleted: () => Promise<ClearDownloadResult>
 }
 
 /** 数值兜底：非有限数一律按 0 处理，避免 undefined 渗入视图。 */
@@ -116,6 +123,7 @@ export function normalizeDownloadTaskView(raw: unknown): DownloadTaskView {
     downloadedBytes: toNumber(record.downloadedBytes),
     totalBytes: toOptionalNumber(record.totalBytes),
     speedBytesPerSecond: toOptionalNumber(record.speedBytesPerSecond),
+    operationId: toText(record.operationId),
     progress: toOptionalNumber(record.progress),
     error: normalizeDownloadTaskError(record.error),
     artifactCount: toNumber(record.artifactCount),
@@ -230,6 +238,13 @@ export function createDownloadService(api: DownloadBindingsApi): DownloadService
       const normalized = normalizeDownloadTaskFilter(filter)
       return call(() => api.ListDownloadTasks(normalized), normalizeDownloadTaskList)
     },
+
+    /** 清除已完成任务。 */
+    async clearCompleted(): Promise<ClearDownloadResult> {
+      return call(() => api.ClearCompletedDownloadTasks(), (raw) => ({
+        removed: toNumber((raw as Record<string, unknown> | null)?.removed),
+      }))
+    },
   }
 }
 
@@ -249,6 +264,7 @@ const downloadBindingsApi: DownloadBindingsApi = {
       versionId: request.versionId,
       planHash: request.planHash,
       targetKind: request.targetKind,
+      operationId: request.operationId ?? '',
     }),
 
   /** 对应 DownloadService.PauseDownloadTask。 */
@@ -276,6 +292,9 @@ const downloadBindingsApi: DownloadBindingsApi = {
       offset: filter.offset,
       limit: filter.limit,
     }),
+
+  /** 对应 DownloadService.ClearCompletedDownloadTasks。 */
+  ClearCompletedDownloadTasks: () => DownloadService.ClearCompletedDownloadTasks(),
 }
 
 /**
