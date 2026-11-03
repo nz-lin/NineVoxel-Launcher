@@ -137,6 +137,12 @@ func (s *InstanceService) openLocked() error {
 	}
 	s.db = db
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	if err := s.reconcileLocked(); err != nil {
+		db.Close()
+		s.db = nil
+		s.cancel()
+		return err
+	}
 	items, err := s.listLocked()
 	if err != nil {
 		db.Close()
@@ -201,9 +207,7 @@ func validConfig(c Config) (Config, error) {
 	if len(c.JVMArgs) > 8192 || len(c.Description) > 4096 || len(c.Partition) > 240 || len(c.Icon) > 128 {
 		return c, errors.New("实例设置内容过长")
 	}
-	if c.Partition == "" {
-		c.Partition = defaultInstanceGroup
-	}
+	c.Partition = normalizedPartition(c.Partition)
 	if c.Icon == "" {
 		c.Icon = "🟩"
 	}
@@ -239,25 +243,33 @@ func (s *InstanceService) listLocked() (List, error) {
 }
 
 func (s *InstanceService) getLocked(id string) (Instance, error) {
-	var raw string
-	if err := s.db.QueryRow(`SELECT config_json FROM instances WHERE id = ?`, id).Scan(&raw); err != nil {
-		return Instance{}, errors.New("实例不存在")
+	if !validateInstanceID(id) {
+		return Instance{}, errInstanceNotFound
 	}
-	var item Instance
-	if err := json.Unmarshal([]byte(raw), &item); err != nil {
-		return item, errors.New("实例配置损坏")
+	directory, err := managedPath(s.root, activeInstanceRel(id))
+	if err != nil {
+		return Instance{}, err
 	}
-	return item, nil
+	manifest, err := readInstanceManifest(directory)
+	if errors.Is(err, errManifestNotFound) {
+		return Instance{}, errInstanceNotFound
+	}
+	if err != nil {
+		return Instance{}, err
+	}
+	if manifest.ID != id {
+		return Instance{}, errors.New("实例清单标识不匹配")
+	}
+	return manifest.toInstance(activeGameRel(id)), nil
 }
 
 func (s *InstanceService) saveLocked(item Instance) error {
-	raw, err := json.Marshal(item)
-	if err != nil {
-		return errors.New("实例配置无法保存")
+	item.FolderPath = activeGameRel(item.ID)
+	if err := s.writeItemManifestLocked(item); err != nil {
+		return err
 	}
-	_, err = s.db.Exec(`UPDATE instances SET config_json=?,updated_at_ms=? WHERE id=?`, string(raw), time.Now().UnixMilli(), item.ID)
-	if err != nil {
-		return errors.New("保存实例失败")
+	if err := s.upsertIndexLocked(item); err != nil {
+		return errors.New("实例已写入目录，但索引更新失败")
 	}
 	return nil
 }
@@ -279,8 +291,8 @@ func (s *InstanceService) ensureGroupsLocked() error {
 		return errors.New("读取实例分组失败")
 	}
 	type pendingUpdate struct {
-		id  string
-		raw string
+		item Instance
+		raw  string
 	}
 	updates := make([]pendingUpdate, 0)
 	groups := map[string]struct{}{defaultInstanceGroup: {}}
@@ -295,21 +307,19 @@ func (s *InstanceService) ensureGroupsLocked() error {
 			rows.Close()
 			return errors.New("实例配置损坏")
 		}
-		partition := strings.TrimSpace(item.Partition)
-		if partition == "" || partition == legacyDefaultPartition {
-			partition = defaultInstanceGroup
-		}
+		partition := normalizedPartition(item.Partition)
 		groups[partition] = struct{}{}
 		if item.Partition == partition {
 			continue
 		}
 		item.Config.Partition = partition
+		item.FolderPath = activeGameRel(id)
 		encoded, marshalErr := json.Marshal(item)
 		if marshalErr != nil {
 			rows.Close()
 			return errors.New("实例配置无法保存")
 		}
-		updates = append(updates, pendingUpdate{id: id, raw: string(encoded)})
+		updates = append(updates, pendingUpdate{item: item, raw: string(encoded)})
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		rows.Close()
@@ -318,9 +328,12 @@ func (s *InstanceService) ensureGroupsLocked() error {
 	rows.Close()
 
 	for _, update := range updates {
+		if err := s.writeItemManifestLocked(update.item); err != nil {
+			return errors.New("迁移实例分组失败")
+		}
 		if _, err := s.db.Exec(
 			`UPDATE instances SET config_json=?,updated_at_ms=? WHERE id=?`,
-			update.raw, nowMs, update.id,
+			update.raw, nowMs, update.item.ID,
 		); err != nil {
 			return errors.New("迁移实例分组失败")
 		}
@@ -430,6 +443,12 @@ func (s *InstanceService) ListInstanceGroups() (InstanceGroupList, error) {
 	if err := s.openLocked(); err != nil {
 		return InstanceGroupList{}, err
 	}
+	if err := s.reconcileLocked(); err != nil {
+		return InstanceGroupList{}, err
+	}
+	if err := s.ensureGroupsLocked(); err != nil {
+		return InstanceGroupList{}, err
+	}
 	return s.listGroupsLocked()
 }
 
@@ -504,18 +523,13 @@ func (s *InstanceService) DeleteInstanceGroup(req DeleteInstanceGroupRequest) (I
 		return InstanceGroupList{}, err
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return InstanceGroupList{}, errors.New("删除分组失败")
-	}
-	defer tx.Rollback()
-	rows, err := tx.Query(`SELECT id, config_json FROM instances`)
+	rows, err := s.db.Query(`SELECT id, config_json FROM instances`)
 	if err != nil {
 		return InstanceGroupList{}, errors.New("读取实例分组失败")
 	}
 	type pendingUpdate struct {
-		id  string
-		raw string
+		item Instance
+		raw  string
 	}
 	updates := make([]pendingUpdate, 0)
 	for rows.Next() {
@@ -529,29 +543,37 @@ func (s *InstanceService) DeleteInstanceGroup(req DeleteInstanceGroupRequest) (I
 			rows.Close()
 			return InstanceGroupList{}, errors.New("实例配置损坏")
 		}
-		partition := strings.TrimSpace(item.Partition)
-		if partition == "" {
-			partition = defaultInstanceGroup
-		}
+		partition := normalizedPartition(item.Partition)
 		if partition != name {
 			continue
 		}
 		item.Config.Partition = moveTo
+		item.FolderPath = activeGameRel(id)
 		encoded, marshalErr := json.Marshal(item)
 		if marshalErr != nil {
 			rows.Close()
 			return InstanceGroupList{}, errors.New("实例配置无法保存")
 		}
-		updates = append(updates, pendingUpdate{id: id, raw: string(encoded)})
+		updates = append(updates, pendingUpdate{item: item, raw: string(encoded)})
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		rows.Close()
 		return InstanceGroupList{}, errors.New("读取实例分组失败")
 	}
 	rows.Close()
+	for _, update := range updates {
+		if err := s.writeItemManifestLocked(update.item); err != nil {
+			return InstanceGroupList{}, errors.New("迁移实例分组失败")
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return InstanceGroupList{}, errors.New("删除分组失败")
+	}
+	defer tx.Rollback()
 	nowMs := time.Now().UnixMilli()
 	for _, update := range updates {
-		if _, err := tx.Exec(`UPDATE instances SET config_json=?,updated_at_ms=? WHERE id=?`, update.raw, nowMs, update.id); err != nil {
+		if _, err := tx.Exec(`UPDATE instances SET config_json=?,updated_at_ms=? WHERE id=?`, update.raw, nowMs, update.item.ID); err != nil {
 			return InstanceGroupList{}, errors.New("迁移实例分组失败")
 		}
 	}
@@ -568,6 +590,9 @@ func (s *InstanceService) ListInstances() (List, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.openLocked(); err != nil {
+		return List{}, err
+	}
+	if err := s.reconcileLocked(); err != nil {
 		return List{}, err
 	}
 	return s.listLocked()
@@ -596,12 +621,22 @@ func (s *InstanceService) CreateInstance(c Config) (Instance, error) {
 	if err != nil {
 		return Instance{}, err
 	}
+	instanceDir := filepath.Dir(dir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return Instance{}, errors.New("创建实例目录失败")
 	}
-	raw, _ := json.Marshal(item)
+	if err := writeInstanceManifest(instanceDir, manifestFromInstance(item, 0)); err != nil {
+		_ = os.RemoveAll(instanceDir)
+		return Instance{}, err
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		_ = os.RemoveAll(instanceDir)
+		return Instance{}, errors.New("实例配置无法保存")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
+		_ = os.RemoveAll(instanceDir)
 		return Instance{}, errors.New("保存实例失败")
 	}
 	defer tx.Rollback()
@@ -610,9 +645,11 @@ func (s *InstanceService) CreateInstance(c Config) (Instance, error) {
 		_, err = tx.Exec(`UPDATE instances SET selected=1 WHERE id=? AND NOT EXISTS(SELECT 1 FROM instances WHERE selected=1)`, id)
 	}
 	if err != nil {
+		_ = os.RemoveAll(instanceDir)
 		return Instance{}, errors.New("保存实例失败")
 	}
 	if err := tx.Commit(); err != nil {
+		_ = os.RemoveAll(instanceDir)
 		return Instance{}, errors.New("保存实例失败")
 	}
 	return item, nil
@@ -671,7 +708,7 @@ func (s *InstanceService) SelectInstance(req IDRequest) (List, error) {
 	return s.listLocked()
 }
 
-// DeleteInstance removes the record and archives user files for recovery.
+// DeleteInstance moves the instance and its files into the instance recycle bin.
 //
 // 正在安装的实例会先取消下载并等待安装协程退出，再归档目录；
 // 这样用户不必等安装完成就能移除实例。
@@ -681,10 +718,23 @@ func (s *InstanceService) DeleteInstance(req IDRequest) (List, error) {
 		s.mu.Unlock()
 		return List{}, err
 	}
-	item, err := s.getLocked(req.InstanceID)
-	if err != nil {
+	if err := s.reconcileLocked(); err != nil {
 		s.mu.Unlock()
 		return List{}, err
+	}
+	item, err := s.getLocked(req.InstanceID)
+	if err != nil {
+		if errors.Is(err, errInstanceNotFound) {
+			list, listErr := s.listLocked()
+			s.mu.Unlock()
+			return list, listErr
+		}
+		if indexed, indexErr := s.indexedItemLocked(req.InstanceID); indexErr == nil {
+			item = indexed
+		} else {
+			s.mu.Unlock()
+			return List{}, err
+		}
 	}
 	cancel := s.installCancels[item.ID]
 	done := s.installDone[item.ID]
@@ -708,8 +758,12 @@ func (s *InstanceService) DeleteInstance(req IDRequest) (List, error) {
 		}
 		item, err = s.getLocked(req.InstanceID)
 		if err != nil {
-			s.mu.Unlock()
-			return List{}, err
+			indexed, indexErr := s.indexedItemLocked(req.InstanceID)
+			if indexErr != nil {
+				s.mu.Unlock()
+				return List{}, err
+			}
+			item = indexed
 		}
 	}
 	list, deleteErr := s.deleteInstanceLocked(item)
@@ -727,16 +781,24 @@ func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 		return List{}, err
 	}
 	source := filepath.Dir(game)
-	trash, err := managedPath(s.root, "instances/.trash/"+item.ID+fmt.Sprint("-", time.Now().UnixNano()))
+	trashedAtMS := time.Now().UnixMilli()
+	trash, err := managedPath(s.root, trashRootRel+"/"+item.ID+fmt.Sprint("-", time.Now().UnixNano()))
 	if err != nil {
 		return List{}, err
 	}
 	moved := false
+	marked := false
 	if _, err := os.Stat(source); err == nil {
 		if err := os.MkdirAll(filepath.Dir(trash), 0755); err != nil {
 			return List{}, errors.New("归档实例失败")
 		}
+		if err := s.writeItemManifestStateLocked(item, trashedAtMS); err == nil {
+			marked = true
+		}
 		if err := os.Rename(source, trash); err != nil {
+			if marked {
+				_ = s.writeItemManifestStateLocked(item, 0)
+			}
 			return List{}, errors.New("归档实例失败")
 		}
 		moved = true
@@ -758,6 +820,9 @@ func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 	if err != nil {
 		if moved {
 			_ = os.Rename(trash, source)
+			if marked {
+				_ = s.writeItemManifestStateLocked(item, 0)
+			}
 		}
 		return List{}, errors.New("移除实例失败")
 	}

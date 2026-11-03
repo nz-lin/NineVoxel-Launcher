@@ -97,6 +97,260 @@ func TestDeleteArchivesFilesAndAllowsEmptyList(t *testing.T) {
 	if err != nil || string(body) != "keep my world" {
 		t.Fatal("user world was not preserved")
 	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(archived[0]), "..", manifestFileName)); err != nil {
+		t.Fatalf("归档实例缺少清单：%v", err)
+	}
+}
+
+func TestInstanceManifestSurvivesDatabaseLoss(t *testing.T) {
+	s := testService(t)
+	first, err := s.CreateInstance(testConfig("文件权威实例"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Name = "数据库丢失后仍保留"
+	first.MemoryMB = 6144
+	if _, err := s.UpdateInstance(UpdateRequest{Config: first.Config, InstanceID: first.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateInstance(testConfig("第二个实例")); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(first.ID)), manifestFileName)
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"schemaVersion": 1`) || !strings.Contains(string(raw), first.Name) {
+		t.Fatalf("实例清单内容不完整：%s", raw)
+	}
+	if err := s.ServiceShutdown(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(filepath.Join(s.root, "app.db"+suffix))
+	}
+
+	reopened := &InstanceService{root: s.root}
+	defer reopened.ServiceShutdown()
+	list, err := reopened.ListInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 2 || list.SelectedInstanceID == "" {
+		t.Fatalf("从实例清单恢复失败：%+v", list)
+	}
+	found := false
+	for _, item := range list.Items {
+		if item.ID == first.ID {
+			found = item.Name == first.Name && item.MemoryMB == 6144
+		}
+	}
+	if !found {
+		t.Fatal("数据库重建后实例配置丢失")
+	}
+}
+
+func TestDeletedInstanceFolderRemovesGhostIndex(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("手动删除目录"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)))); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 0 || list.SelectedInstanceID != "" {
+		t.Fatalf("已删除目录仍留下幽灵记录：%+v", list)
+	}
+}
+
+func TestDeleteMissingInstanceFolderStillSucceeds(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("删除失效实例"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)))); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.DeleteInstance(IDRequest{InstanceID: item.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 0 {
+		t.Fatalf("失效实例记录未清理：%+v", list)
+	}
+}
+
+func TestInstanceTrashListAndRestore(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("回收站实例"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	game, err := s.gameDir(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(game, "world.txt"), []byte("restore me"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteInstance(IDRequest{InstanceID: item.ID}); err != nil {
+		t.Fatal(err)
+	}
+	trash, err := s.ListInstanceTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 1 {
+		t.Fatalf("回收站条目数 = %d，期望 1", len(trash.Items))
+	}
+	entry := trash.Items[0]
+	if entry.InstanceID != item.ID || entry.Name != item.Name || entry.MCVersion != item.MCVersion || entry.Loader != "vanilla" || entry.DeletedAtMS <= 0 || entry.SizeBytes <= 0 || !entry.Restorable {
+		t.Fatalf("回收站条目信息不完整：%+v", entry)
+	}
+	list, err := s.RestoreInstanceFromTrash(TrashIDRequest{TrashID: entry.TrashID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].ID != item.ID || list.Items[0].Name != item.Name {
+		t.Fatalf("还原后的实例列表：%+v", list)
+	}
+	body, err := os.ReadFile(filepath.Join(game, "world.txt"))
+	if err != nil || string(body) != "restore me" {
+		t.Fatalf("还原后世界文件丢失：%q %v", body, err)
+	}
+	trash, err = s.ListInstanceTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 0 {
+		t.Fatalf("还原后回收站应为空：%+v", trash.Items)
+	}
+}
+
+func TestInstanceTrashRestoreConflictAndPermanentDelete(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("冲突实例"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteInstance(IDRequest{InstanceID: item.ID}); err != nil {
+		t.Fatal(err)
+	}
+	trash, err := s.ListInstanceTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 1 {
+		t.Fatalf("回收站条目数 = %d", len(trash.Items))
+	}
+	trashID := trash.Items[0].TrashID
+	directory := filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)))
+	if err := os.MkdirAll(directory, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RestoreInstanceFromTrash(TrashIDRequest{TrashID: trashID}); err == nil {
+		t.Fatal("原目录存在时不应覆盖还原")
+	}
+	if err := os.RemoveAll(directory); err != nil {
+		t.Fatal(err)
+	}
+	trash, err = s.DeleteInstancePermanently(TrashIDRequest{TrashID: trashID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 0 {
+		t.Fatalf("永久删除后回收站应为空：%+v", trash.Items)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(trashInstanceRel(trashID)))); !os.IsNotExist(err) {
+		t.Fatal("永久删除后回收站目录仍存在")
+	}
+}
+
+func TestEmptyInstanceTrash(t *testing.T) {
+	s := testService(t)
+	first, err := s.CreateInstance(testConfig("回收站一"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateInstance(testConfig("回收站二"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []Instance{first, second} {
+		if _, err := s.DeleteInstance(IDRequest{InstanceID: item.ID}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trash, err := s.ListInstanceTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 2 {
+		t.Fatalf("回收站条目数 = %d，期望 2", len(trash.Items))
+	}
+	trash, err = s.EmptyInstanceTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 0 {
+		t.Fatalf("清空后回收站仍有条目：%+v", trash.Items)
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, filepath.FromSlash(trashRootRel)))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("清空后磁盘上仍有回收站目录：%v", entries)
+	}
+}
+
+func TestInstanceTrashRecoversLegacyArchiveManifest(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("旧归档实例"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	game, err := s.gameDir(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionDir := filepath.Join(game, "versions", item.MCVersion)
+	if err := os.MkdirAll(versionDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, item.MCVersion+".json"), []byte(`{"id":"1.21.4"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DeleteInstance(IDRequest{InstanceID: item.ID}); err != nil {
+		t.Fatal(err)
+	}
+	manifestPaths, err := filepath.Glob(filepath.Join(s.root, filepath.FromSlash(trashRootRel), item.ID+"-*", manifestFileName))
+	if err != nil || len(manifestPaths) != 1 {
+		t.Fatalf("归档清单路径：%v %v", manifestPaths, err)
+	}
+	if err := os.Remove(manifestPaths[0]); err != nil {
+		t.Fatal(err)
+	}
+	trash, err := s.ListInstanceTrash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trash.Items) != 1 || !trash.Items[0].Restorable || trash.Items[0].MCVersion != item.MCVersion || !strings.Contains(trash.Items[0].Name, "恢复的实例") {
+		t.Fatalf("旧归档未恢复清单：%+v", trash.Items)
+	}
+	if _, err := s.RestoreInstanceFromTrash(TrashIDRequest{TrashID: trash.Items[0].TrashID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)), manifestFileName)); err != nil {
+		t.Fatalf("还原后缺少实例清单：%v", err)
+	}
 }
 
 func TestInstanceRejectsInvalidInputAndPaths(t *testing.T) {

@@ -2,8 +2,9 @@ package instance
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestInstanceGroupsDefaultCreateAndCounts(t *testing.T) {
@@ -96,25 +97,21 @@ func TestDeleteGroupRequiresMoveAndMigratesInstances(t *testing.T) {
 
 func TestLegacyDefaultPartitionMigratesToDefaultGroup(t *testing.T) {
 	s := testService(t)
-	if _, err := s.ListInstanceGroups(); err != nil {
-		t.Fatal(err)
-	}
-	legacy := Instance{
-		Config: Config{
-			Name: "旧实例", MCVersion: "1.21.4", Loader: "vanilla",
-			Partition: legacyDefaultPartition, Icon: "🟩", MemoryMB: 4096,
-		},
-		ID: "inst-legacy", FolderPath: "instances/inst-legacy/.minecraft",
-		InstallationState: "not_installed", CreatedAtMS: time.Now().UnixMilli(),
-	}
-	raw, err := json.Marshal(legacy)
+	item, err := s.CreateInstance(testConfig("旧实例"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(
-		`INSERT INTO instances(id,config_json,selected,created_at_ms,updated_at_ms) VALUES(?,?,0,?,?)`,
-		legacy.ID, string(raw), legacy.CreatedAtMS, legacy.CreatedAtMS,
-	); err != nil {
+	directory := filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)))
+	manifest, err := readInstanceManifest(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Config.Partition = legacyDefaultPartition
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, manifestFileName), raw, 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ServiceShutdown(); err != nil {
@@ -130,6 +127,20 @@ func TestLegacyDefaultPartitionMigratesToDefaultGroup(t *testing.T) {
 	if len(list.Items) != 1 || list.Items[0].Partition != defaultInstanceGroup {
 		t.Fatalf("旧实例分组未迁移：%+v", list.Items)
 	}
+	migrated, err := os.ReadFile(filepath.Join(directory, manifestFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(migrated) == "" || json.Valid(migrated) == false {
+		t.Fatal("迁移后的实例清单无效")
+	}
+	var persisted instanceManifest
+	if err := json.Unmarshal(migrated, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Partition != defaultInstanceGroup {
+		t.Fatalf("实例清单未同步默认分组：%q", persisted.Partition)
+	}
 	groups, err := reopened.ListInstanceGroups()
 	if err != nil {
 		t.Fatal(err)
@@ -138,5 +149,45 @@ func TestLegacyDefaultPartitionMigratesToDefaultGroup(t *testing.T) {
 		if group.Name == legacyDefaultPartition {
 			t.Fatal("旧默认分区不应作为独立分组存在")
 		}
+	}
+}
+
+func TestLegacyDatabaseIndexBootstrapsMissingManifest(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("旧数据库实例"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.Config.Partition = legacyDefaultPartition
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE instances SET config_json=? WHERE id=?`, string(raw), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)))
+	if err := os.Remove(filepath.Join(directory, manifestFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ServiceShutdown(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := &InstanceService{root: s.root}
+	t.Cleanup(func() { _ = reopened.ServiceShutdown() })
+	list, err := reopened.ListInstances()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Name != item.Name || list.Items[0].Partition != defaultInstanceGroup {
+		t.Fatalf("旧数据库实例未正确迁移：%+v", list.Items)
+	}
+	manifest, err := readInstanceManifest(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.ID != item.ID || manifest.Partition != defaultInstanceGroup {
+		t.Fatalf("旧数据库实例未生成正确清单：%+v", manifest)
 	}
 }
