@@ -286,6 +286,8 @@ const (
 	messageRuntimeMajorRequired = "请先选择要安装的 Java 大版本。"
 	// messageRuntimeSourcePlatformUnsupported 用于当前平台/架构不受第三方来源支持。
 	messageRuntimeSourcePlatformUnsupported = "当前平台或架构不在该第三方来源的支持列表中。"
+	// messageRuntimeSourceUnsupported 用于不认识的发行版来源标识。
+	messageRuntimeSourceUnsupported = "暂不支持该 Java 发行版。"
 	// messageRuntimeSourceMalformed 用于 API 响应不是合法 JSON。
 	messageRuntimeSourceMalformed = "第三方来源返回的元数据格式非法，无法继续。"
 	// messageRuntimeSourceEmpty 用于 API 返回空数组（没有该大版本的构建）。

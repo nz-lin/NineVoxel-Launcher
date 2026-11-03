@@ -123,6 +123,18 @@ func (s *RuntimeService) GetRuntimeSourceInfo(major int) (RuntimeSourceInfo, err
 	return info, nil
 }
 
+// ListRuntimeLtsVersions 返回指定发行版当前提供的 Java LTS 大版本列表。
+//
+// LTS 列表由 vendor 对应的来源接口提供，不在代码里写死；成功结果按来源
+// 缓存 1 小时。请求失败返回 `RUNTIME_SOURCE_001`。
+func (s *RuntimeService) ListRuntimeLtsVersions(vendor string) (RuntimeLtsVersions, error) {
+	versions, appErr := GetAvailableLtsVersions(vendor)
+	if appErr != nil {
+		return RuntimeLtsVersions{}, appErr
+	}
+	return versions, nil
+}
+
 // ListRuntimeUpdates 返回上次更新检查的缓存结果（P3-14）。
 //
 // 只读数据库，**不触发任何网络请求**：页面打开时先渲染上次结论，
@@ -147,7 +159,7 @@ func (s *RuntimeService) CheckRuntimeUpdates() ([]RuntimeUpdateInfo, error) {
 	return updates, nil
 }
 
-// InstallRuntimeSource 从第三方来源（Adoptium/Temurin）安装指定大版本的 Java。
+// InstallRuntimeSource 从第三方来源（Adoptium/Temurin 或 Azul Zulu）安装指定大版本的 Java。
 //
 // 这是「更新到 21.0.13」与「按缺失的大版本安装」两条界面路径的落点，
 // 与 InstallRuntime（官方 Mojang 组件）是两套来源，互不替代。

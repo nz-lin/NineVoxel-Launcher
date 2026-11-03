@@ -346,7 +346,21 @@ export interface RuntimeBindingView {
 export interface RuntimeSourceInstallRequest {
   /** 要安装的 Java 主版本（必须 > 0；元数据未声明时不得猜，D-39）。 */
   majorVersion: number
+  /** 发行版来源标识：`adoptium`（Temurin）或 `zulu`（Azul Zulu）。 */
+  vendor: string
   /** 用户是否已勾选并接受许可提示。 */
   acceptLicense: boolean
+}
+
+/**
+ * 第三方来源当前提供的 Java LTS 大版本列表（对应 `ListRuntimeLtsVersions`）。
+ *
+ * 列表由来源接口返回，不在前端写死，新增 LTS 时会自动出现。
+ */
+export interface RuntimeLtsVersions {
+  /** LTS 大版本号，按从新到旧排序。 */
+  versions: number[]
+  /** 最新 LTS 大版本；0 表示来源未声明。 */
+  mostRecentLts: number
 }
 

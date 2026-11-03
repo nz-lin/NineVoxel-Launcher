@@ -244,26 +244,26 @@ func checkAdoptiumRedirect(request *http.Request, via []*http.Request) error {
 		return errors.New("重定向请求为空")
 	}
 	if len(via) >= adoptiumMaxRedirects {
-		return &adoptiumRedirectError{message: fmt.Sprintf("重定向次数超过 %d 跳", adoptiumMaxRedirects)}
+		return &sourceRedirectError{message: fmt.Sprintf("重定向次数超过 %d 跳", adoptiumMaxRedirects)}
 	}
 	if !strings.EqualFold(request.URL.Scheme, "https") {
-		return &adoptiumRedirectError{message: "重定向目标不是 HTTPS 地址"}
+		return &sourceRedirectError{message: "重定向目标不是 HTTPS 地址"}
 	}
 	host := strings.ToLower(request.URL.Hostname())
 	if !adoptiumDownloadHosts[host] {
-		return &adoptiumRedirectError{message: "重定向目标不在允许的来源列表中"}
+		return &sourceRedirectError{message: "重定向目标不在允许的来源列表中"}
 	}
 	return nil
 }
 
-// adoptiumRedirectError 表示一次被拒绝的重定向。
-type adoptiumRedirectError struct {
+// sourceRedirectError 表示一次被拒绝的重定向。
+type sourceRedirectError struct {
 	// message 是中文原因。
 	message string
 }
 
 // Error 实现 error 接口。
-func (e *adoptiumRedirectError) Error() string {
+func (e *sourceRedirectError) Error() string {
 	return e.message
 }
 
@@ -371,72 +371,11 @@ func buildAdoptiumAssetsURL(major int, apiOS, arch string) string {
 }
 
 // fetchAdoptiumDocument 发起一次受限的 GET 请求并返回响应体。
-//
-// 限制：https + 单一 host、响应体上限、非 200 明确失败、404 不重试。
 func fetchAdoptiumDocument(ctx context.Context, client *http.Client, rawURL string) ([]byte, *AppError) {
-	if appErr := validateAdoptiumAPIURL(rawURL); appErr != nil {
-		return nil, appErr
-	}
 	if client == nil {
 		client = adoptiumHTTPClientFactory()
 	}
-	request, buildErr := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if buildErr != nil {
-		return nil, newInputError(ErrorCodeRuntimeSource, messageRuntimeSourceRequestFailed)
-	}
-	request.Header.Set("Accept", "application/json")
-	response, doErr := client.Do(request)
-	if doErr != nil {
-		if ctx.Err() != nil {
-			return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceTimeout, true)
-		}
-		var redirectErr *adoptiumRedirectError
-		if errors.As(doErr, &redirectErr) {
-			return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceRedirectRejected, false)
-		}
-		runtimeLog().Warn("请求 Adoptium 资产接口失败", logging.Fields{
-			Event:     "runtime.source.fetch_failed",
-			ErrorCode: ErrorCodeRuntimeSource,
-		})
-		return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceUnreachable, true)
-	}
-	defer func() {
-		_ = response.Body.Close()
-	}()
-
-	if response.StatusCode == http.StatusNotFound {
-		return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceNotFound, false)
-	}
-	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
-		return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceUnreachable, true)
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceStatusFailed, false)
-	}
-
-	body, readErr := io.ReadAll(io.LimitReader(response.Body, adoptiumAPIMaxBytes+1))
-	if readErr != nil {
-		return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceUnreachable, true)
-	}
-	if len(body) > adoptiumAPIMaxBytes {
-		return nil, newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceTooLarge, false)
-	}
-	return body, nil
-}
-
-// validateAdoptiumAPIURL 校验 API 地址是否允许请求。
-func validateAdoptiumAPIURL(rawURL string) *AppError {
-	parsed, parseErr := url.Parse(strings.TrimSpace(rawURL))
-	if parseErr != nil || parsed == nil {
-		return newInputError(ErrorCodeRuntimeSource, messageRuntimeSourceRequestFailed)
-	}
-	if !strings.EqualFold(parsed.Scheme, "https") {
-		return newInputError(ErrorCodeRuntimeSource, messageRuntimeSourceNotHTTPS)
-	}
-	if !strings.EqualFold(parsed.Hostname(), adoptiumAPIHost) {
-		return newInputError(ErrorCodeRuntimeSource, messageRuntimeSourceHostNotAllowed)
-	}
-	return nil
+	return fetchSourceDocument(ctx, client, rawURL, adoptiumAPIHost, "请求 Adoptium 资产接口失败", adoptiumAPIMaxBytes)
 }
 
 // adoptiumArchiveFileName 从归档地址里取出文件名。
@@ -704,7 +643,11 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 	if !req.AcceptLicense {
 		return download.TaskAccepted{}, newInputError(ErrorCodeRuntimeInstall, messageRuntimeLicenseRequired)
 	}
-	release, fetchErr := FetchAdoptiumRelease(req.MajorVersion, goruntime.GOOS, goruntime.GOARCH)
+	spec, specErr := resolveRuntimeSource(req.Vendor)
+	if specErr != nil {
+		return download.TaskAccepted{}, specErr
+	}
+	release, fetchErr := spec.Fetch(ctx, spec.ClientFactory(), req.MajorVersion, goruntime.GOOS, goruntime.GOARCH)
 	if fetchErr != nil {
 		return download.TaskAccepted{}, fetchErr
 	}
@@ -713,7 +656,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 		return download.TaskAccepted{}, rootErr
 	}
 
-	runtimeID, idErr := sourceRuntimeID(release)
+	runtimeID, idErr := sourceRuntimeID(spec.ComponentKey, release)
 	if idErr != nil {
 		return download.TaskAccepted{}, idErr
 	}
@@ -721,7 +664,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 	finalDir := filepath.Join(root, artifact.DirRuntimes, runtimeID)
 	if appErr := ensureSourceRuntimeIntact(finalDir, release); appErr == nil {
 		// 目录已存在且可执行文件就位：不重复下载，直接把记录补上并返回 Duplicate。
-		if saveErr := saveSourceRuntimeRow(ctx, release, runtimeID); saveErr != nil {
+		if saveErr := saveSourceRuntimeRow(ctx, spec, release, runtimeID); saveErr != nil {
 			return download.TaskAccepted{}, saveErr
 		}
 		runtimeProgressSink(taskID, runtimeEventStateCompleted, 1, "")
@@ -734,7 +677,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 	}
 
 	stagingRoot := filepath.Join(root, artifact.DirRuntimes, runtimeStagingPrefix+runtimeID)
-	archivePath := filepath.Join(stagingRoot, "archive.zip")
+	archivePath := filepath.Join(stagingRoot, release.FileName)
 	extractDir := filepath.Join(stagingRoot, "extract")
 
 	if _, spaceErr := download.CheckDiskSpace(root, release.SizeBytes); spaceErr != nil {
@@ -750,8 +693,8 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 		return download.TaskAccepted{}, newSystemError(ErrorCodeRuntimeInstall, messageRuntimeStagingFailed, false)
 	}
 
-	candidates := adoptiumDownloadCandidates(release, adoptiumMirrorEnabled())
-	if downloadErr := downloadAdoptiumArchive(ctx, candidates, archivePath, release.SizeBytes, progress); downloadErr != nil {
+	candidates := spec.Candidates(release, adoptiumMirrorEnabled())
+	if downloadErr := downloadSourceArchive(ctx, spec, candidates, archivePath, release.SizeBytes, progress); downloadErr != nil {
 		cleanupRuntimeStaging(stagingRoot)
 		runtimeProgressSink(taskID, runtimeEventStateFailed, 0, downloadErr.Code)
 		return download.TaskAccepted{}, downloadErr
@@ -775,7 +718,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 		return download.TaskAccepted{}, newInputError(ErrorCodeRuntimeInstall, messageRuntimeArchiveChecksumMismatch)
 	}
 
-	if _, unpackErr := UnpackZip(archivePath, extractDir, UnpackOptions{
+	if _, unpackErr := UnpackArchive(archivePath, extractDir, UnpackOptions{
 		Executable: func(relPath string) bool {
 			return strings.HasSuffix(relPath, "/bin/java") || relPath == "bin/java"
 		},
@@ -791,6 +734,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 		runtimeProgressSink(taskID, runtimeEventStateFailed, 0, flattenErr.Code)
 		return download.TaskAccepted{}, flattenErr
 	}
+	innerRoot = runtimeHomeDirectory(innerRoot)
 	executablePath := filepath.Join(innerRoot, filepath.FromSlash(release.ExecutableRel))
 	if !isRegularFile(executablePath) {
 		cleanupRuntimeStaging(stagingRoot)
@@ -814,14 +758,14 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 	// 归档与解压残留都在 staging 里，安装完成后统一清掉。
 	cleanupRuntimeStaging(stagingRoot)
 
-	if saveErr := saveSourceRuntimeRow(ctx, release, runtimeID); saveErr != nil {
+	if saveErr := saveSourceRuntimeRow(ctx, spec, release, runtimeID); saveErr != nil {
 		runtimeProgressSink(taskID, runtimeEventStateFailed, 0, saveErr.Code)
 		return download.TaskAccepted{}, saveErr
 	}
 	runtimeProgressSink(taskID, runtimeEventStateCompleted, 1, "")
 	runtimeLog().Info("已安装第三方 Java Runtime", logging.Fields{
 		Event:      "runtime.source.installed",
-		Attributes: map[string]string{"runtimeId": runtimeID, "source": sourceNameAdoptium},
+		Attributes: map[string]string{"runtimeId": runtimeID, "source": spec.Name},
 	})
 	return download.TaskAccepted{
 		TaskID:      taskID,
@@ -836,7 +780,7 @@ func installRuntimeFromSource(ctx context.Context, req InstallRuntimeSourceReque
 // 形式沿用 P3-09：`<来源>-<platform>-<arch>-<version>`，例如
 // `adoptium-windows-x64-21.0.13`。借用 buildRuntimeID 是为了让两套来源的
 // 标识规则完全一致，避免下游按 runtimeId 解析平台时出现两种格式。
-func sourceRuntimeID(release *AdoptiumRelease) (string, *AppError) {
+func sourceRuntimeID(componentKey string, release *AdoptiumRelease) (string, *AppError) {
 	if release == nil {
 		return "", newInputError(ErrorCodeRuntimeInstall, messageRuntimeIDInvalid)
 	}
@@ -844,7 +788,7 @@ func sourceRuntimeID(release *AdoptiumRelease) (string, *AppError) {
 	if token == "" {
 		return "", newInputError(ErrorCodeRuntimeInstall, messageRuntimeIDInvalid)
 	}
-	return buildRuntimeID(adoptiumComponentKey, "", token)
+	return buildRuntimeID(componentKey, "", token)
 }
 
 // ensureSourceRuntimeIntact 判断已安装目录是否可用于跳过重复安装。
@@ -872,7 +816,7 @@ func isRegularFile(path string) bool {
 }
 
 // saveSourceRuntimeRow 把第三方 Runtime 写入 `java_runtimes`。
-func saveSourceRuntimeRow(ctx context.Context, release *AdoptiumRelease, runtimeID string) *AppError {
+func saveSourceRuntimeRow(ctx context.Context, spec sourceSpec, release *AdoptiumRelease, runtimeID string) *AppError {
 	nowMs := runtimeSelectionNowMs()
 	row := runtimeRow{
 		ID:                runtimeID,
@@ -883,10 +827,10 @@ func saveSourceRuntimeRow(ctx context.Context, release *AdoptiumRelease, runtime
 		Platform:          currentPlatformName(),
 		Arch:              currentArch(),
 		Bitness:           bitnessValue(currentBitness()),
-		Vendor:            VendorOpenJDK,
+		Vendor:            spec.Vendor,
 		SourceURI:         stripQuery(release.OfficialURL),
 		SHA256:            release.SHA256,
-		SourceName:        sourceNameAdoptium,
+		SourceName:        spec.Name,
 		LocalRelPath:      artifact.DirRuntimes + "/" + runtimeID,
 		VerifiedAtMs:      nowMs,
 		CreatedAtMs:       nowMs,
@@ -896,27 +840,50 @@ func saveSourceRuntimeRow(ctx context.Context, release *AdoptiumRelease, runtime
 	return saveRuntime(ctx, row)
 }
 
+// runtimeHomeDirectory 把 macOS 归档的 `Contents/Home` 提升为运行时根目录。
+//
+// Temurin 与 Zulu 的 macOS tar.gz 都是 `<jdk>/Contents/Home/bin/java` 结构；
+// 统一提升后，所有平台的安装目录都保持 `<runtime>/bin/java`，启动侧不需要
+// 再按平台记忆两套布局。
+func runtimeHomeDirectory(root string) string {
+	if goruntime.GOOS != "darwin" {
+		return root
+	}
+	home := filepath.Join(root, "Contents", "Home")
+	if info, statErr := os.Stat(home); statErr == nil && info.IsDir() {
+		return home
+	}
+	return root
+}
+
 // cleanupRuntimeStaging 删除 staging 目录（失败只忽略，不覆盖原始错误）。
 func cleanupRuntimeStaging(stagingRoot string) {
 	_ = os.RemoveAll(stagingRoot)
 }
 
-// downloadAdoptiumArchive 按候选顺序下载归档到 archivePath。
+// downloadSourceArchive 按候选顺序下载归档到 archivePath。
 //
 // 写盘走 P3-05 的 `download.StagingSink` 接缝（与官方 Runtime 安装共用同一套
 // 「staging 内写入」语义），因此这里的 HTTP 代码只负责把字节搬进 writer。
-func downloadAdoptiumArchive(ctx context.Context, candidates []string, archivePath string, expectedSize int64, progress *installProgress) *AppError {
+func downloadSourceArchive(
+	ctx context.Context,
+	spec sourceSpec,
+	candidates []string,
+	archivePath string,
+	expectedSize int64,
+	progress *installProgress,
+) *AppError {
 	if len(candidates) == 0 {
 		return newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceUnreachable, true)
 	}
-	client := adoptiumHTTPClientFactory()
+	client := spec.ClientFactory()
 	stagingRoot := filepath.Dir(archivePath)
 	sink := &runtimeStagingSink{stagingRoot: stagingRoot}
 	task := download.Task{TargetRelPath: filepath.Base(archivePath)}
 
 	var lastErr *AppError
 	for _, candidate := range candidates {
-		if appErr := validateAdoptiumDownloadURL(candidate); appErr != nil {
+		if appErr := spec.ValidateDownloadURL(candidate); appErr != nil {
 			lastErr = appErr
 			continue
 		}
@@ -924,7 +891,7 @@ func downloadAdoptiumArchive(ctx context.Context, candidates []string, archivePa
 		if openErr != nil {
 			return newSystemError(ErrorCodeRuntimeInstall, messageRuntimeStagingFailed, false)
 		}
-		appErr := fetchAdoptiumArchiveInto(ctx, client, candidate, writer, expectedSize, progress)
+		appErr := fetchSourceArchiveInto(ctx, client, candidate, writer, expectedSize, progress)
 		if appErr == nil {
 			return nil
 		}
@@ -957,8 +924,8 @@ func (r *progressReader) Read(buffer []byte) (int, error) {
 	return read, err
 }
 
-// fetchAdoptiumArchiveInto 把单个候选地址的归档写入 writer。
-func fetchAdoptiumArchiveInto(
+// fetchSourceArchiveInto 把单个候选地址的归档写入 writer。
+func fetchSourceArchiveInto(
 	ctx context.Context,
 	client *http.Client,
 	rawURL string,
@@ -980,7 +947,7 @@ func fetchAdoptiumArchiveInto(
 		if ctx.Err() != nil {
 			return newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceTimeout, true)
 		}
-		var redirectErr *adoptiumRedirectError
+		var redirectErr *sourceRedirectError
 		if errors.As(doErr, &redirectErr) {
 			return newExternalError(ErrorCodeRuntimeSource, messageRuntimeSourceRedirectRejected, false)
 		}

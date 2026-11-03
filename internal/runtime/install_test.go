@@ -10,7 +10,9 @@ package runtime
 //   - 不产生真实事件：`runtimeProgressSink` 替换为记录器。
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -1161,6 +1163,46 @@ func TestUnpackZipExtractsFiles(t *testing.T) {
 	}
 	if string(content) != "java" {
 		t.Fatalf("内容 = %q", string(content))
+	}
+}
+
+func TestUnpackArchiveExtractsTarGz(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "runtime.tar.gz")
+	dest := filepath.Join(dir, "out")
+	file, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gz)
+	body := []byte("java")
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "jdk-21/bin/java", Mode: 0o755, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	report, appErr := UnpackArchive(archivePath, dest, UnpackOptions{})
+	if appErr != nil {
+		t.Fatalf("tar.gz 解压失败：%v", appErr)
+	}
+	if report.Files != 1 {
+		t.Fatalf("文件数 = %d，期望 1", report.Files)
+	}
+	content, err := os.ReadFile(filepath.Join(dest, "jdk-21", "bin", "java"))
+	if err != nil || string(content) != "java" {
+		t.Fatalf("解压内容异常：%q, %v", content, err)
 	}
 }
 

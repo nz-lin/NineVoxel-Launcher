@@ -17,6 +17,7 @@ import type {
   RuntimeInstallProgress,
   RuntimeInstallRequest,
   RuntimeList,
+  RuntimeLtsVersions,
   RuntimeProbeResult,
   RuntimeProbeWarning,
   RuntimeRequirement,
@@ -58,6 +59,9 @@ export interface RuntimeBindingsApi {
   /** 对应 RuntimeService.CheckRuntimeUpdates（P3-14，会联网）。 */
   CheckRuntimeUpdates: () => Promise<unknown>
 
+  /** 对应 RuntimeService.ListRuntimeLtsVersions（动态 LTS 列表）。 */
+  ListRuntimeLtsVersions: (vendor: string) => Promise<unknown>
+
   /** 对应 RuntimeService.InstallRuntimeSource（P3-16，会联网下载）。 */
   InstallRuntimeSource: (request: RuntimeSourceInstallRequest) => Promise<unknown>
 
@@ -87,6 +91,9 @@ export interface RuntimeService {
 
   /** 读取上次更新检查的缓存结果（不联网）。 */
   listUpdates: () => Promise<RuntimeUpdateInfo[]>
+
+  /** 获取第三方来源当前提供的 LTS 大版本列表（会联网，成功结果由后端缓存）。 */
+  getLtsVersions: (vendor: string) => Promise<RuntimeLtsVersions>
 
   /** 检查已安装运行时的小版本更新（会联网，由用户显式触发）。 */
   checkUpdates: () => Promise<RuntimeUpdateInfo[]>
@@ -312,6 +319,27 @@ export function normalizeRuntimeSourceInfo(raw: unknown): RuntimeSourceInfo {
 }
 
 /**
+ * 归一化动态 LTS 列表。
+ *
+ * 只保留正整数并去重；排序以后端为准，前端不重新排序，避免两侧结论不一致。
+ *
+ * @param raw 后端返回的 LTS 列表
+ * @returns 前端视图
+ */
+export function normalizeRuntimeLtsVersions(raw: unknown): RuntimeLtsVersions {
+  const record = isRecord(raw) ? raw : {}
+  const versions = Array.isArray(record.versions)
+    ? record.versions
+        .map((version) => toNumber(version))
+        .filter((version) => Number.isFinite(version) && version > 0)
+    : []
+  return {
+    versions: Array.from(new Set(versions)),
+    mostRecentLts: toNumber(record.mostRecentLts),
+  }
+}
+
+/**
  * 用后端绑定接口创建运行时服务门面。
  *
  * 所有调用失败都会转成统一的 AppError，界面按
@@ -428,6 +456,19 @@ export function createRuntimeService(api: RuntimeBindingsApi): RuntimeService {
       return call(() => api.ListRuntimeUpdates(), normalizeRuntimeUpdateInfoList)
     },
 
+    /** 获取第三方来源当前提供的 LTS 大版本列表。 */
+    async getLtsVersions(vendor: string): Promise<RuntimeLtsVersions> {
+      const normalized = vendor.trim()
+      if (normalized === '') {
+        throw toAppError({
+          code: RUNTIME_ERROR_CODE.requirementUnmet,
+          message: '请先选择 Java 发行版。',
+          retryable: false,
+        })
+      }
+      return call(() => api.ListRuntimeLtsVersions(normalized), normalizeRuntimeLtsVersions)
+    },
+
     /** 检查小版本更新（会联网；由用户显式点击触发）。 */
     async checkUpdates(): Promise<RuntimeUpdateInfo[]> {
       return call(() => api.CheckRuntimeUpdates(), normalizeRuntimeUpdateInfoList)
@@ -458,6 +499,7 @@ export function createRuntimeService(api: RuntimeBindingsApi): RuntimeService {
         () =>
           api.InstallRuntimeSource({
             majorVersion: request.majorVersion,
+            vendor: request.vendor.trim() || 'adoptium',
             acceptLicense: true,
           }),
         normalizeRuntimeInstallAccepted,
@@ -510,6 +552,9 @@ const runtimeBindingsApi: RuntimeBindingsApi = {
   /** 对应 RuntimeService.CheckRuntimeUpdates；会联网，由用户显式触发。 */
   CheckRuntimeUpdates: () => RuntimeService.CheckRuntimeUpdates(),
 
+  /** 对应 RuntimeService.ListRuntimeLtsVersions；动态 LTS 列表。 */
+  ListRuntimeLtsVersions: (vendor: string) => RuntimeService.ListRuntimeLtsVersions(vendor),
+
   /**
    * 对应 RuntimeService.InstallRuntimeSource（P3-16 新增的 wails 包装）。
    *
@@ -520,6 +565,7 @@ const runtimeBindingsApi: RuntimeBindingsApi = {
   InstallRuntimeSource: (request: RuntimeSourceInstallRequest) =>
     RuntimeService.InstallRuntimeSource({
       majorVersion: request.majorVersion,
+      vendor: request.vendor,
       acceptLicense: request.acceptLicense === true,
     }),
 

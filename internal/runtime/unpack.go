@@ -14,7 +14,9 @@
 package runtime
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"io"
 	"os"
 	"path/filepath"
@@ -160,6 +162,100 @@ func UnpackZip(zipPath, destDir string, options UnpackOptions) (UnpackReport, *A
 	return report, nil
 }
 
+// UnpackArchive 解压 Runtime 来源支持的归档格式。
+//
+// Windows 通常提供 ZIP，macOS / Linux 的 Adoptium 发行版通常提供 tar.gz。
+// 两种格式共用同一套路径、符号链接和资源限制检查。
+func UnpackArchive(archivePath, destDir string, options UnpackOptions) (UnpackReport, *AppError) {
+	lower := strings.ToLower(strings.TrimSpace(archivePath))
+	switch {
+	case strings.HasSuffix(lower, ".zip"):
+		return UnpackZip(archivePath, destDir, options)
+	case strings.HasSuffix(lower, ".tar.gz"), strings.HasSuffix(lower, ".tgz"):
+		return unpackTarGz(archivePath, destDir, options)
+	default:
+		return UnpackReport{Warnings: []RuntimeProbeWarning{}}, newInputError(ErrorCodeRuntimeUnpack, messageUnpackArchiveUnreadable)
+	}
+}
+
+func unpackTarGz(archivePath, destDir string, options UnpackOptions) (UnpackReport, *AppError) {
+	report := UnpackReport{Warnings: make([]RuntimeProbeWarning, 0)}
+	opts := options.normalized()
+	targetRoot := strings.TrimSpace(destDir)
+	if targetRoot == "" || !filepath.IsAbs(targetRoot) {
+		return report, newInputError(ErrorCodeRuntimeUnpack, messageUnpackTargetInvalid)
+	}
+	if mkdirErr := os.MkdirAll(targetRoot, 0o755); mkdirErr != nil {
+		return report, newSystemError(ErrorCodeRuntimeUnpack, messageUnpackTargetInvalid, false)
+	}
+
+	file, openErr := os.Open(archivePath)
+	if openErr != nil {
+		return report, newExternalError(ErrorCodeRuntimeUnpack, messageUnpackArchiveUnreadable, false)
+	}
+	defer func() { _ = file.Close() }()
+	gz, gzipErr := gzip.NewReader(file)
+	if gzipErr != nil {
+		return report, newExternalError(ErrorCodeRuntimeUnpack, messageUnpackArchiveUnreadable, false)
+	}
+	defer func() { _ = gz.Close() }()
+	reader := tar.NewReader(gz)
+	entries := 0
+	for {
+		header, nextErr := reader.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return report, newExternalError(ErrorCodeRuntimeUnpack, messageUnpackArchiveUnreadable, false)
+		}
+		entries++
+		if entries > opts.MaxFiles {
+			return report, newInputError(ErrorCodeRuntimeUnpack, messageUnpackTooManyFiles)
+		}
+		relPath, pathErr := unpackEntryPath(header.Name)
+		if pathErr != nil {
+			return report, pathErr
+		}
+		target, targetErr := unpackTargetPath(targetRoot, relPath)
+		if targetErr != nil {
+			return report, targetErr
+		}
+
+		switch header.Typeflag {
+		case tar.TypeSymlink, tar.TypeLink:
+			report.SkippedLinks++
+			report.Warnings = append(report.Warnings, RuntimeProbeWarning{
+				Code:    WarningUnpackSkippedLink,
+				Message: messageUnpackSkippedLink(relPath),
+			})
+			continue
+		case tar.TypeDir:
+			if mkdirErr := os.MkdirAll(target, 0o755); mkdirErr != nil {
+				return report, newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
+			}
+			report.Directories++
+			continue
+		case tar.TypeReg, tar.TypeRegA:
+		default:
+			return report, newInputError(ErrorCodeRuntimeUnpack, messageUnpackEntryInvalid(header.Name))
+		}
+
+		if header.Size < 0 || header.Size > opts.MaxFileBytes || report.TotalBytes > opts.MaxTotalBytes-header.Size {
+			return report, newInputError(ErrorCodeRuntimeUnpack, messageUnpackTooLarge)
+		}
+		if err := writeStream(reader, target, header.Size); err != nil {
+			return report, err
+		}
+		report.Files++
+		report.TotalBytes += header.Size
+		if options.Executable != nil && options.Executable(relPath) {
+			_ = os.Chmod(target, 0o755)
+		}
+	}
+	return report, nil
+}
+
 // checkEntryLimits 校验单个条目的资源限额。
 func checkEntryLimits(entry *zip.File, opts UnpackOptions) *AppError {
 	size := int64(entry.UncompressedSize64)
@@ -181,9 +277,6 @@ func checkEntryLimits(entry *zip.File, opts UnpackOptions) *AppError {
 
 // writeEntry 把一个文件条目写入 target。
 func writeEntry(entry *zip.File, target string, opts UnpackOptions) *AppError {
-	if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o755); mkdirErr != nil {
-		return newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
-	}
 	source, openErr := entry.Open()
 	if openErr != nil {
 		return newExternalError(ErrorCodeRuntimeUnpack, messageUnpackArchiveUnreadable, false)
@@ -191,23 +284,45 @@ func writeEntry(entry *zip.File, target string, opts UnpackOptions) *AppError {
 	defer func() {
 		_ = source.Close()
 	}()
-
-	destination, createErr := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if createErr != nil {
-		return newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
-	}
-	buffer := make([]byte, unpackCopyBufferSize)
-	written, copyErr := io.CopyBuffer(destination, io.LimitReader(source, opts.MaxFileBytes+1), buffer)
-	syncErr := destination.Sync()
-	closeErr := destination.Close()
-	if copyErr != nil || syncErr != nil || closeErr != nil {
-		return newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
+	written, err := copyToFile(source, target, opts.MaxFileBytes)
+	if err != nil {
+		return err
 	}
 	if written > opts.MaxFileBytes {
 		_ = os.Remove(target)
 		return newInputError(ErrorCodeRuntimeUnpack, messageUnpackFileTooLarge(entry.Name))
 	}
 	return nil
+}
+
+func writeStream(source io.Reader, target string, size int64) *AppError {
+	written, err := copyToFile(io.LimitReader(source, size+1), target, size)
+	if err != nil {
+		return err
+	}
+	if written != size {
+		_ = os.Remove(target)
+		return newExternalError(ErrorCodeRuntimeUnpack, messageUnpackArchiveUnreadable, false)
+	}
+	return nil
+}
+
+func copyToFile(source io.Reader, target string, limit int64) (int64, *AppError) {
+	if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o755); mkdirErr != nil {
+		return 0, newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
+	}
+	destination, createErr := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_EXCL, 0o644)
+	if createErr != nil {
+		return 0, newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
+	}
+	written, copyErr := io.CopyBuffer(destination, io.LimitReader(source, limit+1), make([]byte, unpackCopyBufferSize))
+	syncErr := destination.Sync()
+	closeErr := destination.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(target)
+		return written, newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
+	}
+	return written, nil
 }
 
 // unpackEntryPath 归一化并校验归档条目名。
@@ -234,6 +349,20 @@ func unpackTargetPath(root, relPath string) (string, *AppError) {
 	target := filepath.Join(root, filepath.FromSlash(cleaned))
 	if withinErr := artifact.EnsureWithinRoot(root, target); withinErr != nil {
 		return "", newInputError(ErrorCodeRuntimeUnpack, messageUnpackEntryInvalid(relPath))
+	}
+	// Existing symlinks in the destination chain would make MkdirAll/OpenFile
+	// follow a path outside root even when the lexical path is inside it.
+	for current := target; ; current = filepath.Dir(current) {
+		info, statErr := os.Lstat(current)
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", newInputError(ErrorCodeRuntimeUnpack, messageUnpackEntryInvalid(relPath))
+		}
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return "", newSystemError(ErrorCodeRuntimeUnpack, messageUnpackWriteFailed, false)
+		}
+		if current == filepath.Clean(root) || filepath.Dir(current) == current {
+			break
+		}
 	}
 	return target, nil
 }

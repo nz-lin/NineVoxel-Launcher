@@ -230,10 +230,26 @@ type InstallRuntimeSourceRequest struct {
 	// 通常来自版本元数据的 `javaVersion.majorVersion`；元数据未声明时不得猜（D-39）。
 	MajorVersion int `json:"majorVersion"`
 
+	// Vendor 为发行版来源标识（`adoptium` / `zulu`）。
+	//
+	// 空串按 `adoptium` 处理，兼容旧调用方。
+	Vendor string `json:"vendor"`
+
 	// AcceptLicense 表示用户已阅读并接受许可提示。
 	//
 	// 必须为 true：与官方 Runtime 安装一致，不持久化豁免（D-28）。
 	AcceptLicense bool `json:"acceptLicense"`
+}
+
+// RuntimeLtsVersions 描述第三方来源当前提供的 Java LTS 大版本列表。
+//
+// 列表完全来自来源接口，不在代码里写死，新增 LTS 时无需发版。
+type RuntimeLtsVersions struct {
+	// Versions 为 LTS 大版本号，按从新到旧排序。
+	Versions []int `json:"versions"`
+
+	// MostRecentLts 为最新的 LTS 大版本；0 表示来源未声明。
+	MostRecentLts int `json:"mostRecentLts"`
 }
 
 // RuntimeSourceInfo 描述某个 Java 大版本可从第三方源获取的最新构建（P3-14）。
