@@ -237,6 +237,12 @@ type gameLogChannel struct {
 	// 而切片让「取最近 N 行」与「按游标查」都简单得多。
 	lines []events.GameLogLine
 
+	// nextSequence 为下一行要分配的通道内序号。
+	//
+	// 序号与时间戳分开：同一毫秒内可能产生多行，时间戳无法作为稳定身份。
+	// 序号只在单个 launch 的通道内单调递增，用于前端合并快照与增量事件。
+	nextSequence int64
+
 	// droppedByBuffer 记录因缓冲溢出而丢弃的行数（累计）。
 	droppedByBuffer int
 
@@ -296,6 +302,12 @@ var gameLogManager = struct {
 
 	// current 为当前活动的通道；无活动启动时为 nil。
 	current *gameLogChannel
+
+	// last 为最近关闭的通道，仅供按 launchId 回读刚结束会话的日志。
+	//
+	// 保留它可以让控制台在游戏退出后仍能刷新、翻页并查看崩溃前的输出；
+	// 下一次启动创建新通道时替换。内存上限与 current 相同（2000 行）。
+	last *gameLogChannel
 }{}
 
 // StartGameLogChannel 为一个启动创建日志通道并开始接收输出。
@@ -348,6 +360,9 @@ func StopGameLogChannel() {
 	gameLogManager.mu.Lock()
 	channel := gameLogManager.current
 	gameLogManager.current = nil
+	if channel != nil {
+		gameLogManager.last = channel
+	}
 	gameLogManager.mu.Unlock()
 
 	if channel == nil {
@@ -439,6 +454,8 @@ func (c *gameLogChannel) appendLine(stream string, text string) {
 	}
 
 	c.mu.Lock()
+	c.nextSequence++
+	line.Sequence = c.nextSequence
 	c.lines = append(c.lines, line)
 	// 缓冲溢出：丢掉最旧的行并计数。丢弃而不是拒绝新行——
 	// 排查时最新的内容最有价值。
@@ -1050,14 +1067,10 @@ type gameLogSnapshot struct {
 //
 // 返回快照与错误：无活动启动 / launchId 不匹配时返回 `LAUNCH_LOG_001`。
 func queryGameLog(launchID string, beforeMs int64, limit int) (gameLogSnapshot, *Error) {
-	channel := CurrentGameLogChannel()
-	if channel == nil {
-		return gameLogSnapshot{}, newInputError(ErrorCodeLaunchLog, messageGameLogNoActiveLaunch)
-	}
-
 	trimmedID := strings.TrimSpace(launchID)
-	if trimmedID != "" && trimmedID != channel.launchID {
-		return gameLogSnapshot{}, newInputError(ErrorCodeLaunchLog, messageGameLogUnknownLaunch)
+	channel, channelErr := findGameLogChannel(trimmedID)
+	if channelErr != nil {
+		return gameLogSnapshot{}, channelErr
 	}
 
 	// limit 在 Go 边界裁剪：不信任前端传入值。
@@ -1098,6 +1111,34 @@ func queryGameLog(launchID string, beforeMs int64, limit int) (gameLogSnapshot, 
 	}
 
 	return snapshot, nil
+}
+
+// findGameLogChannel 选择日志查询通道。
+//
+// 空 launchID 只使用当前活动通道；显式 launchID 可命中当前通道或最近关闭的
+// 通道。这样游戏退出后，控制台仍能按原 launchId 回读最后一次运行输出。
+func findGameLogChannel(launchID string) (*gameLogChannel, *Error) {
+	gameLogManager.mu.Lock()
+	current := gameLogManager.current
+	last := gameLogManager.last
+	gameLogManager.mu.Unlock()
+
+	if launchID == "" {
+		if current == nil {
+			return nil, newInputError(ErrorCodeLaunchLog, messageGameLogNoActiveLaunch)
+		}
+		return current, nil
+	}
+	if current != nil && current.launchID == launchID {
+		return current, nil
+	}
+	if last != nil && last.launchID == launchID {
+		return last, nil
+	}
+	if current == nil && last == nil {
+		return nil, newInputError(ErrorCodeLaunchLog, messageGameLogNoActiveLaunch)
+	}
+	return nil, newInputError(ErrorCodeLaunchLog, messageGameLogUnknownLaunch)
 }
 
 // 快照查询的默认与上限条数。

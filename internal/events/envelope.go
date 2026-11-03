@@ -271,9 +271,9 @@ func NowMillis() int64 {
 //
 // 命名遵循 `domain.resource.action.v1`；载荷为 `LaunchLogAppendedPayload`。
 //
-// **刻意不加序号 `seq`**（决策记录 D-2 与本卡任务说明）：用载荷里的
-// `droppedLines` 累计值让前端感知丢失，避免「进程重启后序号从 0 开始」
-// 造成的歧义——前端无法判断「序号回退」到底是丢行还是重新启动。
+// 载荷里的 `droppedLines` 累计值用于感知丢失；每一行另带通道内单调序号，
+// 供前端在「快照 + 增量事件」两条读取路径之间去重。序号只在一个
+// launchId 内有效，不承诺跨进程连续。
 const EventLaunchLogAppended = "launch.log.appended.v1"
 
 // LaunchLogAppendedPayload 是 `launch.log.appended.v1` 的载荷。
@@ -300,6 +300,12 @@ type LaunchLogAppendedPayload struct {
 // 若 events 反过来 import launch 取这个类型就会形成 import 循环。
 // 因此共享的行结构由 events 提供，launch 直接引用（见 `gamelog.go`）。
 type GameLogLine struct {
+	// Sequence 为该行在所属日志通道内的单调序号。
+	//
+	// 快照与增量事件可能同时包含同一行；前端用 (launchId, sequence)
+	// 去重即可稳定渲染。序号从一个通道创建时开始递增，不跨 launch 复用。
+	Sequence int64 `json:"sequence"`
+
 	// TimestampMs 为该行被采集到的时间，UTC Unix 毫秒。
 	//
 	// 这是**采集时间**而不是游戏内部时间：游戏输出本身不带可靠时间戳。

@@ -275,6 +275,28 @@ func TestRingBufferCapacityAndDropCount(t *testing.T) {
 	}
 }
 
+// TestAppendLineAssignsMonotonicSequence 验证同一毫秒内的多行仍有稳定身份。
+func TestAppendLineAssignsMonotonicSequence(t *testing.T) {
+	channel := &gameLogChannel{
+		launchID:   "sequence-test",
+		lines:      make([]events.GameLogLine, 0, gameLogBufferCapacity),
+		writeQueue: make(chan events.GameLogLine, gameLogQueueCapacity),
+	}
+
+	for index := 0; index < 3; index++ {
+		channel.appendLine(streamStdout, "same line")
+	}
+
+	channel.mu.Lock()
+	defer channel.mu.Unlock()
+	for index, line := range channel.lines {
+		want := int64(index + 1)
+		if line.Sequence != want {
+			t.Fatalf("第 %d 行序号期望 %d，实际 %d", index, want, line.Sequence)
+		}
+	}
+}
+
 // TestGameLogFileName 验证文件命名规则。
 func TestGameLogFileName(t *testing.T) {
 	cases := []struct {
@@ -422,6 +444,21 @@ func TestQueryGameLogWithoutActiveChannel(t *testing.T) {
 	}
 	if queryErr.Code != ErrorCodeLaunchLog {
 		t.Fatalf("错误码期望 %q，实际 %q", ErrorCodeLaunchLog, queryErr.Code)
+	}
+}
+
+// TestQueryGameLogAfterChannelStoppedByLaunchID 验证退出后仍可回读最近会话。
+func TestQueryGameLogAfterChannelStoppedByLaunchID(t *testing.T) {
+	channel := StartGameLogChannel("finished-launch", nil)
+	channel.appendLine(streamStdout, "last line")
+	StopGameLogChannel()
+
+	snapshot, queryErr := queryGameLog("finished-launch", 0, 0)
+	if queryErr != nil {
+		t.Fatalf("退出后按 launchId 查询失败: %v", queryErr)
+	}
+	if len(snapshot.lines) != 1 || snapshot.lines[0].Text != "last line" {
+		t.Fatalf("退出后日志快照不符: %#v", snapshot.lines)
 	}
 }
 

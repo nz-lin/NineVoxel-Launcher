@@ -3,31 +3,30 @@ import {
   Terminal,
   Copy,
   Trash2,
-  Download,
   Search,
-  ArrowDown,
-  RefreshCw
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
-import { LogEntry, Instance } from '../types/launcher';
-import { useLauncherLogs } from '../hooks/useLauncherLogs';
+import { Instance } from '../types/launcher';
+import { useGameLog } from '../hooks/useGameLog';
 
 interface ConsoleViewProps {
   currentInstance: Instance;
-  onUpdateInstance: (updated: Instance) => void;
+  launchId: string;
 }
 
 export const ConsoleView: React.FC<ConsoleViewProps> = ({
   currentInstance,
-  onUpdateInstance
+  launchId
 }) => {
   const [filterLevel, setFilterLevel] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  // 日志改为真实数据：来自后端日志子系统，最新一条在最下方。
-  const launcherLogs = useLauncherLogs();
-  const logs = launcherLogs.entries;
+  // 真实游戏进程输出：快照恢复 + 增量事件，最新一条在最下方。
+  const gameLog = useGameLog(launchId);
+  const logs = gameLog.entries;
 
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +45,7 @@ export const ConsoleView: React.FC<ConsoleViewProps> = ({
   });
 
   const reloadLogs = () => {
-    void launcherLogs.reload();
+    void gameLog.reload();
   };
   const copyAllLogs = () => {
     const text = logs.map(l => `[${l.timestamp}] [${l.source}/${l.level}]: ${l.message}`).join('\n');
@@ -66,16 +65,12 @@ export const ConsoleView: React.FC<ConsoleViewProps> = ({
           <div>
             <h1 className="text-sm font-bold text-slate-900 dark:text-neutral-100 flex items-center gap-2">
               <span>游戏控制台与实时日志</span>
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span className={`w-2 h-2 rounded-full ${launchId ? 'bg-emerald-500 animate-pulse' : 'bg-neutral-500'}`}></span>
             </h1>
             <p className="text-[11px] text-slate-500 dark:text-neutral-400">
-              后端日志子系统 · {logs.length} 条记录
-              {launcherLogs.status
-                ? launcherLogs.status.enabled
-                  ? ` · ${launcherLogs.status.fileCount} 个文件`
-                  : ' · 目录不可写，仅控制台输出'
-                : ''}
-              {launcherLogs.error ? ` · ${launcherLogs.error}` : ''}
+              {currentInstance.name} · 游戏进程输出 · {logs.length} 条
+              {gameLog.droppedLines > 0 ? ` · 已丢弃 ${gameLog.droppedLines} 行` : ''}
+              {gameLog.error ? ` · ${gameLog.error}` : ''}
             </p>
           </div>
         </div>
@@ -85,11 +80,11 @@ export const ConsoleView: React.FC<ConsoleViewProps> = ({
           {/* 刷新日志：重新查询后端日志子系统 */}
           <button
             onClick={reloadLogs}
-            disabled={launcherLogs.loading}
+            disabled={gameLog.loading || !launchId}
             className="px-3.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-800 dark:text-emerald-300 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${launcherLogs.loading ? 'animate-spin' : ''}`} />
-            <span>{launcherLogs.loading ? '读取中…' : '刷新日志'}</span>
+            <RefreshCw className={`w-3.5 h-3.5 ${gameLog.loading ? 'animate-spin' : ''}`} />
+            <span>{gameLog.loading ? '读取中…' : '刷新日志'}</span>
           </button>
 
           <div className="h-4 w-px bg-slate-200 dark:bg-neutral-800" />
@@ -103,22 +98,11 @@ export const ConsoleView: React.FC<ConsoleViewProps> = ({
             <Copy className="w-3.5 h-3.5" />
           </button>
 
-          {/* 后端日志文件不能由界面删除，这里改为跳到文件所在目录的提示 */}
+          {/* 只清空当前界面；后端 game-*.log 不会被删除。 */}
           <button
-            onClick={() => {
-              // 后端不下发日志目录路径，只能如实说明。
-              window.alert(
-                `日志目录不可写时仅输出到控制台。当前状态：${
-                  launcherLogs.status === null
-                    ? '未知'
-                    : launcherLogs.status.enabled
-                      ? `可写（已有 ${launcherLogs.status.fileCount} 个文件）`
-                      : '不可写'
-                }\n日志文件由后端管理，界面不提供删除。`,
-              );
-            }}
+            onClick={gameLog.clear}
             className="p-1.5 rounded-lg bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 text-slate-600 dark:text-neutral-300 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer"
-            title="日志文件信息"
+            title="清空当前显示（不会删除后端日志文件）"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -169,6 +153,19 @@ export const ConsoleView: React.FC<ConsoleViewProps> = ({
 
       {/* Terminal Output Area */}
       <div className="flex-1 overflow-y-auto p-4 bg-neutral-950 font-mono text-xs select-text space-y-1">
+        {gameLog.hasMore && (
+          <div className="flex justify-center pb-2">
+            <button
+              onClick={() => { void gameLog.loadOlder(); }}
+              disabled={gameLog.loadingMore}
+              className="px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 border border-neutral-700 text-neutral-300 text-[11px] font-sans flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+            >
+              {gameLog.loadingMore && <Loader2 className="w-3 h-3 animate-spin" />}
+              <span>{gameLog.loadingMore ? '读取更早日志…' : '加载更早日志'}</span>
+            </button>
+          </div>
+        )}
+
         {filteredLogs.map((log) => {
           let levelColor = 'text-neutral-400';
           if (log.level === 'INFO') levelColor = 'text-emerald-400';
@@ -191,7 +188,13 @@ export const ConsoleView: React.FC<ConsoleViewProps> = ({
 
         {filteredLogs.length === 0 && (
           <div className="text-center py-16 text-neutral-600">
-            暂无匹配的控制台日志
+            {!launchId
+              ? '启动游戏后，这里会实时显示 Minecraft 的标准输出与错误输出。'
+              : gameLog.loading
+                ? '正在读取游戏日志…'
+                : gameLog.error
+                  ? gameLog.error
+                  : '暂无匹配的游戏日志'}
           </div>
         )}
 
