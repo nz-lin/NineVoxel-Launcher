@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TitleBar } from './components/TitleBar';
 import { Sidebar, NavTab } from './components/Sidebar';
 import { LaunchView } from './components/LaunchView';
@@ -34,6 +34,7 @@ import { useJavaRuntimes } from './hooks/useJavaRuntimes';
 import { useDownloadTasks } from './hooks/useDownloadTasks';
 import { useInstances } from './hooks/useInstances';
 import { useInstanceGroups } from './hooks/useInstanceGroups';
+import { useLaunchProcess } from './hooks/useLaunchProcess';
 import { instanceService, type InstanceConfig } from './services/instance';
 import { useAccounts } from './hooks/useAccounts';
 import { runtimeService } from './services/runtime';
@@ -100,6 +101,8 @@ export default function App() {
   // Java 运行时改为真实探测：列表、选中项与重新探测都来自后端 RuntimeService。
   const javaRuntimesState = useJavaRuntimes();
   const javaRuntimes = javaRuntimesState.runtimes;
+  // 真实游戏进程：状态快照是唯一真相源，事件只推动刷新。
+  const launchProcess = useLaunchProcess();
 
   // Synchronize documentElement class for Tailwind CSS v4 dark variant
   useEffect(() => {
@@ -114,13 +117,16 @@ export default function App() {
   const downloadTasksState = useDownloadTasks();
   const downloadTasks = downloadTasksState.tasks;
 
-  const [launchState, setLaunchState] = useState<'ready' | 'preparing' | 'checking_assets' | 'starting_jvm' | 'running'>('ready');
   const [isMaximized, setIsMaximized] = useState(false);
 
   // Modals & Drawers
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [detailInstance, setDetailInstance] = useState<Instance | null>(null);
   const [pendingDeleteInstance, setPendingDeleteInstance] = useState<Instance | null>(null);
+  const [pendingForceStop, setPendingForceStop] = useState(false);
+  // 只有本次界面真正发起并观察到的启动才提示退出，避免应用重启后把
+  // 上一次会话的终态快照误当成刚结束的游戏。
+  const activeLaunchObservedRef = useRef(false);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [javaManagerOpen, setJavaManagerOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
@@ -210,19 +216,76 @@ export default function App() {
     [accountsState.currentAccount],
   );
 
-  // Actual process startup is the next integration step.
-  const handleLaunchGame = () => {
-    if (!currentInstance) return;
-    if (currentInstance.installationState !== 'installed') {
+  const reportError = (cause: unknown) => {
+    if (cause instanceof Error) {
+      showToast(cause.message);
+      return;
+    }
+    if (cause && typeof cause === 'object' && 'message' in cause) {
+      showToast(String((cause as { message: unknown }).message));
+      return;
+    }
+    showToast(String(cause));
+  };
+
+  const startInstanceGame = async (instance: Instance) => {
+    if (instance.installationState !== 'installed') {
       showToast('请先在实例列表完成游戏资源安装。');
       setCurrentTab('instances');
       return;
     }
-    showToast('实例资源已安装，游戏进程启动接线将在下一步完成。');
+    try {
+      activeLaunchObservedRef.current = true;
+      await launchProcess.start(instance.id, currentAccount.id);
+      showToast(`正在启动 ${instance.name}。`);
+    } catch (cause) {
+      reportError(cause);
+    }
   };
 
-  const handleKillGame = () => { showToast('当前没有由此界面启动的游戏进程。'); };
-  const reportError = (cause: unknown) => showToast(cause instanceof Error ? cause.message : String(cause));
+  const handleLaunchGame = () => {
+    if (currentInstance) void startInstanceGame(currentInstance);
+  };
+
+  const handleStopGame = () => {
+    void launchProcess.stop(false)
+      .then(() => showToast('已请求停止游戏，正在等待进程退出。'))
+      .catch(reportError);
+  };
+
+  const confirmForceStop = () => {
+    setPendingForceStop(false);
+    void launchProcess.stop(true)
+      .then(() => showToast('已强制结束游戏进程。'))
+      .catch(reportError);
+  };
+
+  const lastLaunchNoticeRef = useRef('');
+  useEffect(() => {
+    const status = launchProcess.status;
+    if (!status || !status.launchId || status.state !== 'exited') return;
+    if (!activeLaunchObservedRef.current) return;
+    activeLaunchObservedRef.current = false;
+    const noticeKey = `${status.launchId}:${status.stateChangedAtMs}`;
+    if (lastLaunchNoticeRef.current === noticeKey) return;
+    lastLaunchNoticeRef.current = noticeKey;
+    if (status.outcome === 'crashed') {
+      const code = status.hasExitCode ? `（退出码 ${status.exitCode}）` : '';
+      showToast(`游戏异常退出${code}，可在控制台查看日志。`);
+    } else if (status.outcome === 'exited_normally') {
+      showToast('游戏已退出。');
+    } else {
+      showToast('游戏进程已停止。');
+    }
+  }, [launchProcess.status]);
+
+  useEffect(() => {
+    const status = launchProcess.status;
+    if (!status || !status.launchId) return;
+    if (status.state !== 'exited' && status.state !== 'failed' && status.state !== 'cancelled') {
+      activeLaunchObservedRef.current = true;
+    }
+  }, [launchProcess.status]);
 
   const handleSelectInstance = (inst: Instance) => {
     void instanceService.select(inst.id).then(instancesState.reload).catch(reportError);
@@ -276,6 +339,31 @@ export default function App() {
     showToast('实例配置已保存。');
   };
 
+  const handleDetailInstanceChanged = (updated: Instance) => {
+    setDetailInstance(updated);
+    void instancesState.reload();
+  };
+
+  useEffect(() => {
+    setDetailInstance((current) => {
+      if (!current) return current;
+      const latest = instances.find((item) => item.id === current.id);
+      if (!latest) return current;
+      if (
+        current.loader === latest.loader &&
+        current.loaderVersion === latest.loaderVersion &&
+        current.versionId === latest.versionId &&
+        current.installationState === latest.installationState &&
+        current.installationProgress === latest.installationProgress &&
+        current.installationError === latest.installationError &&
+        current.installTaskId === latest.installTaskId
+      ) {
+        return current;
+      }
+      return latest;
+    });
+  }, [instances]);
+
   const handleCreateGroup = async (name: string) => {
     await groupsState.createGroup(name);
     showToast(`已创建分组「${name}」。`);
@@ -291,8 +379,8 @@ export default function App() {
     void instanceService.install(inst.id).then(instancesState.reload).catch(reportError);
   };
 
-  const handleOpenFolder = (folderPath: string) => {
-    const inst = instances.find(item => item.folderPath === folderPath);
+  const handleOpenFolder = (folderPathOrId: string) => {
+    const inst = instances.find(item => item.id === folderPathOrId || item.folderPath === folderPathOrId);
     if (inst) { void instanceService.openFolder(inst.id).catch(reportError); }
     else { showToast('此目录的打开入口尚未接入。'); }
   };
@@ -410,8 +498,10 @@ export default function App() {
               currentAccount={currentAccount}
               onSelectInstance={handleSelectInstance}
               onLaunchGame={handleLaunchGame}
-              onKillGame={handleKillGame}
-              launchState={launchState}
+              onStopGame={handleStopGame}
+              onForceStopGame={() => setPendingForceStop(true)}
+              launchPhase={launchProcess.phase}
+              launchError={launchProcess.error}
               onNavigateTab={(tab) => {
                 if (tab === 'console') setCurrentTab('console');
                 if (tab === 'instances') setCurrentTab('instances');
@@ -427,9 +517,17 @@ export default function App() {
               currentInstanceId={currentInstanceId}
               onSelectCurrent={handleSelectInstance}
               onLaunchInstance={(inst) => {
-                handleSelectInstance(inst);
-                setCurrentTab('launch');
-                showToast('游戏进程启动接线将在下一步完成。');
+                void (async () => {
+                  try {
+                    await instanceService.select(inst.id);
+                    await instancesState.reload();
+                  } catch (cause) {
+                    reportError(cause);
+                    return;
+                  }
+                  setCurrentTab('launch');
+                  await startInstanceGame(inst);
+                })();
               }}
               onOpenManageInstance={(inst) => setDetailInstance(inst)}
               onOpenCreateModal={() => setCreateModalOpen(true)}
@@ -455,7 +553,7 @@ export default function App() {
           {currentTab === 'console' && currentInstance && (
             <ConsoleView
               currentInstance={currentInstance}
-              onUpdateInstance={handleUpdateInstance}
+              launchId={launchProcess.status?.launchId ?? ''}
             />
           )}
 
@@ -528,6 +626,7 @@ export default function App() {
           instance={detailInstance}
           onClose={() => setDetailInstance(null)}
           onUpdateInstance={handleUpdateInstance}
+          onInstanceChanged={handleDetailInstanceChanged}
           onOpenFolder={handleOpenFolder}
           javaRuntimes={javaRuntimes}
           groups={groupsState.groups}
@@ -573,6 +672,17 @@ export default function App() {
           danger
           onConfirm={confirmDeleteInstance}
           onCancel={() => setPendingDeleteInstance(null)}
+        />
+      )}
+
+      {pendingForceStop && (
+        <ConfirmDialog
+          title="强制结束游戏"
+          message="强制结束会直接终止 JVM，游戏可能来不及保存世界数据或配置。仅在普通停止无响应时使用，确认继续？"
+          confirmLabel="强制结束"
+          danger
+          onConfirm={confirmForceStop}
+          onCancel={() => setPendingForceStop(false)}
         />
       )}
 

@@ -64,6 +64,8 @@ export interface Instance {
   installationProgress?: number;
   installationError?: string;
   installTaskId?: string;
+  /** 实际启动/安装的版本目录；加载器实例可能不同于 mcVersion。 */
+  versionId?: string;
   id: string;
   name: string;
   mcVersion: string;
@@ -77,6 +79,8 @@ export interface Instance {
   lastPlayed: string;
   javaVersion: string;
   customJavaPath?: string; // 允许实例独立指定使用的本地 javaruntime
+  /** 实例专属 Java 运行时 id；空字符串表示跟随全局 Java 设置。 */
+  customJavaRuntimeId?: string;
   memoryMb: number;
   jvmArgs: string;
   modsCount: number;

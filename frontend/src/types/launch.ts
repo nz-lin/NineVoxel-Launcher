@@ -307,7 +307,7 @@ export interface VersionCheckRequest {
 /** `LAUNCH_ARGS_001`：启动参数构建失败（占位符无法解析、classpath 为空等）。 */
 export const LAUNCH_ARGS_ERROR_CODE = 'LAUNCH_ARGS_001'
 
-/** `LAUNCH_ARGS_002`：参数总长度超限。 */
+/** `LAUNCH_ARGS_002`：参数总长度超限，且当前 Java（< 9）无法改用参数文件传递。 */
 export const LAUNCH_ARGS_TOO_LONG_ERROR_CODE = 'LAUNCH_ARGS_002'
 
 /** 警告严重级别：`blocking` 阻止启动 / `warn` 提示风险 / `info` 说明。 */
@@ -474,6 +474,9 @@ export type GameLogStream = 'stdout' | 'stderr'
 
 /** 一行游戏日志（对应 Go 侧 `GameLogLineResult`）。 */
 export interface GameLogLineResult {
+  /** 该行在本次启动日志通道内的单调序号，用于合并快照与增量事件时去重。 */
+  sequence: number
+
   /** 该行被采集到的时间，UTC Unix 毫秒。 */
   timestampMs: number
 
@@ -520,8 +523,8 @@ export interface GameLogQueryResult {
 /**
  * 增量事件载荷（对应 Go 侧 `events.LaunchLogAppendedPayload`）。
  *
- * 刻意**不含序号**：用 `droppedLines` 累计值让前端感知丢失，
- * 避免「进程重启后序号归零」造成的歧义。
+ * 每行带通道内单调序号；`droppedLines` 仍表达累计丢失行数。
+ * 序号只在一个 launchId 内有效，不承诺跨进程连续。
  */
 export interface LaunchLogAppendedPayload {
   /** 本次启动标识。 */
@@ -624,14 +627,22 @@ export interface LaunchStatusRequest {
 
 /** 启动请求：只接受结构化参数，不接受任意命令行。 */
 export interface StartLaunchRequest {
+  /**
+   * 要启动的实例 id。
+   *
+   * 指定后由后端读取实例清单并解析绝对游戏目录、Java、内存与 JVM 参数；
+   * 下方路径字段可以留空，绝对路径不会返回前端。
+   */
+  instanceId?: string
+
   /** 已校验的 Java 可执行文件完整路径；只在内存中存在，不渲染、不持久化。 */
-  javaPath: string
+  javaPath?: string
 
   /** 游戏根目录路径。 */
-  gameDirectory: string
+  gameDirectory?: string
 
   /** 要启动的版本 id。 */
-  versionId: string
+  versionId?: string
 
   /** 附加 JVM 参数；`null` 表示不提供。 */
   additionalJvmArgs: string[] | null
@@ -646,6 +657,9 @@ export interface StartLaunchRequest {
    * 写进启动参数；凭证不会经过前端。
    */
   accountId?: string
+
+  /** 最大堆内存（MiB）；按实例启动时由实例配置决定。 */
+  memoryMb?: number
 }
 
 /** 启动受理结果。 */

@@ -813,6 +813,7 @@ function normalizeLaunchStatus(raw: BoundLaunchStatusResult): LaunchStatus {
  */
 function normalizeGameLogLine(raw: BoundGameLogLineResult): GameLogLineResult {
   return {
+    sequence: typeof raw.sequence === 'number' ? raw.sequence : 0,
     timestampMs: typeof raw.timestampMs === 'number' ? raw.timestampMs : 0,
     stream: toGameLogStream(raw.stream),
     text: typeof raw.text === 'string' ? raw.text : '',
@@ -852,7 +853,16 @@ function normalizeGameLogQueryResult(raw: BoundGameLogQueryResult): GameLogQuery
  */
 export async function startLaunchProcess(request: StartLaunchRequest): Promise<LaunchAcceptedResult> {
   try {
-    const raw = await LaunchService.StartLaunch(request)
+    const raw = await LaunchService.StartLaunch({
+      instanceId: request.instanceId,
+      javaPath: request.javaPath ?? '',
+      gameDirectory: request.gameDirectory ?? '',
+      versionId: request.versionId ?? '',
+      accountId: request.accountId,
+      additionalJvmArgs: request.additionalJvmArgs,
+      additionalGameArgs: request.additionalGameArgs,
+      memoryMb: request.memoryMb,
+    })
     return {
       launchId: typeof raw.launchId === 'string' ? raw.launchId : '',
       acceptedAtMs: typeof raw.acceptedAtMs === 'number' ? raw.acceptedAtMs : 0,

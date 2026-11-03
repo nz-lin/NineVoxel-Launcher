@@ -499,12 +499,19 @@ func StartLaunchProcess(req StartLaunchRequest) (LaunchAcceptedResult, *Error) {
 		return failLaunch(record, transErr)
 	}
 
-	// 第二步：解析运行时（P2 瞬时通过态）。
+	// 第二步：解析运行时与实例配置。
 	//
-	// 为什么保留这个状态而不跳过：前端状态机与规范 §5 对齐；
-	// 跳过会让 UI 的状态序列出现空洞。P2 无账号体系（`resolving_account` 按卡面跳过），
-	// 这里只是瞬时经过。
-	// （本步骤没有实际工作，直接进入下一步。）
+	// 按实例启动时，绝对游戏目录、实例 Java、内存上限与 JVM 参数都在后端解析；
+	// 前端只传 instanceId，避免把绝对路径暴露到界面或浏览器存储。
+	resolvedReq, resolveErr := resolveStartLaunchRequest(req)
+	if resolveErr != nil {
+		return failLaunch(record, resolveErr)
+	}
+	req = resolvedReq
+	record.mu.Lock()
+	record.versionID = req.VersionID
+	record.gameDirectory = req.GameDirectory
+	record.mu.Unlock()
 
 	// 第三步：构建启动计划。
 	if transErr := transitionAndEmit(record, StateBuildingArguments, ""); transErr != nil {

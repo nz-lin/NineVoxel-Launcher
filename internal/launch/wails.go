@@ -573,6 +573,7 @@ func (s *LaunchService) GetGameLog(req GameLogQueryRequest) (GameLogQueryResult,
 
 	for _, line := range snapshot.lines {
 		result.Lines = append(result.Lines, GameLogLineResult{
+			Sequence:    line.Sequence,
 			TimestampMs: line.TimestampMs,
 			Stream:      line.Stream,
 			Text:        line.Text,
@@ -612,22 +613,30 @@ func (s *LaunchService) GetGameLog(req GameLogQueryRequest) (GameLogQueryResult,
 func (s *LaunchService) StartLaunch(req StartLaunchRequest) (LaunchAcceptedResult, error) {
 	accepted, launchErr := StartLaunchProcess(req)
 	if launchErr != nil {
+		attributes := map[string]string{
+			"versionId": req.VersionID,
+		}
+		if req.InstanceID != "" {
+			attributes["instanceId"] = req.InstanceID
+		}
 		logger().Warn("启动请求被拒绝", logging.Fields{
-			Event:     "launch.start.rejected",
-			ErrorCode: launchErr.Code,
-			Attributes: map[string]string{
-				"versionId": req.VersionID,
-			},
+			Event:      "launch.start.rejected",
+			ErrorCode:  launchErr.Code,
+			Attributes: attributes,
 		})
 		return LaunchAcceptedResult{}, launchErr
 	}
 
+	attributes := map[string]string{
+		"versionId": req.VersionID,
+		"state":     accepted.State,
+	}
+	if req.InstanceID != "" {
+		attributes["instanceId"] = req.InstanceID
+	}
 	logger().Info("启动受理成功", logging.Fields{
-		Event: "launch.start.accepted",
-		Attributes: map[string]string{
-			"versionId": req.VersionID,
-			"state":     accepted.State,
-		},
+		Event:      "launch.start.accepted",
+		Attributes: attributes,
 	})
 
 	return accepted, nil

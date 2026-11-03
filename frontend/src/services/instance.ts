@@ -3,20 +3,21 @@ import type { Config, Instance as StoredInstance, TrashItem as StoredTrashItem }
 import type { Instance, InstanceGroup, InstanceGroupList, InstanceTrashItem } from '../types/launcher'
 import { toAppError } from './errors'
 
-export type InstanceConfig = Pick<Instance, 'name' | 'mcVersion' | 'loader' | 'partition' | 'icon' | 'memoryMb' | 'jvmArgs' | 'description' | 'isFavorite' | 'customJavaPath'>
+export type InstanceConfig = Pick<Instance, 'name' | 'mcVersion' | 'loader' | 'loaderVersion' | 'partition' | 'icon' | 'memoryMb' | 'jvmArgs' | 'description' | 'isFavorite' | 'customJavaPath' | 'customJavaRuntimeId'>
 
 function config(input: InstanceConfig): Config {
   return {
-    name: input.name, mcVersion: input.mcVersion, loader: input.loader,
+    name: input.name, mcVersion: input.mcVersion, loader: input.loader, loaderVersion: input.loaderVersion,
     partition: input.partition, icon: input.icon, memoryMb: input.memoryMb,
     jvmArgs: input.jvmArgs, description: input.description, isFavorite: input.isFavorite,
     customJavaPath: input.customJavaPath ?? '',
+    customJavaRuntimeId: input.customJavaRuntimeId ?? '',
   }
 }
 
 function toInstance(item: StoredInstance): Instance {
   return {
-    ...item, loader: 'vanilla', loaderVersion: '', installedLoaders: [],
+    ...item, loader: item.loader as Instance['loader'], loaderVersion: item.loaderVersion || '', installedLoaders: [],
     playTimeMinutes: 0, lastPlayed: '从未运行', modsCount: 0,
     status: 'ready', isolatedDirectory: true,
     installationState: item.installationState as Instance['installationState'],
@@ -69,6 +70,12 @@ export const instanceService = {
   async openFolder(id: string) { await call(() => InstanceService.OpenInstanceFolder({ instanceId: id })) },
   async remove(id: string) { await call(() => InstanceService.DeleteInstance({ instanceId: id })) },
   async install(id: string) { return toInstance(await call(() => InstanceService.InstallInstance({ instanceId: id }))) },
+  async updateLoader(id: string, loader: Instance['loader'], loaderVersion: string) {
+    return toInstance(await call(() => InstanceService.UpdateLoader({ instanceId: id, loader, loaderVersion })))
+  },
+  async uninstallLoader(id: string) {
+    return toInstance(await call(() => InstanceService.UninstallLoader({ instanceId: id })))
+  },
   async listTrash() {
     return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))
   },
@@ -90,5 +97,14 @@ export const instanceService = {
   },
   async deleteGroup(name: string, moveTo = '') {
     return toGroupList(await call(() => InstanceService.DeleteInstanceGroup({ name, moveTo })))
+  },
+  /**
+   * 把各实例中重复的库与资源替换为指向共享缓存的硬链接，回收磁盘空间。
+   *
+   * 幂等：已经是指向缓存的文件会被跳过。只处理 libraries/assets/versions，
+   * 不会改动 mods、saves、config 等用户数据。
+   */
+  async dedupStorage() {
+    return call(() => InstanceService.DedupInstanceStorage())
   },
 }

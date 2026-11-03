@@ -15,6 +15,7 @@ import {
   Layers
 } from 'lucide-react';
 import { Instance, InstanceGroup } from '../types/launcher';
+import { loaderDisplayName } from '../types/loader';
 import { GroupManagerModal } from './GroupManagerModal';
 
 interface InstancesViewProps {
@@ -282,7 +283,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
                 <span className="font-semibold text-slate-700 dark:text-neutral-300 whitespace-nowrap">MC {inst.mcVersion}</span>
                 <span>·</span>
                 <span className="font-mono text-emerald-600 dark:text-emerald-400 uppercase text-[10px] font-bold whitespace-nowrap">
-                  {inst.loader} {inst.loaderVersion}
+                  {loaderDisplayName(inst.loader)}{inst.loader !== 'vanilla' && inst.loaderVersion ? ` ${inst.loaderVersion}` : ''}
                 </span>
                 <span>·</span>
                 <span className="text-slate-500 dark:text-neutral-500 text-[10px] bg-slate-100 dark:bg-neutral-800 px-1 rounded whitespace-nowrap">
@@ -355,7 +356,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
             </button>
 
             <button
-              onClick={() => onOpenFolder(inst.folderPath)}
+              onClick={() => onOpenFolder(inst.id)}
               className="p-1.5 rounded-lg hover:text-slate-900 dark:hover:text-neutral-200 hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
               title="打开实例专属文件夹"
             >

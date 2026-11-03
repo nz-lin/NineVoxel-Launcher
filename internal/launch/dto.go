@@ -615,6 +615,9 @@ type PreviewArgumentPart struct {
 // internal/launch 的对外 DTO 不该直接暴露 internal/events 的内部类型，
 // 否则 events 包的结构调整会直接改动冻结的前端契约。
 type GameLogLineResult struct {
+	// Sequence 为该行在所属启动日志通道内的单调序号，用于前端去重。
+	Sequence int64 `json:"sequence"`
+
 	// TimestampMs 为该行被采集到的时间，UTC Unix 毫秒。
 	TimestampMs int64 `json:"timestampMs"`
 
@@ -677,9 +680,17 @@ type GameLogQueryResult struct {
 //     标识由本卡分配的 `launchId` 承担；
 //   - `dryRun` 不在此结构内：预览走 P2-04 的 `PreviewLaunchPlan`，职责更清晰。
 type StartLaunchRequest struct {
+	// InstanceID 为要启动的实例本地 id。
+	//
+	// 指定该字段后，后端会直接读取实例目录中的 `instance.json`，解析绝对游戏目录、
+	// 实例 Java、内存上限与 JVM 参数；此时 JavaPath / GameDirectory / VersionID
+	// 可留空。绝对路径不会回传前端。
+	InstanceID string `json:"instanceId,omitempty"`
+
 	// JavaPath 为用户已校验的 Java 可执行文件路径。
 	//
 	// 该字段只用于后端启动，**不进入任何返回值**。
+	// 按实例启动时留空，由后端按「实例 Java → 全局 Java → 已选运行时」解析。
 	JavaPath string `json:"javaPath"`
 
 	// GameDirectory 为游戏根目录路径。
@@ -700,6 +711,10 @@ type StartLaunchRequest struct {
 
 	// AdditionalGameArgs 为附加游戏参数（逐项校验，且不得覆盖受保护参数）。
 	AdditionalGameArgs []string `json:"additionalGameArgs"`
+
+	// MemoryMB 为最大堆内存（MiB）。按实例启动时留空，由实例配置决定；
+	// 两者都为空时使用全局 launch.maxMemoryMb。
+	MemoryMB int `json:"memoryMb,omitempty"`
 }
 
 // LaunchAcceptedResult 是启动受理结果。

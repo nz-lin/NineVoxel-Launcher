@@ -16,6 +16,7 @@ import (
 	"example.com/ninevoxel/launcher/internal/download"
 	"example.com/ninevoxel/launcher/internal/instance"
 	"example.com/ninevoxel/launcher/internal/launch"
+	"example.com/ninevoxel/launcher/internal/loader"
 	"example.com/ninevoxel/launcher/internal/runtime"
 	"example.com/ninevoxel/launcher/internal/settings"
 	"example.com/ninevoxel/launcher/internal/version"
@@ -180,12 +181,45 @@ func Options(in Bootstrap) application.Options {
 	in = RegisterRuntimeService(in)
 	// 账号 SPI 首期：在运行时服务之后追加账号服务（只追加注册，不改变已有顺序）。
 	in = RegisterAccountService(in)
+	in.Services = append(in.Services, loader.NewWailsService())
 	in.Services = append(in.Services, instance.NewWailsService())
 
 	// 账号子系统与启动链路的唯一衔接点：把「账号 id → 启动身份」的解析器注入
 	// internal/launch。注入必须在任何启动发生之前完成；解析器本身是只读的，
 	// 凭证只在本进程内流转，不经过前端。
 	launch.SetAccountIdentityResolver(accountIdentityResolver{})
+
+	// 实例启动解析器：launch 包不直接依赖 instance/runtime，避免与
+	// version -> launch 的既有依赖形成环。绝对游戏目录与 Java 路径只在
+	// 后端闭包内流转。
+	launch.SetInstanceLaunchResolver(func(instanceID string) (launch.InstanceLaunchConfig, error) {
+		config, err := instance.ResolveLaunchConfig(instanceID)
+		if err != nil {
+			return launch.InstanceLaunchConfig{}, err
+		}
+		return launch.InstanceLaunchConfig{
+			GameDirectory:       config.GameDirectory,
+			MCVersion:           config.MCVersion,
+			MemoryMB:            config.MemoryMB,
+			JVMArgs:             config.JVMArgs,
+			CustomJavaPath:      config.CustomJavaPath,
+			CustomJavaRuntimeID: config.CustomJavaRuntimeID,
+			Installed:           config.Installed,
+		}, nil
+	})
+	launch.SetJavaRuntimeResolvers(runtime.ResolveRuntimeExecutable, runtime.ResolveSelectedRuntimeExecutable)
+	instance.SetInstallJavaResolver(func(customPath, customRuntimeID string) (string, error) {
+		if customRuntimeID != "" {
+			return runtime.ResolveRuntimeExecutable(customRuntimeID)
+		}
+		if customPath != "" {
+			return customPath, nil
+		}
+		if globalPath := settings.StringSetting(settings.KeyLaunchJavaPath, ""); globalPath != "" {
+			return globalPath, nil
+		}
+		return runtime.ResolveSelectedRuntimeExecutable()
+	})
 
 	return application.Options{
 		// 应用名与描述沿用 P0 文案，不随阶段变化。

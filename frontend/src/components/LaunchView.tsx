@@ -10,9 +10,11 @@ import {
   Layers,
   Sparkles,
   ExternalLink,
-  Square
+  Square,
+  OctagonX
 } from 'lucide-react';
 import { Instance, Account } from '../types/launcher';
+import type { LaunchPhase } from '../types/launch';
 
 interface LaunchViewProps {
   currentInstance: Instance;
@@ -20,8 +22,10 @@ interface LaunchViewProps {
   currentAccount: Account;
   onSelectInstance: (instance: Instance) => void;
   onLaunchGame: () => void;
-  onKillGame: () => void;
-  launchState: 'ready' | 'preparing' | 'checking_assets' | 'starting_jvm' | 'running';
+  onStopGame: () => void;
+  onForceStopGame: () => void;
+  launchPhase: LaunchPhase;
+  launchError: string | null;
   onNavigateTab: (tab: any) => void;
   onOpenFolder: (path: string) => void;
 }
@@ -32,28 +36,32 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
   currentAccount,
   onSelectInstance,
   onLaunchGame,
-  onKillGame,
-  launchState,
+  onStopGame,
+  onForceStopGame,
+  launchPhase,
+  launchError,
   onNavigateTab,
   onOpenFolder
 }) => {
   const [selectorOpen, setSelectorOpen] = useState(false);
 
-  const isLaunching = launchState === 'preparing' || launchState === 'checking_assets' || launchState === 'starting_jvm';
-  const isRunning = launchState === 'running';
+  const isLaunching = launchPhase === 'preparing';
+  const isRunning = launchPhase === 'running';
+  const isStopping = launchPhase === 'stopping';
+  const isInstalled = currentInstance.installationState === 'installed';
 
   const getStatusText = () => {
-    switch (launchState) {
+    switch (launchPhase) {
       case 'preparing':
-        return '正在准备 Java 运行环境...';
-      case 'checking_assets':
-        return '校验游戏资源与模组依赖...';
-      case 'starting_jvm':
-        return '构建 JVM 参数并启动核心...';
+        return '正在准备启动...';
       case 'running':
         return 'Minecraft 正在运行中';
+      case 'stopping':
+        return '正在停止游戏...';
+      case 'exited':
+        return '再次启动';
       default:
-        return currentInstance.installationState === 'installed' ? '游戏启动待接入' : '查看安装状态';
+        return isInstalled ? '启动游戏' : '请先安装实例';
     }
   };
 
@@ -192,7 +200,7 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
               <span className="text-neutral-100 font-medium">已装载 {currentInstance.modsCount} 个模组</span>
               <span>/</span>
               <button
-                onClick={() => onOpenFolder(currentInstance.folderPath)}
+                onClick={() => onOpenFolder(currentInstance.id)}
                 className="text-neutral-200 hover:text-white flex items-center gap-1 transition-colors cursor-pointer underline underline-offset-2"
               >
                 <FolderOpen className="w-3 h-3 text-neutral-300" /> 打开目录
@@ -202,31 +210,43 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
 
           {/* Primary Launch Action Area */}
           <div className="flex flex-col items-end gap-2 shrink-0">
-            {isRunning ? (
+            {isRunning || isStopping ? (
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => onNavigateTab('console')}
                   className="px-5 py-3 rounded-xl bg-slate-900/90 dark:bg-neutral-800 hover:bg-slate-800 dark:hover:bg-neutral-700 text-white font-semibold text-sm transition-all border border-slate-700 dark:border-neutral-700 flex items-center gap-2 shadow-lg cursor-pointer"
                 >
                   <Sliders className="w-4 h-4 text-emerald-400" />
-                  <span>控制台 (运行中)</span>
+                  <span>游戏控制台</span>
                 </button>
                 <button
-                  onClick={onKillGame}
-                  className="px-4 py-3 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold text-sm transition-all flex items-center gap-2 shadow-lg cursor-pointer"
-                  title="强制终止游戏进程"
+                  onClick={onStopGame}
+                  disabled={isStopping}
+                  className="px-4 py-3 rounded-xl bg-slate-900/90 dark:bg-neutral-800 hover:bg-slate-800 dark:hover:bg-neutral-700 text-white font-semibold text-sm transition-all border border-slate-700 dark:border-neutral-700 flex items-center gap-2 shadow-lg cursor-pointer disabled:cursor-wait disabled:opacity-70"
+                  title="请求游戏正常停止"
                 >
                   <Square className="w-4 h-4 fill-white" />
-                  <span>结束进程</span>
+                  <span>{isStopping ? '正在停止…' : '停止游戏'}</span>
+                </button>
+                <button
+                  onClick={onForceStopGame}
+                  disabled={isStopping}
+                  className="px-3 py-3 rounded-xl bg-red-600/90 hover:bg-red-500 text-white font-semibold text-sm transition-all flex items-center gap-2 shadow-lg cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                  title="强制结束可能丢失未保存的游戏数据"
+                >
+                  <OctagonX className="w-4 h-4" />
+                  <span>强制结束</span>
                 </button>
               </div>
             ) : (
               <button
                 onClick={onLaunchGame}
-                disabled={isLaunching}
+                disabled={isLaunching || !isInstalled}
                 className={`group relative px-8 py-3.5 rounded-xl font-bold text-sm tracking-wide transition-all shadow-xl flex items-center gap-3 cursor-pointer ${
                   isLaunching
                     ? 'bg-amber-600 text-white cursor-wait'
+                    : !isInstalled
+                      ? 'bg-slate-500/70 text-white cursor-not-allowed'
                     : 'bg-emerald-500 hover:bg-emerald-400 active:scale-98 text-neutral-950 shadow-emerald-500/25 hover:shadow-emerald-500/40'
                 }`}
               >
@@ -237,6 +257,12 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
                 )}
                 <span className="text-base">{getStatusText()}</span>
               </button>
+            )}
+
+            {launchError && (
+              <p className="max-w-sm text-right text-[11px] text-rose-300 bg-rose-950/70 border border-rose-800/60 rounded-lg px-2.5 py-1.5">
+                {launchError}
+              </p>
             )}
 
             <div className="text-[11px] text-neutral-300 dark:text-neutral-400 flex items-center gap-1.5 drop-shadow-xs">
