@@ -69,6 +69,61 @@ func TestInstancePersistenceAndSelection(t *testing.T) {
 	}
 }
 
+func TestOpenInstanceFolderUsesPlatformDirectoryOpener(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("打开目录"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := openInstanceDirectory
+	opened := ""
+	openInstanceDirectory = func(dir string) error {
+		opened = dir
+		return nil
+	}
+	t.Cleanup(func() { openInstanceDirectory = original })
+
+	if err := s.OpenInstanceFolder(IDRequest{InstanceID: item.ID}); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := s.gameDir(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(opened) != filepath.Clean(expected) {
+		t.Fatalf("opened directory = %q, want %q", opened, expected)
+	}
+}
+
+func TestOpenInstanceFolderRejectsMissingDirectory(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("目录缺失"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	game, err := s.gameDir(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(game); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	original := openInstanceDirectory
+	openInstanceDirectory = func(string) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { openInstanceDirectory = original })
+
+	if err := s.OpenInstanceFolder(IDRequest{InstanceID: item.ID}); err == nil {
+		t.Fatal("expected missing instance directory error")
+	}
+	if called {
+		t.Fatal("platform opener must not run for a missing directory")
+	}
+}
+
 func TestDeleteArchivesFilesAndAllowsEmptyList(t *testing.T) {
 	s := testService(t)
 	item, err := s.CreateInstance(testConfig("存档测试"))
@@ -363,9 +418,15 @@ func TestInstanceRejectsInvalidInputAndPaths(t *testing.T) {
 		}
 	}
 	config := testConfig("test")
-	config.Loader = "fabric"
+	config.Loader = "optifine"
 	if _, err := s.CreateInstance(config); err == nil {
 		t.Fatal("accepted unsupported loader")
+	}
+	config = testConfig("fabric")
+	config.Loader = "fabric"
+	config.LoaderVersion = "0.16.14"
+	if _, err := s.CreateInstance(config); err != nil {
+		t.Fatalf("rejected supported loader: %v", err)
 	}
 	config = testConfig("test")
 	config.MemoryMB = 128

@@ -56,6 +56,27 @@ func writeLibraryJar(t *testing.T, root, relative string) {
 	}
 }
 
+func TestInheritedClientJarFallbackForForgeStyleVersion(t *testing.T) {
+	root := t.TempDir()
+	writeVersionJSON(t, root, "1.20.1", `{"id":"1.20.1","mainClass":"net.minecraft.client.main.Main"}`)
+	writeClientJar(t, root, "1.20.1", "1.20.1")
+	writeVersionJSON(t, root, "1.20.1-forge-47.3.12", `{"id":"1.20.1-forge-47.3.12","inheritsFrom":"1.20.1","mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher"}`)
+
+	outcome := loadMergedVersion(root, "1.20.1-forge-47.3.12")
+	if outcome.merged == nil {
+		t.Fatalf("load merged version failed: %+v", outcome)
+	}
+	path := resolveClientJarPath(root, outcome.merged)
+	expected := filepath.Join(root, dirVersions, "1.20.1", "1.20.1.jar")
+	if path != expected {
+		t.Fatalf("client jar = %q, want %q", path, expected)
+	}
+	status, reason, present, _, _, _, _, _, _ := judgeVersionLaunchability(root, outcome.merged)
+	if !present || status != versionStatusLaunchSupported {
+		t.Fatalf("launchability = %q, %q, present=%v", status, reason, present)
+	}
+}
+
 // minimalVersionJSON 生成一个最小可解析的版本 JSON。
 //
 // 参数 id 为版本 id；extra 为附加 JSON 片段（不含首尾花括号）。

@@ -599,6 +599,54 @@ func clientJarIdentifier(parsed *versionJSON, id string) string {
 	return id
 }
 
+// resolveClientJarPath locates the client jar using official inheritance
+// semantics: the current version directory first, then each parent version in
+// the chain. Forge/NeoForge installers commonly omit the `jar` field and leave
+// the actual client jar in the vanilla parent directory.
+func resolveClientJarPath(root string, merged *mergedVersion) string {
+	if merged == nil {
+		return ""
+	}
+	tryVersion := func(versionID, jarID string) string {
+		if !isVersionIDValid(versionID) || !isVersionIDValid(jarID) {
+			return ""
+		}
+		relative := dirVersions + fileSeparatorSlash + versionID + fileSeparatorSlash + jarID + ".jar"
+		absolute, resolveErr := resolveInside(root, relative)
+		if resolveErr != nil || !isRegularNonEmptyFile(absolute) {
+			return ""
+		}
+		return absolute
+	}
+
+	if path := tryVersion(merged.ID, merged.ClientJarID); path != "" {
+		return path
+	}
+	if merged.ClientJarID != merged.ID {
+		if path := tryVersion(merged.ID, merged.ID); path != "" {
+			return path
+		}
+	}
+	for _, parentID := range merged.InheritChain {
+		if parentID == merged.ID {
+			continue
+		}
+		jarID := parentID
+		if parsed, _, readErr := readVersionJSON(root, parentID); readErr == nil && strings.TrimSpace(parsed.Jar) != "" {
+			jarID = parsed.Jar
+		}
+		if path := tryVersion(parentID, jarID); path != "" {
+			return path
+		}
+		if jarID != parentID {
+			if path := tryVersion(parentID, parentID); path != "" {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
 // copyLibraries 复制库清单，避免后续合并修改到解析结果。
 //
 // 参数 libraries 为解析出的库列表。
@@ -950,19 +998,8 @@ func judgeVersionLaunchability(root string, merged *mergedVersion) (
 ) {
 	warnings = make([]string, 0)
 
-	// 1. 客户端 JAR：按 `jar` 优先、`id` 回退的标识定位。
-	jarRelative := dirVersions + fileSeparatorSlash + merged.ID + fileSeparatorSlash + merged.ClientJarID + ".jar"
-	if jarAbsolute, resolveErr := resolveInside(root, jarRelative); resolveErr == nil {
-		clientJarPresent = isRegularNonEmptyFile(jarAbsolute)
-	}
-	// 注意：若 `jar` 与 `id` 不同，实际客户端 jar 可能位于 `versions/<id>/<jar>.jar`。
-	// 两种位置都检查是为了兼容旧版布局；任一存在即视为已就位。
-	if !clientJarPresent && merged.ClientJarID != merged.ID {
-		altRelative := dirVersions + fileSeparatorSlash + merged.ID + fileSeparatorSlash + merged.ID + ".jar"
-		if altAbsolute, resolveErr := resolveInside(root, altRelative); resolveErr == nil {
-			clientJarPresent = isRegularNonEmptyFile(altAbsolute)
-		}
-	}
+	// 1. 客户端 JAR：自身目录优先，缺失时按 inheritsFrom 回退父版本目录。
+	clientJarPresent = resolveClientJarPath(root, merged) != ""
 
 	// 2. 依赖库存在性。
 	librariesRequired, librariesPresent, librariesMissing, libraryWarnings := checkLibraries(root, merged.Libraries)

@@ -31,6 +31,7 @@ type instanceManifest struct {
 	InstallationProgress float64 `json:"installationProgress,omitempty"`
 	InstallationError    string  `json:"installationError,omitempty"`
 	InstallTaskID        string  `json:"installTaskId,omitempty"`
+	VersionID            string  `json:"versionId,omitempty"`
 	CreatedAtMS          int64   `json:"createdAtMs"`
 	TrashedAtMS          int64   `json:"trashedAtMs,omitempty"`
 	needsRewrite         bool
@@ -46,6 +47,7 @@ func manifestFromInstance(item Instance, trashedAtMS int64) instanceManifest {
 		InstallationProgress: item.InstallationProgress,
 		InstallationError:    item.InstallationError,
 		InstallTaskID:        item.InstallTaskID,
+		VersionID:            item.VersionID,
 		CreatedAtMS:          item.CreatedAtMS,
 		TrashedAtMS:          trashedAtMS,
 	}
@@ -61,6 +63,7 @@ func (m instanceManifest) toInstance(folderPath string) Instance {
 		InstallationProgress: m.InstallationProgress,
 		InstallationError:    m.InstallationError,
 		InstallTaskID:        m.InstallTaskID,
+		VersionID:            m.VersionID,
 		CreatedAtMS:          m.CreatedAtMS,
 	}
 }

@@ -18,21 +18,25 @@ import (
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/download"
+	"example.com/ninevoxel/launcher/internal/loader"
+	"example.com/ninevoxel/launcher/internal/platform"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // Config contains editable instance settings; file paths and state are backend-owned.
 type Config struct {
-	Name           string `json:"name"`
-	MCVersion      string `json:"mcVersion"`
-	Loader         string `json:"loader"`
-	Partition      string `json:"partition"`
-	Icon           string `json:"icon"`
-	MemoryMB       int    `json:"memoryMb"`
-	JVMArgs        string `json:"jvmArgs"`
-	Description    string `json:"description"`
-	IsFavorite     bool   `json:"isFavorite"`
-	CustomJavaPath string `json:"customJavaPath"`
+	Name                string `json:"name"`
+	MCVersion           string `json:"mcVersion"`
+	Loader              string `json:"loader"`
+	LoaderVersion       string `json:"loaderVersion"`
+	Partition           string `json:"partition"`
+	Icon                string `json:"icon"`
+	MemoryMB            int    `json:"memoryMb"`
+	JVMArgs             string `json:"jvmArgs"`
+	Description         string `json:"description"`
+	IsFavorite          bool   `json:"isFavorite"`
+	CustomJavaPath      string `json:"customJavaPath"`
+	CustomJavaRuntimeID string `json:"customJavaRuntimeId"`
 }
 
 type Instance struct {
@@ -44,6 +48,7 @@ type Instance struct {
 	InstallationProgress float64 `json:"installationProgress"`
 	InstallationError    string  `json:"installationError"`
 	InstallTaskID        string  `json:"installTaskId"`
+	VersionID            string  `json:"versionId"`
 	CreatedAtMS          int64   `json:"createdAtMs"`
 }
 
@@ -93,6 +98,13 @@ type UpdateRequest struct {
 	InstanceID string `json:"instanceId"`
 }
 
+// ChangeLoaderRequest switches an installed instance to another loader release.
+type ChangeLoaderRequest struct {
+	InstanceID    string `json:"instanceId"`
+	Loader        string `json:"loader"`
+	LoaderVersion string `json:"loaderVersion"`
+}
+
 type InstanceService struct {
 	mu      sync.Mutex
 	db      *sql.DB
@@ -107,6 +119,8 @@ type InstanceService struct {
 	installCancels map[string]context.CancelFunc
 	installDone    map[string]chan struct{}
 }
+
+var openInstanceDirectory = platform.OpenDirectory
 
 func NewWailsService() application.Service { return application.NewService(&InstanceService{}) }
 
@@ -197,14 +211,24 @@ func validConfig(c Config) (Config, error) {
 	if err != nil || version != c.MCVersion || strings.ContainsAny(version, "/\\:") {
 		return c, errors.New("请选择有效的 Minecraft 版本")
 	}
-	if c.Loader != "" && c.Loader != "vanilla" {
-		return c, errors.New("当前仅支持原版 Minecraft 安装")
+	if strings.TrimSpace(c.Loader) == "" {
+		c.Loader = string(loader.KindVanilla)
 	}
-	c.Loader = "vanilla"
+	kind, loaderErr := loader.ParseKind(c.Loader)
+	if loaderErr != nil {
+		return c, errors.New("请选择有效的游戏核心或模组加载器")
+	}
+	c.Loader = string(kind)
+	c.LoaderVersion = strings.TrimSpace(c.LoaderVersion)
+	if kind == loader.KindVanilla {
+		c.LoaderVersion = ""
+	} else if _, versionErr := loader.VersionID(kind, c.MCVersion, c.LoaderVersion); versionErr != nil {
+		return c, versionErr
+	}
 	if c.MemoryMB < 512 || c.MemoryMB > 1048576 {
 		return c, errors.New("实例内存必须介于 512 MB 和 1048576 MB 之间")
 	}
-	if len(c.JVMArgs) > 8192 || len(c.Description) > 4096 || len(c.Partition) > 240 || len(c.Icon) > 128 {
+	if len(c.JVMArgs) > 8192 || len(c.Description) > 4096 || len(c.Partition) > 240 || len(c.Icon) > 128 || len(c.CustomJavaPath) > 4096 || len(c.CustomJavaRuntimeID) > 256 {
 		return c, errors.New("实例设置内容过长")
 	}
 	c.Partition = normalizedPartition(c.Partition)
@@ -672,8 +696,8 @@ func (s *InstanceService) UpdateInstance(req UpdateRequest) (Instance, error) {
 	if err := s.requireGroupLocked(c.Partition); err != nil {
 		return Instance{}, err
 	}
-	if c.MCVersion != item.MCVersion || c.Loader != item.Loader {
-		return Instance{}, errors.New("修改游戏版本需创建新实例")
+	if c.MCVersion != item.MCVersion || c.Loader != item.Loader || c.LoaderVersion != item.LoaderVersion {
+		return Instance{}, errors.New("修改游戏版本或加载器请使用对应管理操作")
 	}
 	item.Config = c
 	if err := s.saveLocked(item); err != nil {
@@ -839,6 +863,12 @@ func (s *InstanceService) InstallInstance(req IDRequest) (Instance, error) {
 	if err != nil {
 		return Instance{}, err
 	}
+	return s.startInstallLocked(item)
+}
+
+// startInstallLocked marks an instance as installing and starts its worker.
+// The caller must hold s.mu and must have completed path validation.
+func (s *InstanceService) startInstallLocked(item Instance) (Instance, error) {
 	if item.InstallationState == "installing" {
 		return item, nil
 	}
@@ -948,11 +978,10 @@ func (s *InstanceService) OpenInstanceFolder(req IDRequest) error {
 	if err != nil {
 		return err
 	}
-	app := application.Get()
-	if app == nil {
-		return errors.New("桌面应用尚未就绪")
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		return errors.New("实例目录不存在")
 	}
-	if err := app.Browser.OpenFile(dir); err != nil {
+	if err := openInstanceDirectory(dir); err != nil {
 		return errors.New("无法打开实例目录")
 	}
 	return nil
