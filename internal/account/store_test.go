@@ -819,10 +819,14 @@ func TestStoreConcurrentSetSelected(t *testing.T) {
 func TestStoreDefaultDatabasePath(t *testing.T) {
 	tempDir := t.TempDir()
 	if goruntime.GOOS == "windows" {
+		// AppRoot 在 Windows 上走 os.UserCacheDir（%LocalAppData%），
+		// 只重定向 AppData（Roaming）不会生效，测试会写到真实用户目录。
 		t.Setenv("AppData", tempDir)
+		t.Setenv("LocalAppData", tempDir)
 	} else {
 		t.Setenv("HOME", tempDir)
 		t.Setenv("XDG_CONFIG_HOME", tempDir)
+		t.Setenv("XDG_DATA_HOME", tempDir)
 	}
 
 	path, pathErr := DefaultDatabasePath()
