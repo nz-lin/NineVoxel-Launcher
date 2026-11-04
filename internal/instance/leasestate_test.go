@@ -49,7 +49,7 @@ func TestRemoveCoreVersionRejectedWhileRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaderID := "fabric-loader-0.16.14-" + item.MCVersion
-	writeCoreVersion(t, s.root, loaderID)
+	writeLoaderCoreVersion(t, s.root, loaderID)
 
 	// 先把实例切到加载器版本，确保「引用检查」通过（没有其他实例引用）。
 	updated := item
@@ -67,7 +67,7 @@ func TestRemoveCoreVersionRejectedWhileRunning(t *testing.T) {
 	if s.removeCoreVersionIfUnreferenced(loaderID, item.ID) {
 		t.Fatal("游戏运行中不应删除该版本")
 	}
-	if _, statErr := os.Stat(filepath.Join(s.root, "versions", loaderID)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(s.root, "loaders", loaderID)); statErr != nil {
 		t.Fatalf("版本目录被误删: %v", statErr)
 	}
 }
@@ -80,7 +80,7 @@ func TestRemoveCoreVersionAllowedWhenIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaderID := "fabric-loader-0.16.14-" + item.MCVersion
-	writeCoreVersion(t, s.root, loaderID)
+	writeLoaderCoreVersion(t, s.root, loaderID)
 
 	updated := item
 	updated.Loader = "fabric"
@@ -94,7 +94,7 @@ func TestRemoveCoreVersionAllowedWhenIdle(t *testing.T) {
 	if !s.removeCoreVersionIfUnreferenced(loaderID, item.ID) {
 		t.Fatal("无引用且无租约时应删除")
 	}
-	if _, statErr := os.Stat(filepath.Join(s.root, "versions", loaderID)); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(s.root, "loaders", loaderID)); !os.IsNotExist(statErr) {
 		t.Fatalf("版本目录应已删除，实际 stat: %v", statErr)
 	}
 }

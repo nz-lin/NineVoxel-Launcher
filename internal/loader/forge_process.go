@@ -382,7 +382,7 @@ func ProcessorJarPaths(root string, plan ForgeInstallPlan) (map[string]string, *
 // 写入经临时文件 + Rename：安装中途失败时不会留下半个 JSON 让后续流程
 // 误判为「版本已存在」。
 func WriteVersionJSON(root string, plan ForgeInstallPlan) *Error {
-	relative, pathErr := artifact.VersionRelPath(plan.VersionID, plan.VersionID+".json")
+	relative, pathErr := artifact.LoaderVersionRelPath(plan.VersionID, plan.VersionID+".json")
 	if pathErr != nil {
 		return installerError("版本目录路径无效。", false)
 	}

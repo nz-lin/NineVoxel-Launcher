@@ -270,23 +270,6 @@ func (s *InstanceService) setResolvedVersionID(instanceID, versionID string) err
 	return s.saveLocked(item)
 }
 
-func versionDirectorySet(gameDirectory string) (map[string]bool, error) {
-	entries, err := os.ReadDir(filepath.Join(gameDirectory, "versions"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]bool{}, nil
-		}
-		return nil, errors.New("无法读取实例版本目录")
-	}
-	result := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			result[entry.Name()] = true
-		}
-	}
-	return result, nil
-}
-
 // removeObsoleteLoaderVersion 清理切换加载器后不再需要的旧核心版本。
 //
 // 必须做引用检查：核心版本由所有实例共用，直接删除会让其他仍在使用该版本的

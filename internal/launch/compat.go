@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"example.com/ninevoxel/launcher/internal/artifact"
 )
 
 // 资源索引布局取值（P3-07 的三种资产布局中的前两种；map_to_resources 只做只读判定）。
@@ -454,7 +456,11 @@ func AssessVersionTraits(rawRoot, versionID string) (VersionCompatTraits, *Error
 // 读取失败（文件缺失、超限、JSON 非法）时返回 nil：兼容性判定继续基于已合并的元数据，
 // 只在日志侧体现，不影响主结论（探测属补充证据）。
 func readVersionCompatProbe(root, versionID string) *versionCompatProbe {
-	relative := dirVersions + fileSeparatorSlash + versionID + fileSeparatorSlash + versionID + ".json"
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID)
+	if dirErr != nil || !found {
+		return nil
+	}
+	relative := versionDir + fileSeparatorSlash + versionID + ".json"
 	absolute, err := resolveInside(root, relative)
 	if err != nil {
 		return nil
@@ -555,9 +561,13 @@ func countLibrariesWithoutRules(libraries []libraryJSON) int {
 //
 // 两种位置都检查：`versions/<id>/<jar>.jar` 与 `versions/<id>/<id>.jar`（旧版布局）。
 func clientJarPresent(root string, merged *mergedVersion) bool {
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, merged.ID)
+	if dirErr != nil || !found {
+		return false
+	}
 	candidates := []string{
-		dirVersions + fileSeparatorSlash + merged.ID + fileSeparatorSlash + merged.ClientJarID + ".jar",
-		dirVersions + fileSeparatorSlash + merged.ID + fileSeparatorSlash + merged.ID + ".jar",
+		versionDir + fileSeparatorSlash + merged.ClientJarID + ".jar",
+		versionDir + fileSeparatorSlash + merged.ID + ".jar",
 	}
 	for _, relative := range candidates {
 		if absolute, err := resolveInside(root, relative); err == nil && isRegularNonEmptyFile(absolute) {

@@ -13,8 +13,8 @@ import (
 
 // 本文件实现核心重建：把全部核心资源重建到暂存目录，校验通过后再切换。
 //
-// 为什么需要事务日志：核心由 libraries / assets / versions / core-index 四个
-// **并列目录**组成，文件系统无法把它们作为一个整体原子替换。逐个 Rename 的
+// 为什么需要事务日志：核心由 libraries / assets / versions / loaders / core-index
+// 五个**并列目录**组成，文件系统无法把它们作为一个整体原子替换。逐个 Rename 的
 // 过程中若进程崩溃，会留下「一半新、一半旧」的混合状态——这正是重建最不能
 // 出现的后果。因此每一步都写日志，崩溃后按日志回滚。
 //
@@ -37,6 +37,7 @@ var rebuildComponents = []string{
 	librariesDirName,
 	assetsDirName,
 	versionsDirName,
+	loadersDirName,
 	indexDirName,
 }
 
@@ -85,7 +86,7 @@ type RebuildOptions struct {
 	// Populate 把全部核心资源构建到 stagingRoot 下。
 	//
 	// 参数为暂存目录的绝对路径：调用方在其中创建 libraries / assets /
-	// versions / core-index 四个子目录。
+	// versions / loaders / core-index 五个子目录。
 	Populate func(stagingRoot string) error
 	// Verify 校验给定核心根是否完整；为空时跳过（仅做结构校验）。
 	Verify func(root string) error

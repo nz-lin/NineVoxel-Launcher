@@ -127,10 +127,6 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 		if err != nil {
 			return artifacts, err
 		}
-		target, err := managedPath(s.root, file.Target)
-		if err != nil {
-			return artifacts, err
-		}
 		if file.SHA1 != "" {
 			if _, appErr := download.VerifyFile(source, download.VerifyExpectation{ExpectedSize: file.Size, ExpectedSHA1: file.SHA1}); appErr != nil {
 				return artifacts, appErr
@@ -140,17 +136,24 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 			// 除 natives 外的制品在下载阶段已落在最终布局，不存在需要安装的步骤。
 			return artifacts, errors.New("安装计划包含无法处理的制品")
 		}
-		if err := extractNatives(ctx, source, target, file.Exclude); err != nil {
+		// natives 解压到实例目录而不是核心：它是实例级派生产物，删除实例时
+		// 随目录一起回收，也不参与核心重建与清单校验。
+		nativesDir, pathErr := s.nativesDir(item.ID)
+		if pathErr != nil {
+			return artifacts, pathErr
+		}
+		if err := extractNatives(ctx, source, nativesDir, file.Exclude); err != nil {
 			return artifacts, err
 		}
-		artifacts.NativesDir = file.Target
 	}
 	// 资源对象下载后已经在 `assets/objects/` 的最终位置，无需再复制到别处。
 	// 旧式虚拟布局（`resources/`）在本启动器不支持，已在上面显式拒绝。
 	return artifacts, s.progress(item.ID, "", 0.99*maxProgress, prepared.JavaMajor)
 }
 
-// installArtifacts 汇总一次安装落盘的全部产物路径（相对核心根）。
+// installArtifacts 汇总一次安装落盘到核心的全部产物路径（相对核心根）。
+//
+// natives 不在其中：它解压到实例目录，不属于核心。
 type installArtifacts struct {
 	// Downloaded 是下载计划产出的路径。
 	Downloaded []string
@@ -158,8 +161,6 @@ type installArtifacts struct {
 	AssetIndex string
 	// AssetObjects 是资源对象路径。
 	AssetObjects []string
-	// NativesDir 是解压目录；为空表示该版本没有 natives。
-	NativesDir string
 	// ProcessorOutputs 是加载器 processor 生成的产物路径。
 	//
 	// 这些文件没有独立下载源，只能由安装流程生成；显式记录比事后扫描目录

@@ -24,10 +24,17 @@ Build frontend assets before root Go checks: `main.go` embeds `frontend/dist`, w
 
 The shared game core lives under `artifact.DataRoot()`:
 
-- `libraries/`, `assets/`, `versions/` and `core-index/` are shared by every instance.
-- Instance folders contain only mutable state (mods, saves, config, logs).
-- `versions/<id>/.nv-core-manifest.json` records every required file with size and SHA-256.
+- `libraries/`, `assets/`, `versions/` (official Minecraft versions), `loaders/`
+  (launcher-generated loader versions) and `core-index/` are shared by every instance.
+- Instance folders contain only mutable state (mods, saves, config, logs, natives) plus
+  `instance.json` and optional `patches/<versionId>.json` overrides.
+- `<versionDir>/.nv-core-manifest.json` records every required file with size and SHA-256,
+  where `<versionDir>` is `versions/<id>` or `loaders/<id>`.
   It is the single source of truth for "is this version complete".
+- natives are extracted into `instances/<id>/.minecraft/natives` and are **not** part of
+  the core manifest; repairs re-extract them from the native archives.
+- Unreferenced version directories are reclaimed explicitly (`CleanupUnusedCore`) or after
+  permanent trash deletion; only directories with a valid manifest are eligible.
 - The manifest must be **derived from version declarations** (version JSON with its
   inheritance chain, `install_profile.json`, asset index), never from what happened
   during the install. Two real bugs had the same root: recording "files this run

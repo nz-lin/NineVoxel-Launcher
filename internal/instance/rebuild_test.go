@@ -171,9 +171,10 @@ func TestVerifyRebuiltCoreDetectsTamper(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := core.Manifest{
-		SchemaVersion: 1,
+		SchemaVersion: 2,
 		Identity:      "vanilla:26.3:",
 		VersionID:     "26.3",
+		VersionDir:    "versions/26.3",
 		Files:         []core.ManifestFile{file},
 	}
 	if writeErr := core.WriteManifest(staging, manifest); writeErr != nil {

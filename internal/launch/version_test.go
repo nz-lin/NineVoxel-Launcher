@@ -745,10 +745,9 @@ func TestNativesMissingYieldsMetadataOnly(t *testing.T) {
 // TestNativesPresentWhenDirectoryNonEmpty 验证 natives 目录非空时视为就绪。
 func TestNativesPresentWhenDirectoryNonEmpty(t *testing.T) {
 	root := t.TempDir()
-	id := "natives-ready"
 
-	// 创建非空 natives 目录。
-	nativesDir := filepath.Join(root, dirVersions, id, "natives")
+	// natives 现在位于实例游戏目录下，与版本根无关。
+	nativesDir := filepath.Join(root, dirNatives)
 	if err := os.MkdirAll(nativesDir, 0o755); err != nil {
 		t.Fatalf("创建 natives 目录失败: %v", err)
 	}
@@ -756,7 +755,7 @@ func TestNativesPresentWhenDirectoryNonEmpty(t *testing.T) {
 		t.Fatalf("写入 natives 文件失败: %v", err)
 	}
 
-	if !nativesPresent(root, id) {
+	if !nativesPresentIn(nativesDir) {
 		t.Fatal("非空 natives 目录应视为就绪")
 	}
 }

@@ -22,8 +22,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"example.com/ninevoxel/launcher/internal/artifact"
 )
 
 // 版本识别相关的常量。
@@ -395,18 +398,157 @@ func listVersionDirectories(root string) (validIDs []string, skipped []string, e
 	return validIDs, skipped, nil
 }
 
-// readVersionJSON 读取并解析单个版本 JSON。
+// versionSource 描述「版本声明从哪里读」。
+//
+// 顺序固定为：实例补丁 → 核心版本目录。补丁只影响**声明解析**
+//（mainClass / libraries / arguments / inheritsFrom 等），不改变文件定位根：
+// jar、libraries、assets 仍从共享核心读取。
+type versionSource struct {
+	// root 是共享核心根。
+	root string
+	// patchDir 是实例补丁目录；为空表示不使用覆盖。
+	patchDir string
+	// overrideID / override 用于校验「尚未落盘」的补丁文档：
+	// 命中时直接使用内存中的声明，不读磁盘。
+	overrideID string
+	override   *versionJSON
+}
+
+// readJSON 读取某个版本的声明：实例补丁叠加在核心声明之上。
+//
+// 叠加规则：补丁里出现的标量字段覆盖核心，`libraries` 与 `arguments` 追加在
+// 核心之后。这样「只改主类」「追加一个库」都能用几行补丁表达，不必抄整份声明。
+func (s versionSource) readJSON(id string) (*versionJSON, string, *Error) {
+	override, hasOverride, overrideErr := s.patchFor(id)
+	if overrideErr != nil {
+		// 补丁存在但损坏时必须报错而不是回退：静默回退会让用户以为
+		// 自己的修改生效了，而实际启动用的是核心声明。
+		return nil, overrideErr.Code, overrideErr
+	}
+	if hasOverride {
+		base, _, baseErr := versionSource{root: s.root}.readJSON(id)
+		if baseErr != nil {
+			base = nil
+		}
+		return mergeVersionDeclarations(base, override), "", nil
+	}
+	versionDir, found, dirErr := artifact.ResolveVersionDir(s.root, id)
+	if dirErr != nil {
+		return nil, ErrorCodePathInvalid, newInputError(ErrorCodePathInvalid, messageVersionGameRootInvalid)
+	}
+	if !found {
+		return nil, ErrorCodeVersionMetadata, newExternalError(ErrorCodeVersionMetadata, messageVersionJSONMissing)
+	}
+	return readVersionJSONAt(s.root, versionDir+fileSeparatorSlash+id+".json", id)
+}
+
+// patchFor 返回某个版本实例补丁的解析结果。
+//
+// 返回 (声明, 是否存在, 错误)。错误表示补丁存在但无法解析，调用方必须把
+// 它上报给用户。
+func (s versionSource) patchFor(id string) (*versionJSON, bool, *Error) {
+	if s.override != nil && s.overrideID == id {
+		return s.override, true, nil
+	}
+	if s.patchDir == "" {
+		return nil, false, nil
+	}
+	patchPath := filepath.Join(s.patchDir, id+".json")
+	info, statErr := os.Stat(patchPath)
+	if statErr != nil || !info.Mode().IsRegular() {
+		return nil, false, nil
+	}
+	parsed, _, readErr := readVersionJSONAbsolute(patchPath, id)
+	if readErr != nil {
+		return nil, true, readErr
+	}
+	return parsed, true, nil
+}
+
+// mergeVersionDeclarations 把补丁声明叠加到核心声明之上。
+//
+// 参数 base 为 nil 表示核心没有该版本的声明（补丁自带完整声明）。
+// 标量字段：补丁非空即覆盖；集合字段：补丁追加在核心之后。
+// 「清空某字段」不能通过补丁表达，需要用户直接修改核心声明——这比引入
+// 三态语义（未设置 / 置空 / 有值）更容易理解。
+func mergeVersionDeclarations(base, patch *versionJSON) *versionJSON {
+	if patch == nil {
+		return base
+	}
+	if base == nil {
+		return patch
+	}
+	merged := *base
+
+	if patch.ID != "" {
+		merged.ID = patch.ID
+	}
+	if patch.Type != "" {
+		merged.Type = patch.Type
+	}
+	if patch.InheritsFrom != "" {
+		merged.InheritsFrom = patch.InheritsFrom
+	}
+	if patch.Jar != "" {
+		merged.Jar = patch.Jar
+	}
+	if patch.MainClass != "" {
+		merged.MainClass = patch.MainClass
+	}
+	if patch.Assets != "" {
+		merged.Assets = patch.Assets
+	}
+	if patch.AssetIndex != nil {
+		merged.AssetIndex = patch.AssetIndex
+	}
+	if patch.MinecraftArguments != "" {
+		merged.MinecraftArguments = patch.MinecraftArguments
+	}
+	if patch.JavaVersion != nil {
+		merged.JavaVersion = patch.JavaVersion
+	}
+	if patch.Downloads != nil {
+		merged.Downloads = patch.Downloads
+	}
+
+	if len(patch.Libraries) > 0 {
+		merged.Libraries = append(append([]libraryJSON(nil), base.Libraries...), patch.Libraries...)
+	}
+	if patch.Arguments != nil {
+		merged.Arguments = mergeArguments(base.Arguments, patch.Arguments)
+	}
+	return &merged
+}
+
+// mergeArguments 合并新旧参数结构：补丁参数追加在核心参数之后。
+func mergeArguments(base, patch *argumentsJSON) *argumentsJSON {
+	if patch == nil {
+		return base
+	}
+	if base == nil {
+		return patch
+	}
+	return &argumentsJSON{
+		Game: append(append([]json.RawMessage(nil), base.Game...), patch.Game...),
+		JVM:  append(append([]json.RawMessage(nil), base.JVM...), patch.JVM...),
+	}
+}
+
+// readVersionJSON 读取并解析单个版本 JSON（不使用实例补丁）。
 //
 // 参数 root 为游戏根；id 为版本 id（已校验合法）。
 // 返回解析结果与错误码；错误码为空表示读取与语法解析都成功。
 //
 // 安全与稳健性：
-//   - 路径经 `resolveInside(root, "versions/<id>/<id>.json")` 拼出，不自行拼接；
+//   - 路径经 `resolveInside` 校验，不自行拼接绝对路径；
 //   - 先 `Stat` 检查大小，超 `maxVersionJSONBytes` 直接拒绝（防超大文件拖垮）；
 //   - 语法错误不 panic，返回 broken。
 func readVersionJSON(root, id string) (*versionJSON, string, *Error) {
-	relative := dirVersions + fileSeparatorSlash + id + fileSeparatorSlash + id + ".json"
+	return versionSource{root: root}.readJSON(id)
+}
 
+// readVersionJSONAt 读取核心根下的相对路径。
+func readVersionJSONAt(root, relative, id string) (*versionJSON, string, *Error) {
 	jsonPath, resolveErr := resolveInside(root, relative)
 	if resolveErr != nil {
 		var launchErr *Error
@@ -415,8 +557,12 @@ func readVersionJSON(root, id string) (*versionJSON, string, *Error) {
 		}
 		return nil, ErrorCodePathInvalid, newInputError(ErrorCodePathInvalid, messageVersionGameRootInvalid)
 	}
+	return readVersionJSONAbsolute(jsonPath, id)
+}
 
-	info, statErr := os.Stat(jsonPath)
+// readVersionJSONAbsolute 读取并解析一个已知绝对路径的版本声明。
+func readVersionJSONAbsolute(absolute string, id string) (*versionJSON, string, *Error) {
+	info, statErr := os.Stat(absolute)
 	if statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			// 目录在但同名 JSON 缺失：记为 broken（可识别目录但内容不完整）。
@@ -434,7 +580,7 @@ func readVersionJSON(root, id string) (*versionJSON, string, *Error) {
 		return nil, ErrorCodeVersionMetadata, newExternalError(ErrorCodeVersionMetadata, messageVersionJSONTooLarge)
 	}
 
-	content, readErr := os.ReadFile(jsonPath)
+	content, readErr := os.ReadFile(absolute)
 	if readErr != nil {
 		return nil, ErrorCodeVersionMetadata, newSystemError(ErrorCodeVersionMetadata, messageVersionJSONUnreadable)
 	}
@@ -459,6 +605,16 @@ func readVersionJSON(root, id string) (*versionJSON, string, *Error) {
 //
 // 参数 root 为游戏根；id 为起始版本 id。
 func loadMergedVersion(root, id string) versionLoadOutcome {
+	return loadMergedVersionFrom(versionSource{root: root}, id)
+}
+
+// loadMergedVersionWithPatches 与 loadMergedVersion 相同，但允许实例补丁覆盖声明。
+func loadMergedVersionWithPatches(root, patchDir, id string) versionLoadOutcome {
+	return loadMergedVersionFrom(versionSource{root: root, patchDir: patchDir}, id)
+}
+
+// loadMergedVersionFrom 是带版本来源的合并实现。
+func loadMergedVersionFrom(source versionSource, id string) versionLoadOutcome {
 	outcome := versionLoadOutcome{
 		warnings: make([]string, 0, 2),
 	}
@@ -485,7 +641,7 @@ func loadMergedVersion(root, id string) versionLoadOutcome {
 		visited[currentID] = true
 		chain = append(chain, currentID)
 
-		parsed, code, readErr := readVersionJSON(root, currentID)
+		parsed, code, readErr := source.readJSON(currentID)
 
 		// 读取失败的处理：首层（节点 0）失败 → broken；父版本失败 → unsupported。
 		if readErr != nil {
@@ -611,7 +767,11 @@ func resolveClientJarPath(root string, merged *mergedVersion) string {
 		if !isVersionIDValid(versionID) || !isVersionIDValid(jarID) {
 			return ""
 		}
-		relative := dirVersions + fileSeparatorSlash + versionID + fileSeparatorSlash + jarID + ".jar"
+		versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID)
+		if dirErr != nil || !found {
+			return ""
+		}
+		relative := versionDir + fileSeparatorSlash + jarID + ".jar"
 		absolute, resolveErr := resolveInside(root, relative)
 		if resolveErr != nil || !isRegularNonEmptyFile(absolute) {
 			return ""
@@ -943,31 +1103,43 @@ func isRegularNonEmptyFile(path string) bool {
 	return info.Mode().IsRegular() && info.Size() > 0
 }
 
-// nativesPresent 判断版本的 natives 目录是否已存在且非空。
+// nativesPresentIn 判断给定目录是否已存在且非空。
 //
-// 位置约定：`versions/<id>/natives/`（卡面第 6 条的保守口径）。
+// natives 自布局 v2 起位于实例目录（`<实例>/.minecraft/natives`），
+// 因此这里只看目录本身，不关心它在哪个版本根下。
 // **只检查存在性，不解压、不创建目录**（D-10 冻结）。
-//
-// 参数 root 为游戏根；id 为版本 id。
-func nativesPresent(root, id string) bool {
-	relative := dirVersions + fileSeparatorSlash + id + fileSeparatorSlash + "natives"
-
-	absolute, resolveErr := resolveInside(root, relative)
-	if resolveErr != nil {
+func nativesPresentIn(directory string) bool {
+	if strings.TrimSpace(directory) == "" {
 		return false
 	}
-
-	info, err := os.Stat(absolute)
+	info, err := os.Stat(directory)
 	if err != nil || !info.IsDir() {
 		return false
 	}
 
 	// 目录存在但为空：视为「未就绪」，因为没有实际 natives 文件。
-	entries, readErr := os.ReadDir(absolute)
+	entries, readErr := os.ReadDir(directory)
 	if readErr != nil {
 		return false
 	}
 	return len(entries) > 0
+}
+
+// versionNativesDir 返回某个版本在核心内的 natives 目录。
+//
+// 仅用于「预览任意外部游戏目录」：外部 `.minecraft` 遵循官方布局，
+// 加载器版本若不在 `versions/` 也会被探测到。实例启动不走这里：
+// 实例的 natives 位于 `<实例>/.minecraft/natives`。
+func versionNativesDir(root, id string) string {
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, id)
+	if dirErr != nil || !found {
+		return ""
+	}
+	absolute, resolveErr := resolveInside(root, versionDir+fileSeparatorSlash+dirNatives)
+	if resolveErr != nil {
+		return ""
+	}
+	return absolute
 }
 
 // judgeVersionLaunchability 依合并视图判定可启动性三态。
@@ -1014,7 +1186,7 @@ func judgeVersionLaunchability(root string, merged *mergedVersion) (
 	}
 	nativesOK = true
 	if needsNatives {
-		nativesOK = nativesPresent(root, merged.ID)
+		nativesOK = nativesPresentIn(versionNativesDir(root, merged.ID))
 	}
 
 	// 4. 三态判定：按「最缺什么先说」的顺序给出原因。

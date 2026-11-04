@@ -46,7 +46,7 @@ func EnsureProfile(ctx context.Context, kind Kind, minecraftVersion, loaderVersi
 	if rootErr != nil {
 		return "", cacheError("无法访问启动器数据目录。")
 	}
-	relative, pathErr := artifact.VersionRelPath(versionID, versionID+".json")
+	relative, pathErr := artifact.LoaderVersionRelPath(versionID, versionID+".json")
 	if pathErr != nil {
 		return "", profileError("加载器版本目录无效。", false)
 	}

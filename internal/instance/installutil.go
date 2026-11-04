@@ -80,6 +80,9 @@ func readCoreDir(root, relative string) ([]string, error) {
 //
 // 清单需要记录全部继承链的 JSON：只记录子版本时，父版本 JSON 被删除后
 // 快速校验发现不了，启动会在合并阶段才失败。
+//
+// 链上**每一层独立解析位置**：加载器版本在 `loaders/`，它继承的原版版本在
+// `versions/`，不能从子版本目录外推父版本目录。
 func versionChainFiles(root, versionID string) ([]string, error) {
 	chain := make([]string, 0, 4)
 	current := versionID
@@ -91,19 +94,29 @@ func versionChainFiles(root, versionID string) ([]string, error) {
 		}
 		visited[current] = struct{}{}
 
-		relative := "versions/" + current + "/" + current + ".json"
-		if _, err := coreFileInfo(root, relative); err != nil {
+		relative, found, dirErr := artifact.ResolveVersionDir(root, current)
+		if dirErr != nil {
+			return nil, errors.New("版本目录无效")
+		}
+		if !found {
 			if current == versionID {
-				// 顶层版本 JSON 缺失：安装不完整。
+				// 顶层版本目录缺失：安装不完整。
 				return nil, errors.New("版本元数据缺失，无法完成安装")
 			}
-			// 父版本 JSON 缺失：加载器可能是自包含的（无 inheritsFrom 指向缺失节点），
+			// 父版本缺失：加载器可能是自包含的（无 inheritsFrom 指向缺失节点），
 			// 记录已找到的部分即可，不阻断安装。
 			break
 		}
-		chain = append(chain, relative)
+		jsonRelative := relative + "/" + current + ".json"
+		if _, err := coreFileInfo(root, jsonRelative); err != nil {
+			if current == versionID {
+				return nil, errors.New("版本元数据缺失，无法完成安装")
+			}
+			break
+		}
+		chain = append(chain, jsonRelative)
 
-		next, parentErr := readInheritsFrom(root, relative)
+		next, parentErr := readInheritsFrom(root, jsonRelative)
 		if parentErr != nil {
 			break
 		}

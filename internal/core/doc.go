@@ -1,13 +1,18 @@
 // Package core 提供启动器「共享游戏核心」的管理能力。
 //
 // 核心 = 所有实例共用、安装后不再变化、由启动器管理的游戏运行资源：
-// libraries、assets、versions（含 natives）。它位于 artifact.DataRoot()，
-// 不额外引入物理 core/ 目录层级。
+// libraries、assets、versions（官方原版）与 loaders（启动器派生的加载器版本）。
+// 它位于 artifact.DataRoot()，不额外引入物理 core/ 目录层级。
 //
 // # 设计目标
 //
 //   - **一份存储**：同一份游戏资源在磁盘上只存在一份。实例目录不再保存
-//     libraries / assets / versions，只保存可变状态（mods、saves、config、logs）。
+//     libraries / assets / versions，只保存可变状态（mods、saves、config、logs）
+//     与实例级派生产物（natives）。
+//   - **原版与派生分离**：`versions/` 只放官方 Minecraft 版本，保持与官方
+//     `.minecraft` 布局一致；加载器版本（Fabric / Quilt / Forge / NeoForge）
+//     的声明与 processor 产物由启动器生成、没有独立下载源，统一放 `loaders/`。
+//     版本目录由安装决策确定，不按版本 ID 命名推断。
 //   - **安装即缓存**：下载产物直接落在最终布局（libraries/<maven>、
 //     assets/objects/<hash>），不再经过第二层内容寻址缓存。
 //   - **幂等安装**：同一安装配方只执行一次官方 Installer，后续实例复用产物。
@@ -18,12 +23,12 @@
 //
 // # 重建的事务边界
 //
-// 核心由 libraries / assets / versions / core-index 四个**并列目录**组成，
-// 文件系统无法把它们作为一个整体原子替换。重建因此在暂存目录构建新核心，
+// 核心由 libraries / assets / versions / loaders / core-index 五个**并列目录**
+// 组成，文件系统无法把它们作为一个整体原子替换。重建因此在暂存目录构建新核心，
 // 校验通过后逐目录改名，并把每一步写入事务日志：
 //
-//   - 切换顺序固定为 libraries → assets → versions → core-index；索引最后切换，
-//     避免它在中途指向尚未就位的版本目录；
+//   - 切换顺序固定为 libraries → assets → versions → loaders → core-index；
+//     索引最后切换，避免它在中途指向尚未就位的版本目录；
 //   - 失败或进程崩溃后按日志逐组件回滚；日志保留到切换确认完成；
 //   - 启动时 RecoverRebuild 处理未完成事务：未切换的删除暂存，切换中的回滚，
 //     已提交的只清理备份。

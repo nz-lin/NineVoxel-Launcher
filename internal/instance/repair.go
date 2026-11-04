@@ -22,9 +22,12 @@ import (
 //	资源对象  → 按资源索引重新下载（哈希寻址，必然可恢复）
 //	依赖库    → 按版本 JSON 的下载元数据重新下载
 //	原版 JAR  → 同上
-//	natives   → 从对应的 native 压缩包重新解压
+//	natives   → 从对应的 native 压缩包重新解压到实例目录
 //	版本 JSON → 按版本清单重新获取
 //	安装器产物 → **只能重装**：它由加载器的 processor 生成，没有独立下载源
+//
+// natives 从清单 schema v2 起属于实例目录，不再登记在核心清单里，因此它的
+// 缺失不会被清单校验发现：修复流程单独检查实例 natives 目录并整体重新解压。
 
 // RepairReport 是一次修复的结果。
 type RepairReport struct {
@@ -45,14 +48,6 @@ type RepairReport struct {
 // repairInstance 修复某个实例依赖的核心版本。
 //
 // 参数 instanceID 为实例标识；progress 可选，用于上报阶段。
-//
-// 流程：
-//  1. 解析实例 → 版本 ID；
-//  2. 读清单并做完整校验（L2：逐文件哈希）；
-//  3. 无问题直接返回；
-//  4. 按分组判定可修复性；
-//  5. 重建下载计划，只拉取缺失/损坏的条目；
-//  6. 重新解压 natives、重写清单。
 func (s *InstanceService) repairInstance(ctx context.Context, instanceID string, progress func(string, float64)) (RepairReport, error) {
 	return s.repairWithRunner(ctx, instanceID, progress, s.runPlan)
 }
@@ -92,21 +87,29 @@ func (s *InstanceService) repairWithRunner(ctx context.Context, instanceID strin
 		return report, nil
 	}
 	report.Checked = verify.Checked
-	if verify.Complete() {
+
+	nativesDeclared := s.versionDeclaresNatives(versionID)
+	nativesReady := !nativesDeclared || s.nativesReady(instanceID)
+	if verify.Complete() && nativesReady {
 		return report, nil
 	}
 
 	// 判定可修复性：安装器产物与版本 JSON 没有独立下载源。
-	if reason, blocked := unrecoverableReason(manifest, verify.ProblemFiles()); blocked {
-		report.NeedsReinstall = true
-		report.Reason = reason
-		return report, nil
+	if !verify.Complete() {
+		if reason, blocked := unrecoverableReason(manifest, verify.ProblemFiles()); blocked {
+			report.NeedsReinstall = true
+			report.Reason = reason
+			return report, nil
+		}
 	}
 
 	if progress != nil {
 		progress("正在重建下载计划", 0.05)
 	}
-	prepared, prepErr := prepareForRepair(versionID)
+	// 下载计划按**原版版本**构建：加载器版本的依赖库没有独立的官方安装计划，
+	// 但它们的原生库与资源都来自原版版本。加载器专有库缺失时会留在最终校验里，
+	// 如实报告需要重装。
+	prepared, prepErr := prepareForRepair(repairBaseVersion(manifest, versionID))
 	if prepErr != nil {
 		return report, fmt.Errorf("无法解析该版本的下载信息：%w", prepErr)
 	}
@@ -164,29 +167,37 @@ func (s *InstanceService) repairWithRunner(ctx context.Context, instanceID strin
 		}
 	}
 
-	// natives：解压产物无法单独下载，从对应压缩包整体重新解压。
+	// natives：解压产物无法单独下载，从对应压缩包整体重新解压到实例目录。
 	// 这一步很便宜（本地 IO），不需要先判断哪个文件缺失。
-	if needsNativeExtraction(manifest, problems) && len(prepared.Files) > 0 {
+	if nativesDeclared && !nativesReady && len(prepared.Files) > 0 {
 		if progress != nil {
 			progress("正在重新解压原生产物", 0.9)
+		}
+		nativesDir, pathErr := s.nativesDir(instanceID)
+		if pathErr != nil {
+			return report, pathErr
 		}
 		for _, file := range prepared.Files {
 			if !file.Extract {
 				continue
 			}
-			source, pathErr := managedPath(s.root, file.Source)
-			if pathErr != nil {
-				return report, pathErr
+			source, sourceErr := managedPath(s.root, file.Source)
+			if sourceErr != nil {
+				return report, sourceErr
 			}
-			target, pathErr := managedPath(s.root, file.Target)
-			if pathErr != nil {
-				return report, pathErr
-			}
-			if extractErr := extractNatives(ctx, source, target, file.Exclude); extractErr != nil {
+			if extractErr := extractNatives(ctx, source, nativesDir, file.Exclude); extractErr != nil {
 				return report, extractErr
 			}
 			report.Repaired++
 		}
+	}
+
+	if verify.Complete() {
+		// 只补了 natives，核心文件没有变化，不需要重写清单。
+		if progress != nil {
+			progress("修复完成", 1)
+		}
+		return report, nil
 	}
 
 	// 重新校验：修复后仍不完整则如实报告，不谎报成功。
@@ -217,6 +228,17 @@ func (s *InstanceService) repairWithRunner(ctx context.Context, instanceID strin
 		progress("修复完成", 1)
 	}
 	return report, nil
+}
+
+// repairBaseVersion 返回构建下载计划时使用的原版版本。
+//
+// 加载器版本没有独立的官方安装计划，但它继承的原版版本有：原生库、客户端
+// JAR 与资源都随原版安装。缺失的加载器专有库无法从这里恢复，会留在最终校验里。
+func repairBaseVersion(manifest core.Manifest, versionID string) string {
+	if strings.TrimSpace(manifest.MCVersion) != "" {
+		return manifest.MCVersion
+	}
+	return versionID
 }
 
 // unrecoverableReason 判断问题文件是否超出修复能力。
@@ -257,19 +279,6 @@ func anyPathIn(problems map[string]struct{}, prefix string) bool {
 // 因此不需要从清单里取。
 const assetsPrefix = "assets/objects/"
 
-// needsNativeExtraction 判断是否需要重新解压原生产物。
-func needsNativeExtraction(manifest core.Manifest, problems map[string]struct{}) bool {
-	for _, file := range manifest.Files {
-		if file.Group != core.GroupNative {
-			continue
-		}
-		if _, broken := problems[file.Path]; broken {
-			return true
-		}
-	}
-	return false
-}
-
 // artifactsFromManifest 从旧清单还原安装产物，供重写清单使用。
 //
 // 修复不改变「有哪些产物」，只是让它们重新变得完整，因此直接沿用旧清单的
@@ -277,10 +286,6 @@ func needsNativeExtraction(manifest core.Manifest, problems map[string]struct{})
 func artifactsFromManifest(manifest core.Manifest) installArtifacts {
 	artifacts := installArtifacts{}
 	for _, file := range manifest.Files {
-		if file.Group == core.GroupNative {
-			// natives 目录由 NativesDir 表达，逐文件路径不参与。
-			continue
-		}
 		artifacts.Downloaded = append(artifacts.Downloaded, file.Path)
 	}
 	if manifest.Assets != nil {
@@ -289,26 +294,7 @@ func artifactsFromManifest(manifest core.Manifest) installArtifacts {
 			artifacts.AssetObjects = append(artifacts.AssetObjects, object.Path)
 		}
 	}
-	artifacts.NativesDir = nativesDirOf(manifest)
 	return artifacts
-}
-
-// nativesDirOf 从清单中推断 natives 目录。
-//
-// 清单按文件记录 natives 产物，目录取这些路径的共同前缀；没有 natives 时
-// 返回空串（该版本不需要 natives）。
-func nativesDirOf(manifest core.Manifest) string {
-	for _, file := range manifest.Files {
-		if file.Group != core.GroupNative {
-			continue
-		}
-		index := strings.LastIndex(file.Path, "/")
-		if index <= 0 {
-			return ""
-		}
-		return file.Path[:index]
-	}
-	return ""
 }
 
 // prepareForRepair 提供版本安装信息；测试可替换以避免访问线上元数据。

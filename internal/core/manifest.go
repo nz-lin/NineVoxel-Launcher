@@ -21,16 +21,14 @@ const manifestFileName = ".nv-core-manifest.json"
 
 // manifestSchemaVersion 是清单结构的版本号。
 //
-// 清单结构发生不兼容变化时递增；读取到不支持的版本时按「未安装」处理，
-// 由调用方触发重新安装。
-const manifestSchemaVersion = 1
+// 2：清单记录版本目录（`versions/` 或 `loaders/`），natives 移出清单（改为
+// 实例级解压产物，见 instance 包）。不兼容 v1，读到 v1 按「未安装」处理。
+const manifestSchemaVersion = 2
 
 // 资源分组。清单按组记录，便于修复时精确定位缺哪一类文件。
 const (
 	// GroupLibrary 是版本 JSON 声明的依赖库与 processor 的 classpath 依赖。
 	GroupLibrary = "library"
-	// GroupNative 是 natives 解压产物（不是 native JAR 本身）。
-	GroupNative = "native"
 	// GroupProcessor 是 processor 生成的产物（如 Forge 的 client jar）。
 	GroupProcessor = "processor"
 	// GroupVersionJSON 是版本元数据文件本身。
@@ -72,6 +70,11 @@ type Manifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Identity      string `json:"identity"`
 	VersionID     string `json:"versionId"`
+	// VersionDir 是版本目录相对核心根的路径（`versions/<id>` 或 `loaders/<id>`）。
+	//
+	// 显式记录而不是从 VersionID 推导：原版与加载器的划分是安装决策，
+	// 由调用方决定；本包只负责按它读写。
+	VersionDir string `json:"versionDir"`
 
 	LoaderKind    string `json:"loaderKind"`
 	LoaderVersion string `json:"loaderVersion"`
@@ -95,14 +98,14 @@ type Manifest struct {
 }
 
 // manifestPath 返回清单相对核心根的路径。
-func manifestPath(versionID string) string {
-	return versionsDirName + "/" + versionID + "/" + manifestFileName
+func manifestPath(versionDir, versionID string) string {
+	return versionDir + "/" + versionID + "/" + manifestFileName
 }
 
 // FilesOfGroup 返回指定分组的文件列表。
 //
-// 供修复流程按资源类别分别处理：库文件可从下载元数据恢复，natives 需重新
-// 解压，processor 产物只能重跑官方安装器。
+// 供修复流程按资源类别分别处理：库文件可从下载元数据恢复，processor 产物
+// 只能重跑官方安装器。
 func (m Manifest) FilesOfGroup(group string) []ManifestFile {
 	result := make([]ManifestFile, 0, len(m.Files))
 	for _, file := range m.Files {
@@ -145,10 +148,41 @@ func (m Manifest) Validate() error {
 	if normalized, appErr := artifact.ValidateRelativePath(m.VersionID); appErr != nil || normalized != m.VersionID || strings.ContainsAny(m.VersionID, `/\:`) {
 		return errors.New("清单的版本标识无效")
 	}
+	if err := validateVersionDir(m.VersionDir, m.VersionID); err != nil {
+		return err
+	}
 	for _, file := range m.RequiredFiles() {
 		if err := validateManifestFile(file); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateVersionDir 校验版本目录必须是 `versions/<id>` 或 `loaders/<id>`，
+// 且末段与版本标识一致。
+//
+// 目录直接参与路径拼接，若允许任意值就等于把清单变成写盘入口。
+func validateVersionDir(versionDir, versionID string) error {
+	if versionDir == "" {
+		return errors.New("清单缺少版本目录")
+	}
+	if hasParentSegment(versionDir) || filepath.IsAbs(versionDir) {
+		return fmt.Errorf("清单的版本目录越界：%s", versionDir)
+	}
+	normalized, appErr := artifact.ValidateRelativePath(versionDir)
+	if appErr != nil || normalized != versionDir {
+		return fmt.Errorf("清单的版本目录非法：%s", versionDir)
+	}
+	segments := strings.Split(versionDir, "/")
+	if len(segments) != 2 {
+		return fmt.Errorf("清单的版本目录层级非法：%s", versionDir)
+	}
+	if segments[0] != versionsDirName && segments[0] != loadersDirName {
+		return fmt.Errorf("清单的版本目录根不受支持：%s", versionDir)
+	}
+	if segments[1] != versionID {
+		return errors.New("清单的版本目录与版本标识不一致")
 	}
 	return nil
 }
@@ -317,9 +351,24 @@ func buildManifestFile(root, rel, group string) (ManifestFile, error) {
 // 清单不存在时返回 (Manifest{}, false, nil)：这与「未安装」等价，不是错误。
 // 清单存在但结构非法、或版本标识不符时返回错误，由调用方按「需要重装」处理。
 //
-// 参数 root 为核心根；versionID 为版本目录名。
+// 参数 root 为核心根；versionID 为版本目录名。版本目录由
+// artifact.ResolveVersionDir 探测（`loaders/` 优先），因此调用方不需要知道
+// 该版本是原版还是加载器。
 func ReadManifest(root, versionID string) (Manifest, bool, error) {
-	relative := manifestPath(versionID)
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID)
+	if dirErr != nil {
+		return Manifest{}, false, errors.New("清单路径无效")
+	}
+	if !found {
+		// 目录不存在时仍尝试按原版根读一次：清单可能先于目录存在写入，
+		// 这种情况极少，但读不到也不算错误。
+		vanilla, relErr := artifact.VersionDirRel(versionID)
+		if relErr != nil {
+			return Manifest{}, false, errors.New("清单路径无效")
+		}
+		versionDir = vanilla
+	}
+	relative := manifestPath(versionDir, versionID)
 	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
 	if resolveErr != nil {
 		return Manifest{}, false, errors.New("清单路径无效")
@@ -345,6 +394,9 @@ func ReadManifest(root, versionID string) (Manifest, bool, error) {
 	if manifest.VersionID != versionID {
 		return Manifest{}, false, errors.New("安装清单的版本标识不匹配")
 	}
+	if manifest.VersionDir != versionDir {
+		return Manifest{}, false, errors.New("安装清单的版本目录与磁盘布局不一致")
+	}
 	return manifest, true, nil
 }
 
@@ -356,13 +408,13 @@ const maxManifestBytes = 32 << 20
 
 // WriteManifest 原子写入安装清单。
 //
-// 路径为 `versions/<versionId>/.nv-core-manifest.json`。
+// 路径为 `<VersionDir>/.nv-core-manifest.json`。
 // 调用方必须已持有该版本的写锁（或处于单线程的安装流程中）。
 func WriteManifest(root string, manifest Manifest) error {
 	if err := manifest.Validate(); err != nil {
 		return err
 	}
-	relative := manifestPath(manifest.VersionID)
+	relative := manifestPath(manifest.VersionDir, manifest.VersionID)
 	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
 	if resolveErr != nil {
 		return errors.New("清单路径无效")
@@ -420,6 +472,6 @@ func NewManifestFile(root, rel, group string) (ManifestFile, error) {
 }
 
 // ManifestPath 返回指定版本的清单相对路径，供调用方做存在性判断。
-func ManifestPath(versionID string) string {
-	return manifestPath(versionID)
+func ManifestPath(versionDir, versionID string) string {
+	return manifestPath(versionDir, versionID)
 }

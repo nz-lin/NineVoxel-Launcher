@@ -201,16 +201,21 @@ func recoverManifest(directory, id string, createdMS, trashedAtMS int64) (instan
 
 // coreVersionInstalled 判断某个版本是否已在共享核心中安装完成。
 //
-// 存储布局改为共享核心后，libraries / assets / versions 都不在实例目录里，
-// 因此「实例是否可启动」必须按核心根检查，而不是按实例目录检查。
+// 存储布局改为共享核心后，libraries / assets / versions / loaders 都不在实例
+// 目录里，因此「实例是否可启动」必须按核心根检查，而不是按实例目录检查。
 //
 // 判据取版本 JSON 是否存在：它与安装流程的产出对齐，且不依赖清单机制
-// （清单是较新的能力，早期安装的版本可能还没有）。
+// （清单是较新的能力，早期安装的版本可能还没有）。版本可能位于 `versions/`
+// 或 `loaders/`，由 ResolveVersionDir 探测。
 func coreVersionInstalled(root, version string) bool {
 	if version == "" {
 		return false
 	}
-	absolute, err := artifact.ResolveInsideRoot(root, "versions/"+version+"/"+version+".json")
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, version)
+	if dirErr != nil || !found {
+		return false
+	}
+	absolute, err := artifact.ResolveInsideRoot(root, versionDir+"/"+version+".json")
 	if err != nil {
 		return false
 	}

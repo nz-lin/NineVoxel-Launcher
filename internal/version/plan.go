@@ -258,8 +258,11 @@ func appendClientArtifact(plan *installPlan, merged *installMergedVersion) bool 
 		return false
 	}
 
+	// 客户端 jar 永远属于**原版**版本目录：加载器版本的声明继承自原版，
+	// 它自己没有独立的客户端 jar。按 ClientJarID 定位既符合官方 `jar` 字段
+	// 语义，也避免把原版 jar 复制进 `loaders/`。
 	jarFile := merged.ClientJarID + ".jar"
-	relPath, pathErr := artifact.ResolveTarget(artifact.KindClient, merged.ID+"/"+jarFile)
+	relPath, pathErr := artifact.ResolveTarget(artifact.KindClient, merged.ClientJarID+"/"+jarFile)
 	if pathErr != nil {
 		plan.Warnings = append(plan.Warnings, planWarning{
 			Code:    WarningClientDownloadMissing,

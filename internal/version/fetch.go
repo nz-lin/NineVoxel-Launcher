@@ -132,12 +132,15 @@ func ensureVersionMetadata(root, versionID string) *AppError {
 // installedVersionMetadataPresent 报告版本 JSON 是否已存在且非空。
 //
 // 只做 Stat，不读内容：内容合法性由调用方的读取流程负责。
+// 版本可能位于 `versions/` 或 `loaders/`：加载器版本的声明由加载器安装流程
+// 写入 `loaders/`，若不探测两个根，EnsureVersionMetadata 会把它误判为缺失
+// 并尝试从官方清单下载一个并不存在的版本。
 func installedVersionMetadataPresent(root, versionID string) bool {
-	relPath, relErr := artifact.VersionRelPath(versionID, versionID+".json")
-	if relErr != nil {
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID)
+	if dirErr != nil || !found {
 		return false
 	}
-	absolute := filepath.Join(root, filepath.FromSlash(relPath))
+	absolute := filepath.Join(root, filepath.FromSlash(versionDir+"/"+versionID+".json"))
 	info, err := os.Stat(absolute)
 	if err != nil || info == nil || !info.Mode().IsRegular() {
 		return false

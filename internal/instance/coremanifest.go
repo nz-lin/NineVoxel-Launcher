@@ -1,12 +1,9 @@
 package instance
 
 import (
-	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/core"
 )
 
@@ -23,6 +20,8 @@ import (
 type manifestInput struct {
 	// VersionID 是版本目录名。
 	VersionID string
+	// VersionDir 是版本目录相对核心根的路径（`versions/<id>` 或 `loaders/<id>`）。
+	VersionDir string
 	// Identity 是安装身份字符串（`forge:26.3:66.1.0`）。
 	Identity string
 	// LoaderKind / LoaderVersion / MCVersion 用于排查与展示。
@@ -35,8 +34,6 @@ type manifestInput struct {
 	Downloaded []string
 	// VersionJSON 是版本链上每个版本 JSON 的相对路径。
 	VersionJSON []string
-	// NativesDir 是解压后的 natives 目录相对路径；为空表示该版本没有 natives。
-	NativesDir string
 	// AssetIndex 是资源索引的相对路径；为空表示没有资源索引。
 	AssetIndex string
 	// AssetObjects 是资源对象的相对路径。
@@ -53,9 +50,10 @@ type manifestInput struct {
 // 而不是写出一份「部分记录」的清单——那会让下次启动跳过重装。
 func buildCoreManifest(root string, input manifestInput) (core.Manifest, error) {
 	manifest := core.Manifest{
-		SchemaVersion:     1,
+		SchemaVersion:     2,
 		Identity:          input.Identity,
 		VersionID:         input.VersionID,
+		VersionDir:        input.VersionDir,
 		LoaderKind:        input.LoaderKind,
 		LoaderVersion:     input.LoaderVersion,
 		MCVersion:         input.MCVersion,
@@ -93,12 +91,6 @@ func buildCoreManifest(root string, input manifestInput) (core.Manifest, error) 
 	if err := appendFiles(input.ProcessorOutputs, core.GroupProcessor); err != nil {
 		return core.Manifest{}, err
 	}
-
-	natives, err := scanDirectoryFiles(root, input.NativesDir, core.GroupNative)
-	if err != nil {
-		return core.Manifest{}, err
-	}
-	manifest.Files = append(manifest.Files, natives...)
 
 	if input.AssetIndex != "" {
 		indexFile, indexErr := core.NewManifestFile(root, input.AssetIndex, core.GroupLibrary)
@@ -146,45 +138,10 @@ func manifestFiles(root string, paths []string, group string) ([]core.ManifestFi
 	return result, nil
 }
 
-// scanDirectoryFiles 递归列出目录下的全部普通文件并构造清单条目。
+// scanDirectoryFiles 曾用于把 natives 解压产物登记进核心清单。
 //
-// 参数 relDir 为相对核心根的目录；目录不存在时返回空切片（该版本没有 natives
-// 是正常情况，不是错误）。
-func scanDirectoryFiles(root, relDir, group string) ([]core.ManifestFile, error) {
-	if strings.TrimSpace(relDir) == "" {
-		return nil, nil
-	}
-	absolute, resolveErr := artifact.ResolveInsideRoot(root, relDir)
-	if resolveErr != nil {
-		return nil, errors.New("原生产物目录无效")
-	}
-	result := make([]core.ManifestFile, 0, 32)
-	walkErr := filepath.WalkDir(absolute, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !entry.Type().IsRegular() {
-			return nil
-		}
-		relative, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			return relErr
-		}
-		file, fileErr := core.NewManifestFile(root, filepath.ToSlash(relative), group)
-		if fileErr != nil {
-			return fileErr
-		}
-		result = append(result, file)
-		return nil
-	})
-	if walkErr != nil {
-		if os.IsNotExist(walkErr) {
-			return nil, nil
-		}
-		return nil, errors.New("无法扫描原生产物目录")
-	}
-	return result, nil
-}
+// natives 自清单 schema v2 起移到实例目录（`instances/<id>/.minecraft/natives`），
+// 不再属于核心：它会随实例删除而一并回收，也不参与核心重建。因此这里不再扫描。
 
 // assetIndexIDFromPath 从 `assets/indexes/<id>.json` 反推索引标识。
 func assetIndexIDFromPath(rel string) string {

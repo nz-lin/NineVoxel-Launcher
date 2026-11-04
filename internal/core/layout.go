@@ -5,8 +5,10 @@ package core
 // 这些名称是磁盘布局的一部分，改动会影响既有数据；未正式发布前可以调整，
 // 发布后必须通过迁移处理。
 const (
-	// versionsDirName 存放各版本的元数据、JAR 与 natives。
+	// versionsDirName 存放原版版本的元数据与客户端 JAR。
 	versionsDirName = "versions"
+	// loadersDirName 存放加载器版本的元数据与处理器产物。
+	loadersDirName = "loaders"
 	// librariesDirName 存放 Maven 布局的依赖库。
 	librariesDirName = "libraries"
 	// assetsDirName 存放资源索引与资源对象。

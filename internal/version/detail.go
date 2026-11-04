@@ -402,6 +402,11 @@ func readInstallVersionJSON(root, versionID string) (*installVersionJSON, int64,
 	if relErr != nil {
 		return nil, 0, newInputError(ErrorCodeVersionJSON, messageVersionIDInvalid)
 	}
+	// 版本可能位于 `versions/` 或 `loaders/`：加载器版本的声明由加载器安装
+	// 流程写入 `loaders/`，安装计划与详情都必须能读到。
+	if versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID); dirErr == nil && found {
+		relPath = versionDir + "/" + versionID + ".json"
+	}
 
 	absolute := filepath.Join(root, filepath.FromSlash(relPath))
 	raw, err := os.ReadFile(absolute)

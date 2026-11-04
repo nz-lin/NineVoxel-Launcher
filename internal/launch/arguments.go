@@ -1149,15 +1149,15 @@ func buildLaunchPlanWithIdentity(gameRoot, resourceRoot, versionID string, merge
 	// 2. natives 目录：仅当版本**声明了** natives 时才检查存在性（D-10，不解压、不创建）。
 	//
 	// 关键点：现代版本（1.19+）不再使用 natives 目录，libraries 里没有 natives 声明。
-	// 若不加这个前提就无条件检查 `versions/<id>/natives`，会把这类完全健康的版本
+	// 若不加这个前提就无条件检查 natives 目录，会把这类完全健康的版本
 	// 误判为「缺 natives → 不可启动」。因此只有 `libraryHasNatives` 为真时才检查。
 	//
 	// `${natives_directory}` **必须始终非空**：版本 JSON 的 JVM 参数里普遍写成
 	// `-Djava.library.path=${natives_directory}`、`-Djna.tmpdir=${natives_directory}` 等，
 	// 值为空串会拼出 `/jna`、`/lwjgl` 这类指向盘符根目录的路径，比指向一个不存在的
-	// 常规目录更糟。因此默认给 `<游戏目录>/natives`（不创建、不解压），
-	// 声明了 natives 且目录存在时再改用版本目录下的绝对路径。
-	nativesDir := joinGamePath(resourceRoot, dirNatives)
+	// 常规目录更糟。因此默认给 `<游戏目录>/natives`：natives 是实例级派生产物，
+	// 与核心无关，安装时解压到这里（不创建、不解压）。
+	nativesDir := joinGamePath(gameRoot, dirNatives)
 	needsNatives := false
 	for _, library := range merged.Libraries {
 		// 同样先按 rules 过滤：其他平台的 natives 库不该要求本平台具备。
@@ -1170,12 +1170,7 @@ func buildLaunchPlanWithIdentity(gameRoot, resourceRoot, versionID string, merge
 		}
 	}
 	if needsNatives {
-		if present := nativesPresent(resourceRoot, merged.ID); present {
-			absolute, resolveErr := resolveInside(resourceRoot, dirVersions+fileSeparatorSlash+merged.ID+fileSeparatorSlash+dirNatives)
-			if resolveErr == nil {
-				nativesDir = absolute
-			}
-		} else {
+		if !nativesPresentIn(nativesDir) {
 			warnings = append(warnings, ArgumentWarning{
 				Code:     ErrorCodeLaunchArgs,
 				Message:  messageNativesMissing,

@@ -100,13 +100,16 @@ func ResolveRuntimeRequirement(req RuntimeRequirementRequest) (RuntimeRequiremen
 		return RuntimeRequirement{}, appErr
 	}
 
-	relativePath, relErr := artifact.VersionRelPath(versionID, versionID+".json")
+	relPath, relErr := artifact.VersionRelPath(versionID, versionID+".json")
 	if relErr != nil {
 		// 版本 id 不能安全地拼进路径（含分隔符、`..` 等）：按元数据不可读处理。
 		return RuntimeRequirement{}, newInputError(ErrorCodeVersionMetadata, messageMetadataUnreadable)
 	}
+	if versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID); dirErr == nil && found {
+		relPath = versionDir + "/" + versionID + ".json"
+	}
 
-	raw, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
+	raw, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(relPath)))
 	if readErr != nil {
 		// 本地没有版本 JSON：先按「版本详情」同一套规则按需获取一次再重试。
 		// 不这样做的话，用户从未打开过该版本详情时，解析 Java 需求必然失败
@@ -114,7 +117,7 @@ func ResolveRuntimeRequirement(req RuntimeRequirementRequest) (RuntimeRequiremen
 		if ensureErr := version.EnsureVersionMetadata(versionID); ensureErr != nil {
 			return RuntimeRequirement{}, newInputError(ErrorCodeVersionMetadata, messageMetadataUnreadable)
 		}
-		raw, readErr = os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
+		raw, readErr = os.ReadFile(filepath.Join(root, filepath.FromSlash(relPath)))
 		if readErr != nil {
 			return RuntimeRequirement{}, newInputError(ErrorCodeVersionMetadata, messageMetadataUnreadable)
 		}

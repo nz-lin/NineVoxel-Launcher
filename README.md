@@ -86,7 +86,7 @@ wails3 task package               # 当前平台安装包
 - Windows：`%LocalAppData%\NineVoxel-Launcher`
 - Linux：`$XDG_DATA_HOME/NineVoxel-Launcher` 或 `~/.local/share/NineVoxel-Launcher`
 
-数据目录 `<AppRoot>/data`（SQLite `app.db`、`versions/`、`artifacts/`、`downloads/`、`runtimes/`）：
+数据目录 `<AppRoot>/data`（SQLite `app.db`、`versions/`、`loaders/`、`libraries/`、`assets/`、`artifacts/`、`downloads/`、`runtimes/`）：
 
 - 便携模式：`<exe 目录>/data`
 - macOS：`~/Library/Application Support/NineVoxel-Launcher/data`

@@ -3,9 +3,9 @@ package version
 
 import (
 	"context"
-	"example.com/ninevoxel/launcher/internal/artifact"
-	"example.com/ninevoxel/launcher/internal/download"
 	"fmt"
+
+	"example.com/ninevoxel/launcher/internal/download"
 )
 
 // InstallFile maps a verified cache object to the standard Minecraft layout.
@@ -72,18 +72,16 @@ func PrepareInstallation(versionID string) (Installation, error) {
 
 		result.Plan.Items = append(result.Plan.Items, download.PlanItem{ArtifactID: item.LogicalKey, TaskType: kind, SourceURI: item.SourceURI, TargetRelPath: item.TargetRelPath, TargetKind: download.TargetKindShared, ExpectedSize: item.ExpectedSize, ExpectedSHA1: item.SHA1, ExpectedSHA256: item.SHA256})
 
-		// 只有 natives 需要安装步骤：下载的是压缩包，必须解压到版本目录。
+		// 只有 natives 需要安装步骤：下载的是压缩包，必须解压。
 		// 其余制品下载完成后就已经位于 classpath 引用的位置，复制一遍纯属浪费。
+		//
+		// 解压目标由调用方决定（实例目录），这里只描述「哪个压缩包需要解压」：
+		// natives 是实例级派生产物，不属于共享核心。
 		if !item.Extract {
 			continue
 		}
-		extractTarget := "versions/" + versionID + "/natives"
-		if _, err := artifact.ValidateRelativePath(extractTarget); err != nil {
-			return Installation{}, err
-		}
 		result.Files = append(result.Files, InstallFile{
 			Source:  item.TargetRelPath,
-			Target:  extractTarget,
 			Extract: true,
 			Exclude: item.ExtractExclude,
 			SHA1:    item.SHA1,

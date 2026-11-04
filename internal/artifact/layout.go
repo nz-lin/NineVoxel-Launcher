@@ -38,8 +38,18 @@ const (
 	// DirRuntimes 是 Java Runtime 安装根目录。
 	DirRuntimes = "runtimes"
 
-	// DirVersions 是版本私有目录根（versions/<versionId>/）。
+	// DirVersions 是原版版本私有目录根（versions/<versionId>/）。
+	//
+	// 只存放官方 Minecraft 版本的声明与客户端 JAR：这样它与官方 `.minecraft`
+	// 布局一致，外部目录预览、第三方工具与手动搬运都不需要额外解释。
 	DirVersions = "versions"
+
+	// DirLoaders 是加载器版本私有目录根（loaders/<versionId>/）。
+	//
+	// 加载器版本的声明与 processor 产物由启动器自己生成，没有独立下载源，
+	// 因此与官方原版目录分开：`versions/` 保持「官方布局」语义，`loaders/`
+	// 表达「启动器派生」语义。两者都由核心清单管理，切换顺序见 core.rebuild。
+	DirLoaders = "loaders"
 
 	// DirLibraries 是共享依赖库目录（Maven 布局）。
 	//
@@ -393,8 +403,21 @@ func MetadataRelPath(fileName string) (string, *Error) {
 	return DirArtifactMetadata + "/" + cleaned, nil
 }
 
-// VersionRelPath 生成版本私有文件的相对路径（`versions/<versionId>/<fileName>`）。
+// VersionRelPath 生成原版版本私有文件的相对路径（`versions/<versionId>/<fileName>`）。
 func VersionRelPath(versionID, fileName string) (string, *Error) {
+	return versionRelPathIn(DirVersions, versionID, fileName)
+}
+
+// LoaderVersionRelPath 生成加载器版本私有文件的相对路径（`loaders/<versionId>/<fileName>`）。
+//
+// 加载器版本（Fabric / Quilt / Forge / NeoForge）的声明与处理器产物由启动器
+// 生成，统一落在 `loaders/`，不污染原版 `versions/`。
+func LoaderVersionRelPath(versionID, fileName string) (string, *Error) {
+	return versionRelPathIn(DirLoaders, versionID, fileName)
+}
+
+// versionRelPathIn 生成指定版本根下的文件相对路径。
+func versionRelPathIn(dirName, versionID, fileName string) (string, *Error) {
 	id, err := validateSimpleName(versionID)
 	if err != nil {
 		return "", err
@@ -403,7 +426,62 @@ func VersionRelPath(versionID, fileName string) (string, *Error) {
 	if err != nil {
 		return "", err
 	}
-	return DirVersions + "/" + id + "/" + name, nil
+	return dirName + "/" + id + "/" + name, nil
+}
+
+// VersionDirRel 返回原版版本目录相对核心根的路径（`versions/<versionId>`）。
+func VersionDirRel(versionID string) (string, *Error) {
+	id, err := validateSimpleName(versionID)
+	if err != nil {
+		return "", err
+	}
+	return DirVersions + "/" + id, nil
+}
+
+// LoaderVersionDirRel 返回加载器版本目录相对核心根的路径（`loaders/<versionId>`）。
+func LoaderVersionDirRel(versionID string) (string, *Error) {
+	id, err := validateSimpleName(versionID)
+	if err != nil {
+		return "", err
+	}
+	return DirLoaders + "/" + id, nil
+}
+
+// ResolveVersionDir 解析某个版本实际位于哪个版本根，返回相对核心根的目录。
+//
+// 返回 (相对目录, 是否存在, 错误)。错误只在版本 ID 非法时产生：目录不存在是
+// 正常状态（版本未安装），由调用方按「未安装」处理。
+//
+// 探测顺序固定为 `loaders/` → `versions/`：
+//   - 加载器版本由启动器自己创建，只会出现在 `loaders/`；
+//   - 原版版本只会出现在 `versions/`；
+//   - 两者同名意味着数据异常，此时优先返回 `loaders/`（后者的声明指向原版父
+//     版本，取错会得到更隐蔽的失败），并把冲突留给上层校验暴露。
+//
+// 刻意不按版本 ID 的命名推断加载器：`1.20.1-forge-47.2.0` 这类命名是
+// 启动器自己的约定，不是可依赖的契约。
+func ResolveVersionDir(root, versionID string) (string, bool, *Error) {
+	loaderRel, err := LoaderVersionDirRel(versionID)
+	if err != nil {
+		return "", false, err
+	}
+	vanillaRel, err := VersionDirRel(versionID)
+	if err != nil {
+		return "", false, err
+	}
+	candidates := []string{loaderRel, vanillaRel}
+
+	for _, relative := range candidates {
+		absolute, resolveErr := ResolveInsideRoot(root, relative)
+		if resolveErr != nil {
+			continue
+		}
+		info, statErr := os.Stat(absolute)
+		if statErr == nil && info.IsDir() {
+			return relative, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // LibraryRelPath 生成依赖库在最终布局中的相对路径（`libraries/<maven path>`）。

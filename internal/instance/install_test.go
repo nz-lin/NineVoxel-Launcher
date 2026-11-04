@@ -126,10 +126,10 @@ func TestInstallAssemblesClientLibrariesAssetsAndNatives(t *testing.T) {
 	if phases != 2 {
 		t.Fatalf("expected artifacts and asset phases; got %d", phases)
 	}
-	// 资源全部落在共享核心，实例目录不再保存任何游戏资源。
+	// 资源全部落在共享核心；natives 属于实例目录。
 	for relative, want := range map[string]string{
 		"versions/1.21.4/1.21.4.jar": string(jar), "libraries/org/example/lib/1/lib-1.jar": string(library),
-		"versions/1.21.4/natives/native.dll": "native", "assets/indexes/test-index.json": string(index),
+		"assets/indexes/test-index.json": string(index),
 		"assets/objects/" + hash[:2] + "/" + hash: string(asset), "versions/1.21.4/1.21.4.json": string(metadata),
 	} {
 		actual, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(relative)))
@@ -137,7 +137,18 @@ func TestInstallAssemblesClientLibrariesAssetsAndNatives(t *testing.T) {
 			t.Fatalf("core layout %s: %q %v", relative, actual, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(s.root, "versions", "1.21.4", "natives", "META-INF", "signature")); !os.IsNotExist(err) {
+	// natives 必须在实例目录内，且在核心内不存在。
+	nativesDir, err := s.nativesDir(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual, err := os.ReadFile(filepath.Join(nativesDir, "native.dll")); err != nil || string(actual) != "native" {
+		t.Fatalf("instance natives: %q %v", actual, err)
+	}
+	if _, err := os.Stat(filepath.Join(s.root, "versions", "1.21.4", "natives")); !os.IsNotExist(err) {
+		t.Fatal("natives 不应写进核心版本目录")
+	}
+	if _, err := os.Stat(filepath.Join(nativesDir, "META-INF", "signature")); !os.IsNotExist(err) {
 		t.Fatal("native metadata was not excluded")
 	}
 	game, err := s.gameDir(item)

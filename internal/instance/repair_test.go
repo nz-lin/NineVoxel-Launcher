@@ -171,39 +171,35 @@ func TestUnrecoverableReasonBlocksVersionJSON(t *testing.T) {
 	}
 }
 
-// TestNeedsNativeExtraction 验证 natives 缺失会触发重新解压。
-func TestNeedsNativeExtraction(t *testing.T) {
-	manifest := core.Manifest{
-		Files: []core.ManifestFile{
-			{Path: "versions/v/natives/a.dll", Group: core.GroupNative},
-			{Path: "libraries/a.jar", Group: core.GroupLibrary},
-		},
+// TestNativesAreInstanceScoped 验证 natives 目录属于实例而非核心。
+//
+// natives 自清单 schema v2 起不进核心清单：它随实例删除一起回收，
+// 也不参与核心重建。这条约束一旦被破坏，删除实例会留下永远不清的垃圾目录。
+func TestNativesAreInstanceScoped(t *testing.T) {
+	s := testService(t)
+	item, err := s.CreateInstance(testConfig("natives 归属"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	problems := map[string]struct{}{"versions/v/natives/a.dll": {}}
-	if !needsNativeExtraction(manifest, problems) {
-		t.Fatal("natives 缺失应触发重新解压")
+	directory, err := s.nativesDir(item.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	libraryOnly := map[string]struct{}{"libraries/a.jar": {}}
-	if needsNativeExtraction(manifest, libraryOnly) {
-		t.Fatal("仅依赖库缺失不应触发重新解压")
+	expected := filepath.Join(s.root, "instances", item.ID, ".minecraft", "natives")
+	if filepath.Clean(directory) != filepath.Clean(expected) {
+		t.Fatalf("natives 目录 = %q，期望 %q", directory, expected)
 	}
-}
-
-// TestNativesDirOf 验证从清单推断 natives 目录。
-func TestNativesDirOf(t *testing.T) {
-	manifest := core.Manifest{
-		Files: []core.ManifestFile{
-			{Path: "versions/v/natives/sub/a.dll", Group: core.GroupNative},
-		},
+	if s.nativesReady(item.ID) {
+		t.Fatal("尚未解压时不应视为就绪")
 	}
-	if got := nativesDirOf(manifest); got != "versions/v/natives/sub" {
-		t.Fatalf("natives 目录 = %q", got)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	empty := core.Manifest{Files: []core.ManifestFile{{Path: "libraries/a.jar", Group: core.GroupLibrary}}}
-	if got := nativesDirOf(empty); got != "" {
-		t.Fatalf("无 natives 时应返回空串，实际 %q", got)
+	if err := os.WriteFile(filepath.Join(directory, "a.dll"), []byte("dll"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !s.nativesReady(item.ID) {
+		t.Fatal("非空目录应视为就绪")
 	}
 }
 

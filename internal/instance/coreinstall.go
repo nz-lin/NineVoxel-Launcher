@@ -89,11 +89,11 @@ func (s *InstanceService) installedVersionID(identity loader.Kind, mcVersion, lo
 // 无法读取版本 JSON 时返回 false：读不出内容就无法确认完整性，
 // 按「未安装」处理比盲目复用更安全。
 func versionLibrariesPresent(root, versionID string) bool {
-	relative, pathErr := artifact.VersionRelPath(versionID, versionID+".json")
-	if pathErr != nil {
+	versionDir, found, dirErr := artifact.ResolveVersionDir(root, versionID)
+	if dirErr != nil || !found {
 		return false
 	}
-	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
+	absolute, resolveErr := artifact.ResolveInsideRoot(root, versionDir+"/"+versionID+".json")
 	if resolveErr != nil {
 		return false
 	}
@@ -165,6 +165,10 @@ func (s *InstanceService) writeCoreManifest(kind loader.Kind, mcVersion, loaderV
 	if err != nil {
 		return errors.New("安装身份无效，无法记录安装清单")
 	}
+	versionDir, dirErr := coreVersionDirRel(kind, versionID)
+	if dirErr != nil {
+		return dirErr
+	}
 
 	versionJSON, jsonErr := versionChainFiles(s.root, versionID)
 	if jsonErr != nil {
@@ -174,6 +178,7 @@ func (s *InstanceService) writeCoreManifest(kind loader.Kind, mcVersion, loaderV
 
 	manifest, buildErr := buildCoreManifest(s.root, manifestInput{
 		VersionID:         versionID,
+		VersionDir:        versionDir,
 		Identity:          identity.String(),
 		LoaderKind:        string(kind),
 		LoaderVersion:     loaderVersion,
@@ -181,7 +186,6 @@ func (s *InstanceService) writeCoreManifest(kind loader.Kind, mcVersion, loaderV
 		RecipeFingerprint: s.recipeFingerprint(kind, mcVersion, loaderVersion),
 		Downloaded:        artifacts.Downloaded,
 		VersionJSON:       versionJSON,
-		NativesDir:        artifacts.NativesDir,
 		AssetIndex:        artifacts.AssetIndex,
 		AssetObjects:      artifacts.AssetObjects,
 		ProcessorOutputs:  mergeProcessorOutputs(artifacts.ProcessorOutputs, processorOutputs(s.root, versionID, artifacts.Downloaded)),
@@ -190,6 +194,25 @@ func (s *InstanceService) writeCoreManifest(kind loader.Kind, mcVersion, loaderV
 		return buildErr
 	}
 	return core.WriteManifest(s.root, manifest)
+}
+
+// coreVersionDirRel 返回某个版本应落在哪个核心目录。
+//
+// 原版保持官方 `.minecraft` 布局（`versions/`）；加载器版本由启动器生成，
+// 统一放 `loaders/`。这是写入时的唯一判定点，读取一律走
+// artifact.ResolveVersionDir 探测。
+func coreVersionDirRel(kind loader.Kind, versionID string) (string, error) {
+	var relative string
+	var appErr *artifact.Error
+	if kind == loader.KindVanilla {
+		relative, appErr = artifact.VersionDirRel(versionID)
+	} else {
+		relative, appErr = artifact.LoaderVersionDirRel(versionID)
+	}
+	if appErr != nil {
+		return "", errors.New("版本目录无效")
+	}
+	return relative, nil
 }
 
 // installWithManifest 是安装的统一入口：先查清单、加锁、执行、再写清单。
@@ -259,17 +282,20 @@ func mergeProcessorOutputs(explicit, scanned []string) []string {
 
 // processorOutputs 找出安装器额外生成、且不在下载计划中的版本级产物。
 //
-// Forge / NeoForge 的安装器会在 `versions/<id>/` 下写出 `-client.jar` 等文件，
+// Forge / NeoForge 的安装器会在版本目录下写出 `-client.jar` 等文件，
 // 这些无法从下载计划推导，只能通过对比目录内容识别。
 //
-// 只收集 `versions/<id>/` 顶层的 jar：natives 目录已在清单的 native 组中，
+// 只收集版本目录顶层的 jar：natives 已不在核心清单里（属于实例目录），
 // 清单文件本身也不应算作产物。
 func processorOutputs(root, versionID string, downloaded []string) []string {
 	known := make(map[string]struct{}, len(downloaded))
 	for _, rel := range downloaded {
 		known[rel] = struct{}{}
 	}
-	relative := "versions/" + versionID
+	relative, found, dirErr := artifact.ResolveVersionDir(root, versionID)
+	if dirErr != nil || !found {
+		return nil
+	}
 	entries, err := readCoreDir(root, relative)
 	if err != nil {
 		return nil

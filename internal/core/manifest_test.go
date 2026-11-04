@@ -105,11 +105,11 @@ func TestManifestRequiredFilesIncludesAssets(t *testing.T) {
 func TestManifestFilesOfGroup(t *testing.T) {
 	manifest := Manifest{Files: []ManifestFile{
 		{Path: "libraries/a.jar", Group: GroupLibrary},
-		{Path: "versions/v/natives/x.dll", Group: GroupNative},
+		{Path: "libraries/b.jar", Group: GroupLibrary},
 		{Path: "libraries/net/minecraftforge/forge/client.jar", Group: GroupProcessor},
 	}}
-	if got := len(manifest.FilesOfGroup(GroupNative)); got != 1 {
-		t.Fatalf("native 分组期望 1 个文件，实际 %d", got)
+	if got := len(manifest.FilesOfGroup(GroupLibrary)); got != 2 {
+		t.Fatalf("library 分组期望 2 个文件，实际 %d", got)
 	}
 	if got := len(manifest.FilesOfGroup(GroupProcessor)); got != 1 {
 		t.Fatalf("processor 分组期望 1 个文件，实际 %d", got)
@@ -140,6 +140,7 @@ func TestVerifyFastDetectsMissingAndSizeMismatch(t *testing.T) {
 		SchemaVersion: manifestSchemaVersion,
 		Identity:      "vanilla:26.3",
 		VersionID:     "26.3",
+		VersionDir:    "versions/26.3",
 		Files: []ManifestFile{
 			okFile,
 			badFile,

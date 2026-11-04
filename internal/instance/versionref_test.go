@@ -6,10 +6,16 @@ import (
 	"testing"
 )
 
-// writeCoreVersion 在核心中创建指定版本的元数据文件。
+// writeCoreVersion 在核心中创建指定原版版本的元数据文件。
 func writeCoreVersion(t *testing.T, root, versionID string) {
 	t.Helper()
 	fixtureWrite(t, filepath.Join(root, "versions", versionID, versionID+".json"), []byte(`{"id":"`+versionID+`"}`))
+}
+
+// writeLoaderCoreVersion 在 `loaders/` 下创建加载器版本目录。
+func writeLoaderCoreVersion(t *testing.T, root, versionID string) {
+	t.Helper()
+	fixtureWrite(t, filepath.Join(root, "loaders", versionID, versionID+".json"), []byte(`{"id":"`+versionID+`"}`))
 }
 
 // TestUninstallLoaderKeepsVersionReferencedByOthers 验证卸载加载器不会删除
@@ -33,7 +39,7 @@ func TestUninstallLoaderKeepsVersionReferencedByOthers(t *testing.T) {
 	loaderVersion := "0.16.14"
 	loaderID := "fabric-loader-" + loaderVersion + "-" + first.MCVersion
 	writeCoreVersion(t, s.root, first.MCVersion)
-	writeCoreVersion(t, s.root, loaderID)
+	writeLoaderCoreVersion(t, s.root, loaderID)
 
 	for _, item := range []Instance{first, second} {
 		updated := item
@@ -52,7 +58,7 @@ func TestUninstallLoaderKeepsVersionReferencedByOthers(t *testing.T) {
 	}
 
 	// 第二个仍在引用，核心版本必须保留。
-	if _, statErr := os.Stat(filepath.Join(s.root, "versions", loaderID)); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(s.root, "loaders", loaderID)); statErr != nil {
 		t.Fatalf("被其他实例引用的核心版本被误删: %v", statErr)
 	}
 
@@ -79,7 +85,7 @@ func TestUninstallLoaderRemovesUnreferencedVersion(t *testing.T) {
 	loaderVersion := "0.16.14"
 	loaderID := "fabric-loader-" + loaderVersion + "-" + item.MCVersion
 	writeCoreVersion(t, s.root, item.MCVersion)
-	writeCoreVersion(t, s.root, loaderID)
+	writeLoaderCoreVersion(t, s.root, loaderID)
 
 	updated := item
 	updated.Loader = "fabric"
@@ -94,7 +100,7 @@ func TestUninstallLoaderRemovesUnreferencedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, statErr := os.Stat(filepath.Join(s.root, "versions", loaderID)); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(s.root, "loaders", loaderID)); !os.IsNotExist(statErr) {
 		t.Fatalf("无人引用的核心版本应被清理，实际 stat: %v", statErr)
 	}
 	// 原版版本必须保留：卸载加载器不等于删除游戏。

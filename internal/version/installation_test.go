@@ -40,11 +40,12 @@ func TestPrepareInstallationMapsStandardMinecraftLayout(t *testing.T) {
 		}
 	}
 	for _, file := range prepared.Files {
+		// 解压目标由实例层决定：natives 落在实例目录，不属于核心。
+		// 这里只要求「需要解压的条目不得自带越界目标」。
 		if strings.Contains(file.Target, "..") || strings.HasPrefix(file.Target, "/") {
 			t.Fatalf("unsafe target %q", file.Target)
 		}
-		// 只有 natives 需要安装步骤：下载的是压缩包，必须解压到版本目录。
-		if file.Extract && strings.HasSuffix(file.Target, "/natives") {
+		if file.Extract {
 			found["native"] = true
 			continue
 		}
