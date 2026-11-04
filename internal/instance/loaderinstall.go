@@ -101,7 +101,11 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	if err := runLoaderInstallPlan(s, ctx, item.ID, installer.Plan, 0.55, 0.05); err != nil {
 		return err
 	}
-	artifacts.Downloaded = append(artifacts.Downloaded, installer.Plan.Items[0].TargetRelPath)
+	// 刻意不把安装器缓存记入 artifacts.Downloaded。
+	//
+	// 清单的语义是「运行这个版本必需的文件」；安装器只在安装期用一次，
+	// 记进清单会让重建永久保留它，也会让「修复」去重新下载一个运行期
+	// 根本用不到的文件。
 
 	javaPath, err := resolveInstallerJava(item.CustomJavaPath, item.CustomJavaRuntimeID, item.MCVersion)
 	if err != nil {

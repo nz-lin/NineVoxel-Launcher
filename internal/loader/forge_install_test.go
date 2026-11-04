@@ -341,16 +341,34 @@ func TestPlanForgeInstallReadsProfileLibraries(t *testing.T) {
 	for _, library := range plan.Libraries {
 		paths[library.TargetRelPath] = true
 	}
-	if !paths["net/neoforged/neoforge/26.3.0.101/neoforge-26.3.0.101-universal.jar"] {
-		t.Fatal("install_profile 的 universal jar 未被计划下载")
+	// install_profile 的 path 相对 Maven 根，必须补上 libraries/ 前缀；
+	// 否则会下载到 <数据根>/net/... 而游戏 classpath 只认 libraries/net/...
+	// ——表现为「库明明下载了，启动却说加载器 jar 缺失」。
+	universal := "libraries/net/neoforged/neoforge/26.3.0.101/neoforge-26.3.0.101-universal.jar"
+	if !paths[universal] {
+		t.Fatalf("install_profile 的 universal jar 未被计划下载：%v", keysOf(paths))
 	}
-	if !paths["org/ow2/asm/asm/9.11/asm-9.11.jar"] {
-		t.Fatal("version.json 的库未被计划下载")
+	// version.json 的 path 自带 libraries/ 前缀，不应被重复加。
+	asm := "libraries/org/ow2/asm/asm/9.11/asm-9.11.jar"
+	if !paths[asm] {
+		t.Fatalf("version.json 的库未按原路径计划：%v", keysOf(paths))
+	}
+	if paths["libraries/libraries/org/ow2/asm/asm/9.11/asm-9.11.jar"] {
+		t.Fatal("version.json 的路径被错误地重复加了 libraries/ 前缀")
 	}
 	// 3 个唯一路径（srgutils 被两个来源重复列出）。
 	if len(plan.Libraries) != 3 {
 		t.Fatalf("库数量 = %d，期望 3（去重后）", len(plan.Libraries))
 	}
+}
+
+// keysOf 返回集合的键，用于失败信息。
+func keysOf(values map[string]bool) []string {
+	result := make([]string, 0, len(values))
+	for key := range values {
+		result = append(result, key)
+	}
+	return result
 }
 
 // TestPlanForgeInstallRecordsDeclaredArtifacts 验证 data 里的 Maven 路径被记录。

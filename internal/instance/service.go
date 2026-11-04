@@ -850,6 +850,32 @@ func (s *InstanceService) DeleteInstance(req IDRequest) (List, error) {
 	return list, deleteErr
 }
 
+// describeRenameFailure 把目录改名失败翻译成可操作的说明。
+//
+// 只覆盖 Windows 与 POSIX 上最常见、且处置方式不同的两类原因；
+// 其余情况原样交给底层错误，不编造原因。
+func describeRenameFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "being used by another process"),
+		strings.Contains(text, "used by another process"),
+		strings.Contains(text, "resource busy"),
+		strings.Contains(text, "device or resource busy"):
+		return "实例目录仍被占用，请先关闭游戏再删除"
+	case strings.Contains(text, "access is denied"),
+		strings.Contains(text, "permission denied"):
+		return "没有该实例目录的写入权限"
+	case strings.Contains(text, "cross-device link"),
+		strings.Contains(text, "not same device"):
+		return "回收站与实例不在同一磁盘卷"
+	default:
+		return "无法移动实例目录"
+	}
+}
+
 // deleteInstanceLocked 执行实际的归档与删除；调用方必须持有 s.mu。
 func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 	if item.InstallationState == "installing" {
@@ -869,7 +895,7 @@ func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 	marked := false
 	if _, err := os.Stat(source); err == nil {
 		if err := os.MkdirAll(filepath.Dir(trash), 0755); err != nil {
-			return List{}, errors.New("归档实例失败")
+			return List{}, fmt.Errorf("归档实例失败：无法创建回收站目录（%w）", err)
 		}
 		if err := s.writeItemManifestStateLocked(item, trashedAtMS); err == nil {
 			marked = true
@@ -878,11 +904,14 @@ func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 			if marked {
 				_ = s.writeItemManifestStateLocked(item, 0)
 			}
-			return List{}, errors.New("归档实例失败")
+			// 带上底层原因：Windows 上最常见的两种是「文件被占用」（游戏仍在
+			// 运行）与「权限不足」，两者的处置方式完全不同，只回一句
+			// 「归档失败」用户无从下手。
+			return List{}, fmt.Errorf("归档实例失败：%s（%w）", describeRenameFailure(err), err)
 		}
 		moved = true
 	} else if !os.IsNotExist(err) {
-		return List{}, errors.New("无法访问实例目录")
+		return List{}, fmt.Errorf("无法访问实例目录（%w）", err)
 	}
 	tx, err := s.db.Begin()
 	if err == nil {

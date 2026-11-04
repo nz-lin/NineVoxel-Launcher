@@ -327,7 +327,11 @@ func PlanForgeInstall(ctx context.Context, kind Kind, root, installerPath, minec
 // 只看 version.json 会让 NeoForge 装出一个「能启动但加载器本体缺失」的
 // 版本，客户端会报 installation is corrupted。
 //
-// 按目标路径去重：两家可能列出同一个库。
+// 两个来源的 `downloads.artifact.path` 语义相同：都是**Maven 相对路径**
+// （`net/neoforged/...`，不含 `libraries/`）。必须经 artifact.LibraryRelPath
+// 归一化到 `libraries/net/neoforged/...`——classpath 指向的就是这个位置。
+// 直接把 path 当目标路径会下载到 `<数据根>/net/...`，表现为「库明明下载了，
+// 启动却说加载器 jar 缺失」。
 func planLoaderLibraries(plan *ForgeInstallPlan, profile forgeInstallProfile) *Error {
 	seen := make(map[string]struct{}, len(plan.Libraries))
 
@@ -368,8 +372,9 @@ func loaderLibraryPlanItem(library forgeLibraryDocument) (*download.PlanItem, *E
 	if strings.TrimSpace(entry.URL) == "" {
 		return nil, nil
 	}
-	relative, pathErr := artifact.ValidateRelativePath(entry.Path)
-	if pathErr != nil || relative != entry.Path {
+	// 与 internal/version 共用同一条归一化规则，避免两处各写一套。
+	targetRel, pathErr := artifact.LibraryRelPath(entry.Path)
+	if pathErr != nil {
 		return nil, installerError("加载器依赖库的路径无效，文件可能已损坏。", false)
 	}
 	if err := validateDownloadTarget(entry.URL); err != nil {
@@ -379,10 +384,10 @@ func loaderLibraryPlanItem(library forgeLibraryDocument) (*download.PlanItem, *E
 		return nil, installerError("加载器依赖库缺少文件大小，文件可能已损坏。", false)
 	}
 	return &download.PlanItem{
-		ArtifactID:    "loader-library/" + entry.Path,
+		ArtifactID:    "loader-library/" + targetRel,
 		TaskType:      download.TaskTypeLibrary,
 		SourceURI:     entry.URL,
-		TargetRelPath: relative,
+		TargetRelPath: targetRel,
 		TargetKind:    download.TargetKindShared,
 		ExpectedSHA1:  strings.ToLower(entry.SHA1),
 		ExpectedSize:  entry.Size,
