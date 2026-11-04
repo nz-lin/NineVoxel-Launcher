@@ -236,6 +236,7 @@ desktop:windows:
     - 'if ((pnpm --version) -ne $env:PNPM_VERSION) { throw "pnpm 版本必须为 $env:PNPM_VERSION" }'
     - 'go install "github.com/wailsapp/wails/v3/cmd/wails3@$env:WAILS_VERSION"'
     - '$env:PATH = "$env:GOPATH\bin;$env:PATH"'
+    - 'go test ./... -count=1'
     - 'wails3 task build GOOS=windows ARCH=amd64'
     - 'if (-not (Test-Path "bin\ninevoxel-launcher.exe")) { throw "Windows 二进制产物不存在" }'
     - 'git diff --exit-code -- go.mod go.sum'
@@ -273,6 +274,7 @@ desktop:macos:
     - test -x "$(xcrun --find clang)"
     - go install "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
     - export PATH="${GOPATH}/bin:${PATH}"
+    - go test ./... -count=1
     - wails3 task build GOOS=darwin ARCH=arm64
     - test -f bin/ninevoxel-launcher || (echo "macOS arm64 二进制产物不存在" && exit 1)
     - git diff --exit-code -- go.mod go.sum
