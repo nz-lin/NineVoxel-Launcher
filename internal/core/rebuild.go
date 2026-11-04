@@ -306,28 +306,45 @@ func rollbackAndReport(root string, journal *rebuildJournal, backupRoot, staging
 // rollback 按日志把已切换的目录改回原状。
 //
 // 逆序处理：索引最先被回滚，这样它不会指向已被回滚的版本目录。
+//
+// 不能只信日志里的组件状态：崩溃可能发生在「改名完成」与「日志写入」之间，
+// 此时磁盘状态比日志前进一步。因此每一步都同时检查实际文件：
+//
+//	目标缺失、备份存在              → 改名已发生但日志未写，恢复备份
+//	目标存在、日志为 moved-out      → 新目录已就位但日志未更新，删除后恢复备份
+//	目标存在、日志为 pending        → 改名尚未发生，目标仍是旧目录，保持不动
 func rollback(root string, journal *rebuildJournal, backupRoot string) error {
 	for index := len(rebuildComponents) - 1; index >= 0; index-- {
 		component := rebuildComponents[index]
 		target := filepath.Join(root, component)
 		backup := filepath.Join(backupRoot, component)
 
+		targetExists := pathExists(target)
+		backupExists := pathExists(backup)
+		if !backupExists {
+			// 没有旧目录可恢复：保持现状。
+			//
+			// 可能是该组件原本就不存在（首次构建），也可能是事务已提交、
+			// 备份已经被清理。两种情况都不应删除目标目录——误删的代价远大于
+			// 留下一个多余的目录。
+			continue
+		}
+
 		switch journal.Components[component] {
-		case componentMovedIn:
-			// 新目录已就位：先挪走，再把备份换回来。
-			if _, statErr := os.Stat(target); statErr == nil {
+		case componentMovedIn, componentMovedOut:
+			// 目标位置可能已经是新目录（日志写晚了一步），必须先清掉。
+			if targetExists {
 				if removeErr := os.RemoveAll(target); removeErr != nil {
 					return removeErr
 				}
 			}
-			if _, statErr := os.Stat(backup); statErr == nil {
-				if renameErr := os.Rename(backup, target); renameErr != nil {
-					return renameErr
-				}
+			if renameErr := os.Rename(backup, target); renameErr != nil {
+				return renameErr
 			}
-		case componentMovedOut:
-			// 旧目录已移走但新目录未就位：把备份换回来即可。
-			if _, statErr := os.Stat(backup); statErr == nil {
+		default:
+			// pending：目标缺失说明改名已发生但日志没写上，恢复备份；
+			// 目标存在说明改名尚未发生，保留旧目录，备份留给清理步骤。
+			if !targetExists {
 				if renameErr := os.Rename(backup, target); renameErr != nil {
 					return renameErr
 				}
@@ -335,6 +352,12 @@ func rollback(root string, journal *rebuildJournal, backupRoot string) error {
 		}
 	}
 	return nil
+}
+
+// pathExists 判断路径是否存在（不区分文件与目录）。
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // cleanupAfterCommit 删除备份、暂存与事务日志。

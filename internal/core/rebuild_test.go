@@ -252,6 +252,115 @@ func TestRebuildRefusesWhenGameStartsDuringBuild(t *testing.T) {
 	}
 }
 
+// TestRecoverPendingComponentRestoresMovedBackup 验证「改名完成、日志未写」也能回滚。
+//
+// 崩溃可能发生在 os.Rename 与 writeJournal 之间：日志仍写着 pending，
+// 但旧目录其实已经被移进备份区。恢复若只信日志，会把整个组件留在缺失状态。
+func TestRecoverPendingComponentRestoresMovedBackup(t *testing.T) {
+	root := setupCoreFixture(t)
+	operationID := "rebuild-crash-window"
+	journal := &rebuildJournal{
+		SchemaVersion: journalSchemaVersion,
+		OperationID:   operationID,
+		State:         stateSwitching,
+		Components:    map[string]string{},
+	}
+	for _, component := range rebuildComponents {
+		journal.Components[component] = componentPending
+	}
+	// 模拟 libraries 已完成改名但日志尚未记录：旧内容在备份区，目标缺失。
+	backup := filepath.Join(root, rebuildBackupDir, operationID, librariesDirName)
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "marker.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, librariesDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJournal(root, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RecoverRebuild(root); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	if got := readComponentFile(t, root, librariesDirName); got != "old" {
+		t.Fatalf("libraries 应恢复旧内容，实际 %q", got)
+	}
+}
+
+// TestRecoverMovedOutWithNewTargetRestoresOld 验证「新目录已就位、日志仍是 moved-out」的回滚。
+func TestRecoverMovedOutWithNewTargetRestoresOld(t *testing.T) {
+	root := setupCoreFixture(t)
+	operationID := "rebuild-crash-window-2"
+	journal := &rebuildJournal{
+		SchemaVersion: journalSchemaVersion,
+		OperationID:   operationID,
+		State:         stateSwitching,
+		Components:    map[string]string{},
+	}
+	for _, component := range rebuildComponents {
+		journal.Components[component] = componentPending
+	}
+	journal.Components[librariesDirName] = componentMovedOut
+
+	backup := filepath.Join(root, rebuildBackupDir, operationID, librariesDirName)
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "marker.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 新目录已改名到目标位置，但日志还没来得及更新为 moved-in。
+	writeComponentFile(t, root, librariesDirName, "new")
+	if err := writeJournal(root, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RecoverRebuild(root); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	if got := readComponentFile(t, root, librariesDirName); got != "old" {
+		t.Fatalf("libraries 应恢复旧内容，实际 %q", got)
+	}
+}
+
+// TestRecoverKeepsNewCoreWhenBackupsAlreadyCleaned 验证备份已清理时不误删新核心。
+//
+// 提交时若日志写入失败、清理又中断，磁盘上会留下 verifying-new 日志但没有
+// 备份。此时删除「没有备份的目标目录」会把新核心整个抹掉。
+func TestRecoverKeepsNewCoreWhenBackupsAlreadyCleaned(t *testing.T) {
+	root := t.TempDir()
+	operationID := "rebuild-cleaned-backup"
+	journal := &rebuildJournal{
+		SchemaVersion: journalSchemaVersion,
+		OperationID:   operationID,
+		State:         stateVerifyingNew,
+		Components:    map[string]string{},
+	}
+	for _, component := range rebuildComponents {
+		journal.Components[component] = componentMovedIn
+		writeComponentFile(t, root, component, "new")
+	}
+	if err := writeJournal(root, journal); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RecoverRebuild(root); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	for _, component := range rebuildComponents {
+		if got := readComponentFile(t, root, component); got != "new" {
+			t.Fatalf("%s 不应被删除，实际 %q", component, got)
+		}
+	}
+	if count := journalCount(t, root); count != 0 {
+		t.Fatalf("恢复后应清理日志，剩 %d 个", count)
+	}
+}
+
 // ===== 崩溃与恢复 =====
 
 // TestRebuildCrashBeforeSwitchIsRecoverable 验证切换前崩溃可恢复。
