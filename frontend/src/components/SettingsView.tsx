@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { LauncherSettings, JavaRuntime } from '../types/launcher';
 import { ConfirmDialog } from './ConfirmDialog';
-import { instanceService } from '../services/instance';
+import { instanceService, subscribeCoreRebuildProgress } from '../services/instance';
 
 /** 全局默认最大分配内存的下限（MB）：低于 2 GB 的堆无法启动现代 Minecraft。 */
 const MIN_MEMORY_MB = 2048;
@@ -108,6 +108,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
   const [rebuildBusy, setRebuildBusy] = useState(false);
   const [rebuildMessage, setRebuildMessage] = useState<string | null>(null);
+  /**
+   * 重建进度：阶段文案与 0~1 的比例。
+   *
+   * 只用于观感；完成与否一律以 `rebuildCore()` 的返回值为准——事件可能丢失，
+   * 把进度条走到 100% 当成「成功」会在中途失败时给出错误结论。
+   */
+  const [rebuildProgress, setRebuildProgress] = useState<{ phase: string; ratio: number } | null>(null);
 
   // 滑块上限与刻度按真实物理内存计算，不再写死一个数字。
   const memoryCeilingMb = resolveMemoryCeilingMb(totalMemoryMb);
@@ -144,6 +151,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     onUpdateSettings(updated);
   };
 
+  // 重建期间订阅后端进度事件；不在重建时不解绑也行，但常驻订阅会为
+  // 一个几乎不触发的功能保留回调，因此随 busy 状态订阅与解绑。
+  useEffect(() => {
+    if (!rebuildBusy) {
+      return undefined;
+    }
+    return subscribeCoreRebuildProgress((progress) => {
+      setRebuildProgress({ phase: progress.phase, ratio: progress.progress });
+    });
+  }, [rebuildBusy]);
+
   /** 打开确认框：重建会整体替换核心目录，必须先让用户知道代价。 */
   const handleRebuildCore = () => {
     if (rebuildBusy) return;
@@ -155,6 +173,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     void (async () => {
       setRebuildBusy(true);
       setRebuildMessage(null);
+      setRebuildProgress({ phase: '正在准备重建', ratio: 0.01 });
       try {
         const result = await instanceService.rebuildCore();
         const megabytes = (result.bytes / (1024 * 1024)).toFixed(1);
@@ -165,6 +184,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         setRebuildMessage(cause instanceof Error ? cause.message : String(cause));
       } finally {
         setRebuildBusy(false);
+        // 结束后清掉进度：留着 100% 的条会让人以为还可以再点一次同样的操作。
+        setRebuildProgress(null);
       }
     })();
   };
@@ -413,6 +434,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <p>暂存核心与旧核心会短暂同时存在，请确保磁盘至少有一份核心大小的可用空间。</p>
             <p>有游戏正在运行时无法重建；请先退出游戏。</p>
           </div>
+
+          {rebuildBusy && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-slate-600 dark:text-neutral-300">
+                  {rebuildProgress?.phase ?? '正在重建…'}
+                </span>
+                <span className="font-mono text-slate-500 dark:text-neutral-400">
+                  {Math.round((rebuildProgress?.ratio ?? 0) * 100)}%
+                </span>
+              </div>
+              {/* 进度条宽度用内联 style：Tailwind 无法按运行时数值生成类名。 */}
+              <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-neutral-800 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                  style={{ width: `${Math.round((rebuildProgress?.ratio ?? 0) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
 
           {rebuildMessage && (
             <p className="text-[11px] text-slate-600 dark:text-neutral-300">{rebuildMessage}</p>

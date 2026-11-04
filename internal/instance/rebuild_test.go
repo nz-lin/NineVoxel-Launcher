@@ -116,6 +116,47 @@ func TestRebuildCoreSharesVersionAcrossInstances(t *testing.T) {
 	}
 }
 
+// TestRebuildCoreReportsMonotonicProgress 验证重建会持续上报且进度不回退。
+//
+// 进度条一旦回退，用户会以为任务重新开始了；同样，全程没有回调就等于又回到
+// 「不动的重建中」。这里同时约束这两点。
+func TestRebuildCoreReportsMonotonicProgress(t *testing.T) {
+	s, item, _ := setupRepairFixture(t)
+	markInstalled(t, s, item, item.MCVersion)
+
+	var (
+		phases []string
+		ratios []float64
+	)
+	_, err := s.rebuildCore(context.Background(), func(phase string, ratio float64) {
+		phases = append(phases, phase)
+		ratios = append(ratios, ratio)
+	})
+	if err != nil {
+		t.Fatalf("重建失败: %v", err)
+	}
+	if len(ratios) < 3 {
+		t.Fatalf("应上报多个阶段，实际只有 %d 次", len(ratios))
+	}
+	for index := 1; index < len(ratios); index++ {
+		if ratios[index] < ratios[index-1] {
+			t.Fatalf("进度回退：第 %d 次 %v < 第 %d 次 %v（阶段 %q）",
+				index, ratios[index], index-1, ratios[index-1], phases[index])
+		}
+	}
+	if len(phases) != len(ratios) {
+		t.Fatalf("阶段文案与比例数量不一致：%d vs %d", len(phases), len(ratios))
+	}
+}
+
+// TestEmitRebuildProgressWithoutBinding 验证未绑定应用时发射不会 panic。
+//
+// 单元测试与命令行场景下没有 Wails 应用实例；进度上报失败只能影响观感，
+// 绝不能让重建本身因此崩溃。
+func TestEmitRebuildProgressWithoutBinding(t *testing.T) {
+	emitRebuildProgress("正在构建核心资源", 0.5)
+}
+
 // ===== 暂存校验 =====
 
 // TestVerifyRebuiltCoreDetectsTamper 验证暂存核心被篡改时拒绝切换。

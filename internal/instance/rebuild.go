@@ -56,8 +56,8 @@ type coreRebuildTarget struct {
 
 // RebuildCoreForUser 重建共享游戏核心。
 //
-// 同步执行：重建包含完整校验与磁盘复制，耗时由核心体积决定。界面应以
-// 「处理中」状态等待，而不是重复点击。
+// 同步执行：重建包含完整校验与磁盘复制，耗时由核心体积决定。中间进度通过
+// `core.rebuild.progress.v1` 事件上报，界面据此绘制进度条。
 func (s *InstanceService) RebuildCoreForUser() (RebuildCoreResult, error) {
 	s.mu.Lock()
 	if err := s.openLocked(); err != nil {
@@ -66,7 +66,7 @@ func (s *InstanceService) RebuildCoreForUser() (RebuildCoreResult, error) {
 	}
 	s.mu.Unlock()
 
-	return s.rebuildCore(context.Background(), nil)
+	return s.rebuildCore(context.Background(), emitRebuildProgress)
 }
 
 // rebuildCore 是重建的实现；progress 可为空。
@@ -75,6 +75,10 @@ func (s *InstanceService) rebuildCore(ctx context.Context, progress func(string,
 	if err := ctx.Err(); err != nil {
 		return result, errors.New("重建已取消")
 	}
+	if progress == nil {
+		progress = func(string, float64) {}
+	}
+	progress("正在准备重建", 0.01)
 
 	targets, err := s.collectRebuildTargets(ctx, progress)
 	if err != nil {

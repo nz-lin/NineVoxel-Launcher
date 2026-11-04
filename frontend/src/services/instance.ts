@@ -1,8 +1,21 @@
+import { Events } from '@wailsio/runtime'
 import { InstanceService } from '../../bindings/example.com/ninevoxel/launcher/internal/instance'
 import { JavaMode, JVMMode, MemoryMode } from '../../bindings/example.com/ninevoxel/launcher/internal/launch/models'
 import type { Config, Instance as StoredInstance, TrashItem as StoredTrashItem } from '../../bindings/example.com/ninevoxel/launcher/internal/instance/models'
 import type { Instance, InstanceGroup, InstanceGroupList, InstanceTrashItem } from '../types/launcher'
+import type { Unsubscribe } from './events'
 import { toAppError } from './errors'
+
+/** `core.rebuild.progress.v1` 的事件名，与后端 `events.EventCoreRebuildProgress` 一致。 */
+const CORE_REBUILD_PROGRESS_EVENT = 'core.rebuild.progress.v1'
+
+/** 一次核心重建的进度快照。 */
+export interface CoreRebuildProgress {
+  /** 当前阶段的用户可读说明，由后端给出。 */
+  phase: string
+  /** 0~1 的整体进度；只用于画进度条，不承诺线性。 */
+  progress: number
+}
 
 export type InstanceConfig = Pick<Instance, 'name' | 'mcVersion' | 'loader' | 'loaderVersion' | 'partition' | 'icon' | 'memoryMode' | 'memoryMb' | 'jvmMode' | 'jvmArgs' | 'javaMode' | 'description' | 'isFavorite' | 'customJavaPath' | 'customJavaRuntimeId'>
 
@@ -131,4 +144,40 @@ export const instanceService = {
   async deleteGroup(name: string, moveTo = '') {
     return toGroupList(await call(() => InstanceService.DeleteInstanceGroup({ name, moveTo })))
   },
+}
+
+/**
+ * 订阅核心重建进度。
+ *
+ * 重建是一次同步绑定调用，最终结果来自 `rebuildCore()` 的返回值；本订阅只负责
+ * 让界面在等待期间有反馈。事件可能丢失或重复（规范前提），因此界面不得把进度
+ * 当成「是否完成」的判据。
+ *
+ * @param handler 进度处理函数
+ * @returns 幂等的解绑函数
+ */
+export function subscribeCoreRebuildProgress(handler: (progress: CoreRebuildProgress) => void): Unsubscribe {
+  let active = true
+
+  const release = Events.On(CORE_REBUILD_PROGRESS_EVENT, (event) => {
+    if (!active) {
+      return
+    }
+    // 该事件未登记在生成的 `CustomEvents` 声明里，按 unknown 取载荷后再归一化。
+    const payload = (event?.data as { payload?: Partial<CoreRebuildProgress> } | undefined)?.payload
+    if (!payload || typeof payload.phase !== 'string') {
+      return
+    }
+    const raw = typeof payload.progress === 'number' ? payload.progress : 0
+    // 夹紧到 [0,1]：越界值会让进度条宽度超出容器。
+    handler({ phase: payload.phase, progress: Math.min(Math.max(raw, 0), 1) })
+  })
+
+  return () => {
+    if (!active) {
+      return
+    }
+    active = false
+    release()
+  }
 }

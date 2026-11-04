@@ -351,6 +351,29 @@ type DownloadTaskChangedPayload struct {
 	ErrorCode string `json:"errorCode,omitempty"`
 }
 
+// ===== 核心重建进度事件（本卡追加，不修改上方内容）=====
+
+// EventCoreRebuildProgress 表示核心重建的阶段推进。
+//
+// 重建是长耗时同步操作（真实数据 814 MB 约 3 分钟），调用方只拿到最终结果，
+// 中间过程必须靠事件上报，否则界面只能显示一个没有反馈的「重建中」。
+//
+// 与下载进度事件的区别：重建的进度是**阶段式**的（构建 → 校验 → 切换 →
+// 重新校验），没有逐字节的连续进度可报，因此载荷带阶段文案而不是任务 ID。
+const EventCoreRebuildProgress = "core.rebuild.progress.v1"
+
+// CoreRebuildProgressPayload 是 `core.rebuild.progress.v1` 的载荷。
+//
+// 阶段文案由后端给出：文案依赖重建的内部步骤（切换哪个组件、校验哪一层），
+// 前端无法自行推断，硬编码在前端会与实现漂移。
+type CoreRebuildProgressPayload struct {
+	// Phase 为当前阶段的用户可读说明。
+	Phase string `json:"phase"`
+
+	// Progress 为 0~1 的整体进度；仅用于绘制进度条，不承诺线性。
+	Progress float64 `json:"progress"`
+}
+
 // ===== 账号子系统事件（账号 SPI 首期追加，不修改上方内容）=====
 
 // EventAccountChanged 表示账号集合或当前选中账号发生变化。

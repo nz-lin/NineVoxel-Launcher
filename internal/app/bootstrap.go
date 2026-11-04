@@ -286,6 +286,12 @@ func RegisterStartupEvents(wailsApp *application.App, onReady func()) {
 	// 否则后续操作会基于一个自相矛盾的核心。
 	recoverCoreRebuild()
 
+	// 把重建进度事件的发射器绑定到应用实例。
+	//
+	// 重建耗时以分钟计，没有进度事件前端只能显示一个不动的「重建中」。
+	// 绑定失败不影响重建本身，只是界面拿不到中间进度。
+	instance.BindCoreRebuildEmitterToApp(wailsApp)
+
 	// 设置服务的发射器：`settings.changed.v1` 必须绑定应用实例才能推送。
 	//
 	// 这一行此前遗漏，表现为每次保存设置都在日志里打印
