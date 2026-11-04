@@ -200,6 +200,7 @@ func Options(in Bootstrap) application.Options {
 		return launch.InstanceLaunchConfig{
 			GameDirectory:       config.GameDirectory,
 			MCVersion:           config.MCVersion,
+			PatchDirectory:      config.PatchDirectory,
 			MemoryMB:            config.MemoryMB,
 			JVMArgs:             config.JVMArgs,
 			JavaMode:            config.JavaMode,

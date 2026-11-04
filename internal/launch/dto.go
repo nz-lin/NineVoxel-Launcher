@@ -722,6 +722,12 @@ type StartLaunchRequest struct {
 	// MemoryMB 为最大堆内存（MiB）。按实例启动时留空，由实例配置决定；
 	// 两者都为空时使用全局 launch.maxMemoryMb。
 	MemoryMB int `json:"memoryMb,omitempty"`
+
+	// patchDirectory 是实例补丁目录，只在后端装配阶段填充。
+	//
+	// 小写不可导出：它不是接口字段，也绝不能接受前端传入（否则等于允许
+	// 前端指定任意目录作为版本声明来源）。
+	patchDirectory string
 }
 
 // LaunchAcceptedResult 是启动受理结果。

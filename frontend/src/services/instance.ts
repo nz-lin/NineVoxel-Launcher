@@ -131,6 +131,18 @@ export const instanceService = {
   async cleanupUnusedCore() {
     return call(() => InstanceService.CleanupUnusedCoreForUser())
   },
+  /** 读取实例的版本声明覆盖（patches/<versionId>.json）。 */
+  async readVersionPatch(instanceId: string) {
+    return call(() => InstanceService.ReadVersionPatch({ instanceId }))
+  },
+  /** 保存版本声明覆盖；后端会在落盘前做合并校验。 */
+  async saveVersionPatch(instanceId: string, content: string) {
+    return call(() => InstanceService.SaveVersionPatch({ instanceId, content }))
+  },
+  /** 删除版本声明覆盖，恢复核心声明。 */
+  async deleteVersionPatch(instanceId: string) {
+    return call(() => InstanceService.DeleteVersionPatch({ instanceId }))
+  },
   async listTrash() {
     return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))
   },

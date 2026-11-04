@@ -903,8 +903,8 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 		return nil, newInputError(ErrorCodeVersionMetadata, messageVersionIDInvalid)
 	}
 
-	// P2-03：加载并合并版本。
-	outcome := loadMergedVersion(resourceRoot, versionID)
+	// P2-03：加载并合并版本。实例补丁（若存在）优先于核心声明。
+	outcome := loadMergedVersionWithPatches(resourceRoot, req.patchDirectory, versionID)
 	if outcome.merged == nil {
 		code := outcome.errorCode
 		if code == "" {

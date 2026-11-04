@@ -20,7 +20,8 @@ import {
   Sun,
   Palette,
   Coffee,
-  Check
+  Check,
+  FileJson
 } from 'lucide-react';
 import {
   Instance,
@@ -90,7 +91,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   groups,
   defaultGroup
 }) => {
-  const [activeTab, setActiveTab] = useState<'loaders' | 'mods' | 'shaders' | 'resourcepacks' | 'saves' | 'settings'>('settings');
+  const [activeTab, setActiveTab] = useState<'loaders' | 'mods' | 'shaders' | 'resourcepacks' | 'saves' | 'patch' | 'settings'>('settings');
 
   const [name, setName] = useState(instance.name);
   const [description, setDescription] = useState(instance.description);
@@ -117,6 +118,13 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   );
   const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || '');
   const [selectedJavaRuntimeId, setSelectedJavaRuntimeId] = useState(instance.customJavaRuntimeId || '');
+  /** 版本声明覆盖：只作用于实例当前版本，不进共享核心。 */
+  const [patchContent, setPatchContent] = useState('');
+  const [patchExists, setPatchExists] = useState(false);
+  const [patchVersionId, setPatchVersionId] = useState(instance.versionId || instance.mcVersion);
+  const [patchBusy, setPatchBusy] = useState(false);
+  const [patchLoaded, setPatchLoaded] = useState(false);
+  const [patchMessage, setPatchMessage] = useState<string | null>(null);
   /** 选择本地 java 可执行文件的进行状态与错误提示。 */
   const [javaPickBusy, setJavaPickBusy] = useState(false);
   const [javaPickError, setJavaPickError] = useState<string | null>(null);
@@ -270,6 +278,69 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
     })();
   };
 
+  /** 加载版本覆盖：只在首次进入页签时请求，避免每次渲染都读盘。 */
+  const loadVersionPatch = () => {
+    if (patchLoaded || patchBusy) return;
+    setPatchBusy(true);
+    void (async () => {
+      try {
+        const document = await instanceService.readVersionPatch(instance.id);
+        setPatchVersionId(document.versionId || instance.versionId || instance.mcVersion);
+        setPatchExists(document.exists);
+        setPatchContent(document.content || '');
+        setPatchLoaded(true);
+      } catch (cause) {
+        setPatchMessage(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setPatchBusy(false);
+      }
+    })();
+  };
+
+  /** 新建覆盖：预填 id，只让用户补需要修改的字段。 */
+  const handleCreatePatch = () => {
+    setPatchContent(JSON.stringify({ id: patchVersionId }, null, 2));
+    setPatchMessage(null);
+  };
+
+  const handleSavePatch = () => {
+    if (patchBusy) return;
+    setPatchBusy(true);
+    setPatchMessage(null);
+    void (async () => {
+      try {
+        const document = await instanceService.saveVersionPatch(instance.id, patchContent);
+        setPatchExists(document.exists);
+        setPatchContent(document.content || patchContent);
+        showNotify('版本覆盖已保存，下次启动生效。');
+      } catch (cause) {
+        // 校验失败原因由后端给出（中文），必须原样展示：
+        // 「哪里不合法」是用户改对补丁的唯一线索。
+        setPatchMessage(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setPatchBusy(false);
+      }
+    })();
+  };
+
+  const handleDeletePatch = () => {
+    if (patchBusy) return;
+    setPatchBusy(true);
+    setPatchMessage(null);
+    void (async () => {
+      try {
+        await instanceService.deleteVersionPatch(instance.id);
+        setPatchExists(false);
+        setPatchContent('');
+        showNotify('已删除版本覆盖，恢复核心声明。');
+      } catch (cause) {
+        setPatchMessage(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setPatchBusy(false);
+      }
+    })();
+  };
+
   const handleRetryLoaderInstall = () => {
     if (isLoaderBusy) return;
     void (async () => {
@@ -286,6 +357,13 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
       }
     })();
   };
+
+  // 进入「版本覆盖」页签时按需读取：读取是 IO，不该在弹窗打开时就发生。
+  useEffect(() => {
+    if (activeTab === 'patch') {
+      loadVersionPatch();
+    }
+  }, [activeTab]);
 
   // --- Mod Operations ---
   const toggleMod = (modId: string) => {
@@ -531,6 +609,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
             { id: 'mods' as const, label: `模组管理 (${modsList.length})`, icon: Package },
             { id: 'shaders' as const, label: `光影包 (${shaderList.length})`, icon: Sun },
             { id: 'resourcepacks' as const, label: `资源材质包 (${resourcePackList.length})`, icon: Palette },
+            { id: 'patch' as const, label: '版本覆盖', icon: FileJson },
             { id: 'settings' as const, label: '实例独立设置与 Java', icon: Sliders },
           ].map((tab) => {
             const Icon = tab.icon;
@@ -538,8 +617,8 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
             return (
               <button
                 key={tab.id}
-                disabled={tab.id !== 'settings' && tab.id !== 'loaders'}
-                title={tab.id === 'settings' ? '修改持久化实例配置' : tab.id === 'loaders' ? '安装、更新或卸载模组加载器' : '尚未接入'}
+                disabled={tab.id !== 'settings' && tab.id !== 'loaders' && tab.id !== 'patch'}
+                title={tab.id === 'settings' ? '修改持久化实例配置' : tab.id === 'loaders' ? '安装、更新或卸载模组加载器' : tab.id === 'patch' ? '用实例级 JSON 覆盖版本声明' : '尚未接入'}
                 onClick={() => setActiveTab(tab.id)}
                 className={`py-3 px-3.5 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
                   isActive
@@ -997,6 +1076,71 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
           )}
 
           {/* TAB 5: INSTANCE SETTINGS & JAVA RUNTIME */}
+          {activeTab === 'patch' && (
+            <div className="space-y-5">
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-1.5">
+                <p className="text-xs font-semibold text-slate-700 dark:text-neutral-300">版本声明覆盖</p>
+                <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                  覆盖只影响启动参数解析（主类、依赖库、参数等），不会重装或修复文件；
+                  依赖库与资源仍从共享核心读取。保存前会先校验，改错不会写入。
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-neutral-500">
+                  当前版本：<span className="font-mono">{patchVersionId || '未安装'}</span>
+                  {patchExists ? '（已有覆盖）' : '（无覆盖）'}
+                </p>
+              </div>
+
+              {patchMessage && (
+                <div role="alert" className="flex items-start gap-2 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{patchMessage}</span>
+                </div>
+              )}
+
+              {patchBusy && !patchLoaded ? (
+                <p className="text-xs text-slate-500">正在读取…</p>
+              ) : patchExists || patchContent ? (
+                <>
+                  <textarea
+                    value={patchContent}
+                    onChange={(e) => setPatchContent(e.target.value)}
+                    spellCheck={false}
+                    className="w-full h-64 px-3 py-2 rounded-lg bg-slate-50 dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 font-mono text-[11px] leading-relaxed"
+                    placeholder={`{\n  "id": "${patchVersionId}"\n}`}
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSavePatch}
+                      disabled={patchBusy}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      {patchBusy ? '处理中…' : '保存覆盖'}
+                    </button>
+                    {patchExists && (
+                      <button
+                        type="button"
+                        onClick={handleDeletePatch}
+                        disabled={patchBusy}
+                        className="px-3 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 dark:bg-neutral-800 dark:hover:bg-neutral-700 disabled:opacity-60 text-slate-700 dark:text-neutral-200 text-xs transition-colors cursor-pointer"
+                      >
+                        删除覆盖，恢复核心声明
+                      </button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleCreatePatch}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  创建覆盖
+                </button>
+              )}
+            </div>
+          )}
+
           {activeTab === 'settings' && (
             <div className="space-y-5">
               <p className="text-xs text-slate-500">当前支持原版资源安装和配置持久化，加载器、模组、光影与材质包管理尚未接入。</p>

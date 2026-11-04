@@ -2,6 +2,7 @@ package instance
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -20,6 +21,8 @@ type LaunchConfig struct {
 	MCVersion     string
 	MemoryMB      int
 	JVMArgs       string
+	// PatchDirectory 是实例补丁目录的绝对路径；空表示没有实例级覆盖。
+	PatchDirectory string
 	// JavaMode 决定 Java 来源；只在 managed / custom 时才采用下面两个字段。
 	//
 	// 必须一起返回：之前只返回路径不返回模式，启动侧无法区分「用户显式指定」
@@ -87,11 +90,22 @@ func ResolveLaunchConfig(instanceID string) (LaunchConfig, error) {
 	if javaMode != launch.JavaManaged && javaMode != launch.JavaCustom {
 		javaMode = launch.JavaFollowGlobal
 	}
+	// 补丁目录只在存在时返回：不存在的目录交给 launch 侧按「无覆盖」处理，
+	// 而不是让每次读取都先 Stat 一个必然不存在的路径。
+	patchDirectory := ""
+	if patchAbsolute, pathErr := artifact.ResolveInsideRoot(root, patchesRel(id)); pathErr == nil {
+		if info, statErr := os.Stat(patchAbsolute); statErr == nil && info.IsDir() {
+			if absolute, absErr := filepath.Abs(patchAbsolute); absErr == nil {
+				patchDirectory = absolute
+			}
+		}
+	}
 	return LaunchConfig{
 		GameDirectory:       gameDirectory,
 		MCVersion:           launchVersionID,
 		MemoryMB:            manifest.MemoryMB,
 		JVMArgs:             manifest.JVMArgs,
+		PatchDirectory:      patchDirectory,
 		JavaMode:            javaMode,
 		CustomJavaPath:      manifest.CustomJavaPath,
 		CustomJavaRuntimeID: manifest.CustomJavaRuntimeID,

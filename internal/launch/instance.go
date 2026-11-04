@@ -24,6 +24,11 @@ type InstanceLaunchConfig struct {
 	GameDirectory string
 	MCVersion     string
 
+	// PatchDirectory 是实例补丁目录（绝对路径）；为空表示没有实例级覆盖。
+	//
+	// 不出后端：它是宿主路径，只用于读取版本声明覆盖。
+	PatchDirectory string
+
 	// MemoryMode 决定内存取值来源；MemoryMB 仅在 custom 模式下生效。
 	MemoryMode MemoryMode
 	MemoryMB   int
@@ -119,6 +124,7 @@ func resolveStartLaunchRequest(req StartLaunchRequest) (StartLaunchRequest, *Err
 		resolved.GameDirectory = config.GameDirectory
 		resolved.VersionID = config.MCVersion
 		resolved.JavaPath = ""
+		resolved.patchDirectory = config.PatchDirectory
 
 		// 内存：模式决定是否采用实例值。跟随全局时置 0，交给下面的全局回退。
 		if config.MemoryMode == MemoryCustom {
