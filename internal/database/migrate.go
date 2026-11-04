@@ -135,14 +135,19 @@ func Migrate(ctx context.Context, db *sql.DB) (MigrationResult, error) {
 		return result, err
 	}
 
-	// 第二步：按版本号升序逐个应用尚未执行的迁移。
+	// 第二步：先收集待应用的迁移，再只做一次迁移前备份。
+	//
+	// 旧实现按每条迁移各备份一次：全新数据库首次启动会连续生成 8 份副本，
+	// 既噪音大又浪费磁盘。一次启动只需要一个「迁移前」快照。
+	pending := make([]migration, 0, len(migrations))
 	for _, item := range migrations {
 		if _, ok := applied[item.version]; ok {
 			continue
 		}
-
-		// 迁移前备份：只在确实有迁移要执行时才做，避免每次启动都生成副本。
-		backupPath, backupErr := createMigrationBackup(ctx, db, item.version)
+		pending = append(pending, item)
+	}
+	if len(pending) > 0 {
+		backupPath, backupErr := createMigrationBackup(ctx, db, pending[0].version)
 		if backupErr != nil {
 			// 备份失败不阻断迁移：ADR-002 要求「尽力备份」，
 			// 但迁移本身是启动必需步骤，不能因为备份失败让应用起不来。
@@ -150,11 +155,12 @@ func Migrate(ctx context.Context, db *sql.DB) (MigrationResult, error) {
 		} else {
 			result.BackupPath = backupPath
 		}
+	}
 
+	for _, item := range pending {
 		if err := applyMigration(ctx, db, item); err != nil {
 			return result, err
 		}
-
 		result.Applied = append(result.Applied, item.version)
 		result.CurrentVersion = item.version
 	}
@@ -163,6 +169,9 @@ func Migrate(ctx context.Context, db *sql.DB) (MigrationResult, error) {
 	if result.CurrentVersion == 0 {
 		result.CurrentVersion = highestAppliedVersion(applied)
 	}
+
+	// 清理历史备份：即使本次没有新迁移也执行，避免旧版本残留永久堆积。
+	_ = pruneMigrationBackups(ctx, db, migrationBackupRetention)
 
 	return result, nil
 }
@@ -453,6 +462,9 @@ func highestAppliedVersion(applied map[int64]appliedMigration) int64 {
 	return highest
 }
 
+// migrationBackupRetention 是保留的迁移备份数量（含最新一份）。
+const migrationBackupRetention = 3
+
 // createMigrationBackup 在迁移前用 VACUUM INTO 生成数据库副本。
 //
 // 参数 dbPath 由调用方通过连接信息提供；本函数只负责生成备份并返回路径。
@@ -462,10 +474,9 @@ func highestAppliedVersion(applied map[int64]appliedMigration) int64 {
 // 任何一步失败都返回错误，由调用方决定是否降级继续（当前策略：备份失败不阻断迁移）。
 func createMigrationBackup(ctx context.Context, db *sql.DB, version int64) (string, error) {
 	// 先取数据库文件路径：VACUUM INTO 需要写在同一个盘上才最省空间。
-	var dbPath string
-	if err := db.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&dummyInt, &dummyName, &dbPath); err != nil {
-		// PRAGMA database_list 在不同驱动下的列数可能不同，失败即放弃备份。
-		return "", fmt.Errorf("database: 查询数据库文件路径失败: %w", err)
+	dbPath, err := databaseFilePath(ctx, db)
+	if err != nil {
+		return "", err
 	}
 	if dbPath == "" {
 		// 内存数据库（例如测试用的 file::memory:）没有文件可备份。
@@ -486,6 +497,64 @@ func createMigrationBackup(ctx context.Context, db *sql.DB, version int64) (stri
 		return "", fmt.Errorf("database: 生成迁移前备份失败: %w", err)
 	}
 	return backupPath, nil
+}
+
+// databaseFilePath 返回当前连接对应的数据库文件路径；内存库返回空串。
+func databaseFilePath(ctx context.Context, db *sql.DB) (string, error) {
+	var dbPath string
+	if err := db.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&dummyInt, &dummyName, &dbPath); err != nil {
+		// PRAGMA database_list 在不同驱动下的列数可能不同，失败即放弃。
+		return "", fmt.Errorf("database: 查询数据库文件路径失败: %w", err)
+	}
+	return dbPath, nil
+}
+
+// pruneMigrationBackups 只保留最近 keep 份 app.db.backup-* 文件。
+//
+// 备份是尽力而为的安全网，不是审计档案；保留最近几份即可，
+// 更早的文件在确认应用可启动后没有继续占磁盘的价值。
+func pruneMigrationBackups(ctx context.Context, db *sql.DB, keep int) error {
+	if keep < 1 {
+		keep = 1
+	}
+	dbPath, err := databaseFilePath(ctx, db)
+	if err != nil || dbPath == "" {
+		return err
+	}
+	entries, readErr := os.ReadDir(filepath.Dir(dbPath))
+	if readErr != nil {
+		return readErr
+	}
+	type backupFile struct {
+		path    string
+		modTime time.Time
+		name    string
+	}
+	files := make([]backupFile, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "app.db.backup-") {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			continue
+		}
+		files = append(files, backupFile{
+			path:    filepath.Join(filepath.Dir(dbPath), entry.Name()),
+			modTime: info.ModTime(),
+			name:    entry.Name(),
+		})
+	}
+	sort.Slice(files, func(left, right int) bool {
+		if files[left].modTime.Equal(files[right].modTime) {
+			return files[left].name > files[right].name
+		}
+		return files[left].modTime.After(files[right].modTime)
+	})
+	for index := keep; index < len(files); index++ {
+		_ = os.Remove(files[index].path)
+	}
+	return nil
 }
 
 // 以下变量只用于 PRAGMA database_list 的 Scan 占位。
