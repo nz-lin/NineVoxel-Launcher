@@ -34,6 +34,9 @@ const (
 // 不变时，递增该值即可让既有产物被判定为「配方不同」，从而触发重新安装。
 const recipeVersion = 1
 
+// RecipeVersion 暴露当前安装配方版本，供调用方计算指纹。
+const RecipeVersion = recipeVersion
+
 // CorePlatform 描述产物所属的操作系统与架构。
 //
 // natives 与部分加载器产物和平台强相关，不能跨平台复用。

@@ -36,7 +36,9 @@ func (s *InstanceService) installProfileLoader(ctx context.Context, item Instanc
 	if appErr != nil {
 		return appErr
 	}
-	if err := s.installPreparedVersion(ctx, item, versionID, 1); err != nil {
+	if err := s.installWithManifest(ctx, kind, item.MCVersion, item.LoaderVersion, versionID, func() (installArtifacts, error) {
+		return s.installPreparedVersion(ctx, item, versionID, 1)
+	}); err != nil {
 		return err
 	}
 	if err := s.setResolvedVersionID(item.ID, versionID); err != nil {
@@ -55,14 +57,10 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	if appErr != nil {
 		return appErr
 	}
-	if err := s.installPreparedRange(ctx, item, prepared, s.runPlan, 0.6); err != nil {
-		return err
+	artifacts, installErr := s.installPreparedRange(ctx, item, prepared, s.runPlan, 0.6)
+	if installErr != nil {
+		return installErr
 	}
-	game, err := s.gameDir(item)
-	if err != nil {
-		return err
-	}
-	_ = game
 	// 安装产物写入共享核心，实例目录只保留可变状态。
 	before, err := versionDirectorySet(s.root)
 	if err != nil {
@@ -71,6 +69,7 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	if err := s.runPlan(ctx, item.ID, installer.Plan, 0.6, 0.1); err != nil {
 		return err
 	}
+	artifacts.Downloaded = append(artifacts.Downloaded, installer.Plan.Items[0].TargetRelPath)
 	javaPath, err := resolveInstallerJava(item.CustomJavaPath, item.CustomJavaRuntimeID)
 	if err != nil {
 		return fmt.Errorf("无法为 %s 安装器准备 Java：%w", strings.ToUpper(string(kind)), err)
@@ -93,6 +92,10 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	versionID, err := detectLoaderVersionID(s.root, kind, item.MCVersion, item.LoaderVersion, before)
 	if err != nil {
 		return fmt.Errorf("%s 安装器未生成可用的版本目录：%w", strings.ToUpper(string(kind)), err)
+	}
+	// 清单是唯一的「安装成功」判据：写不出来就说明产物不完整。
+	if err := s.writeCoreManifest(kind, item.MCVersion, item.LoaderVersion, versionID, artifacts); err != nil {
+		return err
 	}
 	if err := s.setResolvedVersionID(item.ID, versionID); err != nil {
 		return err

@@ -108,7 +108,10 @@ func TestInstallAssemblesClientLibrariesAssetsAndNatives(t *testing.T) {
 		}
 		return nil
 	}
-	s.installer = func(ctx context.Context, item Instance) error { return s.installPrepared(ctx, item, prepared, fakeRun) }
+	s.installer = func(ctx context.Context, item Instance) error {
+		_, installErr := s.installPrepared(ctx, item, prepared, fakeRun)
+		return installErr
+	}
 	if _, err := s.InstallInstance(IDRequest{InstanceID: item.ID}); err != nil {
 		t.Fatal(err)
 	}

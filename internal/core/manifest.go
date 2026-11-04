@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -307,4 +308,118 @@ func buildManifestFile(root, rel, group string) (ManifestFile, error) {
 		return ManifestFile{}, fmt.Errorf("无法计算清单文件哈希：%s", rel)
 	}
 	return ManifestFile{Path: rel, Size: info.Size(), SHA256: hash, Group: group}, nil
+}
+
+// ===== 对外接口 =====
+
+// ReadManifest 读取指定版本的安装清单。
+//
+// 清单不存在时返回 (Manifest{}, false, nil)：这与「未安装」等价，不是错误。
+// 清单存在但结构非法、或版本标识不符时返回错误，由调用方按「需要重装」处理。
+//
+// 参数 root 为核心根；versionID 为版本目录名。
+func ReadManifest(root, versionID string) (Manifest, bool, error) {
+	relative := manifestPath(versionID)
+	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
+	if resolveErr != nil {
+		return Manifest{}, false, errors.New("清单路径无效")
+	}
+	content, err := os.ReadFile(absolute)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Manifest{}, false, nil
+		}
+		return Manifest{}, false, errors.New("无法读取安装清单")
+	}
+	if len(content) == 0 || len(content) > maxManifestBytes {
+		return Manifest{}, false, errors.New("安装清单大小异常")
+	}
+
+	var manifest Manifest
+	if unmarshalErr := json.Unmarshal(content, &manifest); unmarshalErr != nil {
+		return Manifest{}, false, errors.New("安装清单格式损坏")
+	}
+	if validateErr := manifest.Validate(); validateErr != nil {
+		return Manifest{}, false, validateErr
+	}
+	if manifest.VersionID != versionID {
+		return Manifest{}, false, errors.New("安装清单的版本标识不匹配")
+	}
+	return manifest, true, nil
+}
+
+// maxManifestBytes 是清单文件的允许上限。
+//
+// 一个原版版本的清单包含上千个条目，单条约 120 字节；上限取 32 MiB 足以容纳
+// 十万级条目的极端整合包，同时拦住被异常写坏的超大文件。
+const maxManifestBytes = 32 << 20
+
+// WriteManifest 原子写入安装清单。
+//
+// 路径为 `versions/<versionId>/.nv-core-manifest.json`。
+// 调用方必须已持有该版本的写锁（或处于单线程的安装流程中）。
+func WriteManifest(root string, manifest Manifest) error {
+	if err := manifest.Validate(); err != nil {
+		return err
+	}
+	relative := manifestPath(manifest.VersionID)
+	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
+	if resolveErr != nil {
+		return errors.New("清单路径无效")
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(absolute), 0o755); mkErr != nil {
+		return errors.New("无法创建清单目录")
+	}
+
+	manifest.SchemaVersion = manifestSchemaVersion
+	encoded, marshalErr := json.MarshalIndent(manifest, "", "  ")
+	if marshalErr != nil {
+		return errors.New("安装清单无法编码")
+	}
+
+	temp, createErr := os.CreateTemp(filepath.Dir(absolute), ".manifest-*.json")
+	if createErr != nil {
+		return errors.New("无法创建清单临时文件")
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+
+	if _, writeErr := temp.Write(encoded); writeErr != nil {
+		temp.Close()
+		return errors.New("无法写入安装清单")
+	}
+	if syncErr := temp.Sync(); syncErr != nil {
+		temp.Close()
+		return errors.New("无法同步安装清单")
+	}
+	if closeErr := temp.Close(); closeErr != nil {
+		return errors.New("无法关闭清单临时文件")
+	}
+	if renameErr := os.Rename(tempPath, absolute); renameErr != nil {
+		return errors.New("无法提交安装清单")
+	}
+	return nil
+}
+
+// VerifyManifest 按指定深度校验清单记录的文件。
+//
+// 调用方应先 ReadManifest 拿到清单；本函数只做文件层面的校验。
+func VerifyManifest(root string, manifest Manifest, level VerifyLevel) (VerifyReport, error) {
+	if err := manifest.Validate(); err != nil {
+		return VerifyReport{}, err
+	}
+	return verifyManifest(root, manifest, level)
+}
+
+// NewManifestFile 构造一个清单条目：读取文件的大小并计算 SHA-256。
+//
+// 参数 root 为核心根；rel 为相对路径；group 为资源分组。
+// 文件不存在或不是普通文件时返回错误——清单只记录确实落盘的文件。
+func NewManifestFile(root, rel, group string) (ManifestFile, error) {
+	return buildManifestFile(root, rel, group)
+}
+
+// ManifestPath 返回指定版本的清单相对路径，供调用方做存在性判断。
+func ManifestPath(versionID string) string {
+	return manifestPath(versionID)
 }

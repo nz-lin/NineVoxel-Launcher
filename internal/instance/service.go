@@ -106,13 +106,15 @@ type ChangeLoaderRequest struct {
 }
 
 type InstanceService struct {
-	mu      sync.Mutex
-	db      *sql.DB
-	root    string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	workers sync.WaitGroup
-	closed  bool
+	// installLocks 按安装身份串行化安装：同一身份并发安装会互相破坏核心目录。
+	installLocks *installLockTable
+	mu           sync.Mutex
+	db           *sql.DB
+	root         string
+	ctx          context.Context
+	cancel       context.CancelFunc
+	workers      sync.WaitGroup
+	closed       bool
 	// Installer injection keeps persistence tests offline.
 	installer func(context.Context, Instance) error
 	// installCancels / installDone 用于在删除实例时停止正在进行的安装。
@@ -137,6 +139,11 @@ func (s *InstanceService) openLocked() error {
 			return errors.New("无法访问实例数据目录")
 		}
 		s.root = root
+	}
+	// 安装锁表按服务实例创建：核心版本由所有实例共用，同一安装身份的并发
+	// 安装必须串行化，否则会同时写 versions/<id>/ 并互相破坏。
+	if s.installLocks == nil {
+		s.installLocks = newInstallLockTable()
 	}
 	if err := os.MkdirAll(s.root, 0755); err != nil {
 		return errors.New("无法创建实例数据目录")
