@@ -18,7 +18,7 @@ func TestUpdateLoaderAndUninstallLoader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseJSON := filepath.Join(game, "versions", item.MCVersion, item.MCVersion+".json")
+	baseJSON := filepath.Join(s.root, "versions", item.MCVersion, item.MCVersion+".json")
 	fixtureWrite(t, baseJSON, []byte(`{"id":"`+item.MCVersion+`","mainClass":"net.minecraft.client.main.Main"}`))
 
 	loaderVersion := "0.16.14"
@@ -27,7 +27,7 @@ func TestUpdateLoaderAndUninstallLoader(t *testing.T) {
 		if installed.Loader != "fabric" || installed.LoaderVersion != loaderVersion {
 			t.Fatalf("unexpected loader install request: %+v", installed.Config)
 		}
-		versionJSON := filepath.Join(game, "versions", loaderID, loaderID+".json")
+		versionJSON := filepath.Join(s.root, "versions", loaderID, loaderID+".json")
 		fixtureWrite(t, versionJSON, []byte(`{"id":"`+loaderID+`","inheritsFrom":"`+item.MCVersion+`","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient"}`))
 		return s.setResolvedVersionID(installed.ID, loaderID)
 	}
@@ -58,7 +58,7 @@ func TestUpdateLoaderAndUninstallLoader(t *testing.T) {
 	if uninstalled.Loader != "vanilla" || uninstalled.LoaderVersion != "" || uninstalled.VersionID != item.MCVersion || uninstalled.InstallationState != "installed" {
 		t.Fatalf("uninstall result: %+v", uninstalled)
 	}
-	if _, err := os.Stat(filepath.Join(game, "versions", loaderID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(s.root, "versions", loaderID)); !os.IsNotExist(err) {
 		t.Fatalf("loader version directory was not removed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(mods, "example.jar.disabled")); err != nil {

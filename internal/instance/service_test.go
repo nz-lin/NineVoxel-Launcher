@@ -366,21 +366,16 @@ func TestEmptyInstanceTrash(t *testing.T) {
 	}
 }
 
-func TestInstanceTrashRecoversLegacyArchiveManifest(t *testing.T) {
+// TestInstanceTrashRejectsArchiveWithoutManifest 验证清单丢失的归档不可恢复。
+//
+// 存储改为共享核心后，实例目录不再包含 versions / libraries / assets，
+// 因此无法再从目录推断它用的是哪个游戏版本：同一版本可能被多个实例共用，
+// 猜一个版本会把实例指向错误的核心资源。此时应明确报「不可恢复」，
+// 而不是恢复出一个版本未知的空壳实例。
+func TestInstanceTrashRejectsArchiveWithoutManifest(t *testing.T) {
 	s := testService(t)
 	item, err := s.CreateInstance(testConfig("旧归档实例"))
 	if err != nil {
-		t.Fatal(err)
-	}
-	game, err := s.gameDir(item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	versionDir := filepath.Join(game, "versions", item.MCVersion)
-	if err := os.MkdirAll(versionDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(versionDir, item.MCVersion+".json"), []byte(`{"id":"1.21.4"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DeleteInstance(IDRequest{InstanceID: item.ID}); err != nil {
@@ -397,14 +392,17 @@ func TestInstanceTrashRecoversLegacyArchiveManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(trash.Items) != 1 || !trash.Items[0].Restorable || trash.Items[0].MCVersion != item.MCVersion || !strings.Contains(trash.Items[0].Name, "恢复的实例") {
-		t.Fatalf("旧归档未恢复清单：%+v", trash.Items)
+	if len(trash.Items) != 1 {
+		t.Fatalf("回收站条目数 = %d", len(trash.Items))
 	}
-	if _, err := s.RestoreInstanceFromTrash(TrashIDRequest{TrashID: trash.Items[0].TrashID}); err != nil {
-		t.Fatal(err)
+	if trash.Items[0].Restorable {
+		t.Fatalf("清单丢失的归档不应标记为可恢复：%+v", trash.Items[0])
 	}
-	if _, err := os.Stat(filepath.Join(s.root, filepath.FromSlash(activeInstanceRel(item.ID)), manifestFileName)); err != nil {
-		t.Fatalf("还原后缺少实例清单：%v", err)
+	if trash.Items[0].ErrorMessage == "" {
+		t.Fatalf("不可恢复时应给出原因：%+v", trash.Items[0])
+	}
+	if _, err := s.RestoreInstanceFromTrash(TrashIDRequest{TrashID: trash.Items[0].TrashID}); err == nil {
+		t.Fatal("清单丢失的归档不应恢复成功")
 	}
 }
 

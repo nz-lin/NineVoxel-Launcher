@@ -156,11 +156,7 @@ func (s *InstanceService) removeObsoleteLoaderVersion(item Instance, currentVers
 	if previous == "" || previous == item.MCVersion || previous == currentVersionID || !safeVersionDirectoryName(previous) {
 		return
 	}
-	game, err := s.gameDir(item)
-	if err != nil {
-		return
-	}
-	target, err := managedPath(game, "versions/"+previous)
+	target, err := managedPath(s.root, "versions/"+previous)
 	if err != nil {
 		return
 	}
@@ -257,7 +253,7 @@ func (s *InstanceService) UninstallLoader(req IDRequest) (Instance, error) {
 	item.InstallTaskID = ""
 	item.InstallationError = ""
 	item.InstallationProgress = 0
-	if installedVersionExists(game, item.MCVersion) {
+	if coreVersionInstalled(s.root, item.MCVersion) {
 		item.VersionID = item.MCVersion
 		item.InstallationState = "installed"
 		item.InstallationProgress = 1
@@ -272,7 +268,7 @@ func (s *InstanceService) UninstallLoader(req IDRequest) (Instance, error) {
 	s.mu.Unlock()
 
 	if oldVersionID != "" && oldVersionID != item.MCVersion && safeVersionDirectoryName(oldVersionID) {
-		if target, pathErr := managedPath(game, "versions/"+oldVersionID); pathErr == nil {
+		if target, pathErr := managedPath(s.root, "versions/"+oldVersionID); pathErr == nil {
 			_ = os.RemoveAll(target)
 		}
 	}

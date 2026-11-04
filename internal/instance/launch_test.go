@@ -17,7 +17,8 @@ func TestResolveLaunchConfigReadsManifestAndGameDirectory(t *testing.T) {
 	id := "inst-0123456789abcdef0123456789abcdef"
 	directory := filepath.Join(root, "instances", id)
 	gameDirectory := filepath.Join(directory, ".minecraft")
-	versionDirectory := filepath.Join(gameDirectory, "versions", "1.21.4")
+	// 版本资源位于共享核心，不在实例目录。
+	versionDirectory := filepath.Join(root, "versions", "1.21.4")
 	if err := os.MkdirAll(versionDirectory, 0755); err != nil {
 		t.Fatal(err)
 	}

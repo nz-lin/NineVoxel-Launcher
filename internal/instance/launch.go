@@ -74,7 +74,7 @@ func ResolveLaunchConfig(instanceID string) (LaunchConfig, error) {
 		return LaunchConfig{}, errors.New("实例启动版本标识无效")
 	}
 	installed := manifest.InstallationState == "installed" &&
-		installedVersionExists(gameDirectory, launchVersionID)
+		coreVersionInstalled(root, launchVersionID)
 	return LaunchConfig{
 		GameDirectory:       gameDirectory,
 		MCVersion:           launchVersionID,

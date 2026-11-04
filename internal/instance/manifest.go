@@ -5,10 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
+
+	"example.com/ninevoxel/launcher/internal/artifact"
 )
 
 const (
@@ -184,89 +184,38 @@ func writeInstanceManifest(directory string, manifest instanceManifest) error {
 	return nil
 }
 
+// recoverManifest 尝试为丢失清单的实例目录重建一份清单。
+//
+// 存储布局改为共享核心后，实例目录不再包含 versions / libraries / assets，
+// 因此**无法**再从目录本身推断它用的是哪个游戏版本：同一版本可能被多个
+// 实例共用，猜一个版本比明确失败更糟（会把实例指向错误的核心版本）。
+//
+// 调用方（实例扫描与回收站恢复）在收到错误后会跳过该目录或提示用户，
+// 不会破坏任何数据；用户重新创建实例即可恢复使用。
 func recoverManifest(directory, id string, createdMS, trashedAtMS int64) (instanceManifest, error) {
 	if !validateInstanceID(id) {
 		return instanceManifest{}, errors.New("实例目录标识无效")
 	}
-	gameDirectory := filepath.Join(directory, ".minecraft")
-	version := detectInstalledVersion(gameDirectory)
-	if version == "" {
-		return instanceManifest{}, errors.New("实例目录中找不到可识别的游戏版本")
-	}
-	state := "not_installed"
-	if installedVersionExists(gameDirectory, version) {
-		state = "installed"
-	}
-	config, err := validConfig(Config{
-		Name:      "恢复的实例 " + id[len(id)-8:],
-		MCVersion: version,
-		Loader:    "vanilla",
-		MemoryMB:  4096,
-	})
-	if err != nil {
-		return instanceManifest{}, err
-	}
-	if createdMS <= 0 {
-		if info, statErr := os.Stat(directory); statErr == nil {
-			createdMS = info.ModTime().UnixMilli()
-		}
-	}
-	return instanceManifest{
-		SchemaVersion:     manifestSchemaVersion,
-		ID:                id,
-		Config:            config,
-		InstallationState: state,
-		CreatedAtMS:       createdMS,
-		TrashedAtMS:       trashedAtMS,
-	}, nil
+	return instanceManifest{}, errors.New("实例清单丢失，且共享核心中的版本无法确定归属")
 }
 
-func detectInstalledVersion(gameDirectory string) string {
-	versionsRoot := filepath.Join(gameDirectory, "versions")
-	entries, err := os.ReadDir(versionsRoot)
-	if err != nil {
-		return ""
-	}
-	type candidate struct {
-		name    string
-		updated time.Time
-	}
-	candidates := make([]candidate, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() || !isVersionFolderName(entry.Name()) {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(versionsRoot, entry.Name(), entry.Name()+".json")); err != nil {
-			continue
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			continue
-		}
-		candidates = append(candidates, candidate{name: entry.Name(), updated: info.ModTime()})
-	}
-	if len(candidates) == 0 {
-		return ""
-	}
-	sort.SliceStable(candidates, func(left, right int) bool {
-		if candidates[left].updated.Equal(candidates[right].updated) {
-			return candidates[left].name > candidates[right].name
-		}
-		return candidates[left].updated.After(candidates[right].updated)
-	})
-	return candidates[0].name
-}
-
-func installedVersionExists(gameDirectory, version string) bool {
+// coreVersionInstalled 判断某个版本是否已在共享核心中安装完成。
+//
+// 存储布局改为共享核心后，libraries / assets / versions 都不在实例目录里，
+// 因此「实例是否可启动」必须按核心根检查，而不是按实例目录检查。
+//
+// 判据取版本 JSON 是否存在：它与安装流程的产出对齐，且不依赖清单机制
+// （清单是较新的能力，早期安装的版本可能还没有）。
+func coreVersionInstalled(root, version string) bool {
 	if version == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(gameDirectory, "versions", version, version+".json"))
-	return err == nil
-}
-
-func isVersionFolderName(name string) bool {
-	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, `/\\`)
+	absolute, err := artifact.ResolveInsideRoot(root, "versions/"+version+"/"+version+".json")
+	if err != nil {
+		return false
+	}
+	info, statErr := os.Stat(absolute)
+	return statErr == nil && info.Mode().IsRegular()
 }
 
 func trashDeletedAt(trashID string, directory string) int64 {
