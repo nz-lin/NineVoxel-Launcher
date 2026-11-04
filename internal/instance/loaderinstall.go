@@ -140,6 +140,9 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	for _, library := range plan.Libraries {
 		artifacts.Downloaded = append(artifacts.Downloaded, library.TargetRelPath)
 	}
+	// 仅安装期使用的库不进清单：它们是 processor 的运行时素材，
+	// 不在该版本的 classpath 上。记进清单会让重建永久保留用不到的文件。
+	artifacts.Downloaded = excludePaths(artifacts.Downloaded, plan.InstallOnlyLibraries)
 
 	if err := writeForgeVersionJSON(s.root, plan); err != nil {
 		return err
@@ -171,6 +174,25 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	}
 	s.removeObsoleteLoaderVersion(item, plan.VersionID)
 	return nil
+}
+
+// excludePaths 从 paths 中移除 excludes 里的条目，保持原顺序。
+func excludePaths(paths, excludes []string) []string {
+	if len(excludes) == 0 {
+		return paths
+	}
+	drop := make(map[string]struct{}, len(excludes))
+	for _, path := range excludes {
+		drop[path] = struct{}{}
+	}
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, skip := drop[path]; skip {
+			continue
+		}
+		result = append(result, path)
+	}
+	return result
 }
 
 // processorArtifacts 汇总本次安装生成的、没有独立下载源的产物。

@@ -97,8 +97,21 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 		if err := runPlan(ctx, item.ID, assets, 0.35*maxProgress, 0.5*maxProgress); err != nil {
 			return artifacts, err
 		}
-		for _, assetItem := range expansion.Items {
-			artifacts.AssetObjects = append(artifacts.AssetObjects, assetItem.TargetRelPath)
+	}
+	// 资源对象必须按**索引的全部对象**记录，而不是只记录本次下载的那些。
+	//
+	// ExpandAssetObjects 在 VerifyExisting 下会跳过已存在的对象，因此
+	// expansion.Items 只包含「这次需要下载的」。若按它记录清单，第二次安装
+	// 同一 MC 版本（资源已齐全）时清单就不含任何资源对象——重建会把这些
+	// 对象当残留删掉，游戏随后找不到贴图与音效。
+	if len(index.Objects) > 0 {
+		artifacts.AssetObjects = make([]string, 0, len(index.Objects))
+		for _, object := range index.Objects {
+			rel, pathErr := artifact.AssetObjectRelPath(object.Hash)
+			if pathErr != nil {
+				return artifacts, errors.New("资源对象的存储路径无效")
+			}
+			artifacts.AssetObjects = append(artifacts.AssetObjects, rel)
 		}
 	}
 	if prepared.AssetIndexID != "" {

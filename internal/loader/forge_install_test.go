@@ -458,6 +458,88 @@ func buildInstallerWithProfileLibraries(t *testing.T, versionID, mcVersion strin
 	return path
 }
 
+// TestProcessorOnlyCoordinates 验证「仅安装期使用」的库被正确识别。
+//
+// NeoForge 的 install_profile.libraries 里包含 installertools —— processor 的
+// 运行时素材，不在 version.json.libraries（运行期 classpath）里。
+// 它需要下载但不应进清单，否则重建会永久保留一份运行期用不到的文件。
+func TestProcessorOnlyCoordinates(t *testing.T) {
+	version := forgeVersionDocument{
+		Libraries: []forgeLibraryDocument{
+			{Name: "net.neoforged:neoforge:26.3.0.101:universal"},
+			{Name: "net.neoforged:bus:8.0.5"},
+		},
+	}
+	profile := forgeInstallProfile{
+		Libraries: []forgeLibraryDocument{
+			// 独占于 install_profile → 仅安装期
+			{Name: "net.neoforged.installertools:installertools:4.0.17:fatjar"},
+			// 与 version.json 重合 → 运行期需要，不算
+			{Name: "net.neoforged:universal-placeholder"},
+			{Name: "net.neoforged:neoforge:26.3.0.101:universal"},
+			// 空名字必须被忽略
+			{Name: "  "},
+		},
+	}
+	got := processorOnlyCoordinates(version, profile)
+	if !got["net.neoforged.installertools:installertools:4.0.17:fatjar"] {
+		t.Fatal("installertools 应识别为仅安装期使用")
+	}
+	if got["net.neoforged:neoforge:26.3.0.101:universal"] {
+		t.Fatal("version.json 也有的坐标不应算作仅安装期")
+	}
+	if len(got) != 2 {
+		// installertools 与 universal-placeholder 都是独占项
+		t.Fatalf("仅安装期坐标数 = %d，期望 2：%v", len(got), got)
+	}
+}
+
+// TestPlanForgeInstallMarksInstallOnlyLibraries 验证计划里带有安装期专用标记。
+func TestPlanForgeInstallMarksInstallOnlyLibraries(t *testing.T) {
+	stubProcessorJar(t)
+	root, vanillaJar := prepareRoot(t, "26.3")
+	installer := buildInstallerWithProfileLibraries(t, "neoforge-26.3.0.101", "26.3",
+		// install_profile：processor 素材
+		[]map[string]any{{
+			"name": "net.neoforged.installertools:installertools:4.0.17:fatjar",
+			"downloads": map[string]any{"artifact": map[string]any{
+				"path": "net/neoforged/installertools/installertools/4.0.17/installertools-4.0.17-fatjar.jar",
+				"url":  "https://maven.neoforged.net/releases/net/neoforged/installertools/installertools/4.0.17/installertools-4.0.17-fatjar.jar",
+				"sha1": strings.Repeat("a", 40),
+				"size": 814132,
+			}},
+		}},
+		// version.json：运行期 classpath
+		[]map[string]any{{
+			"name": "net.neoforged:bus:8.0.5",
+			"downloads": map[string]any{"artifact": map[string]any{
+				"path": "net/neoforged/bus/8.0.5/bus-8.0.5.jar",
+				"url":  "https://maven.neoforged.net/releases/net/neoforged/bus/8.0.5/bus-8.0.5.jar",
+				"sha1": strings.Repeat("b", 40),
+				"size": 30340,
+			}},
+		}})
+
+	plan, err := PlanForgeInstall(context.Background(), KindNeoForge, root, installer, vanillaJar)
+	if err != nil {
+		t.Fatalf("规划失败：%s", err.Message)
+	}
+	defer CleanupTempDir(plan)
+
+	// 两个库都要下载。
+	if len(plan.Libraries) != 2 {
+		t.Fatalf("库数量 = %d，期望 2", len(plan.Libraries))
+	}
+	// 只有 installertools 标记为仅安装期。
+	if len(plan.InstallOnlyLibraries) != 1 {
+		t.Fatalf("仅安装期库数 = %d，期望 1：%v", len(plan.InstallOnlyLibraries), plan.InstallOnlyLibraries)
+	}
+	expected := "libraries/net/neoforged/installertools/installertools/4.0.17/installertools-4.0.17-fatjar.jar"
+	if plan.InstallOnlyLibraries[0] != expected {
+		t.Fatalf("仅安装期标记 = %q，期望 %q", plan.InstallOnlyLibraries[0], expected)
+	}
+}
+
 // ===== 参数替换 =====
 
 // TestSubstituteBuiltinsAndData 验证内置键与 data 键同时生效。

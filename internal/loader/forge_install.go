@@ -122,6 +122,12 @@ type ForgeInstallPlan struct {
 	Libraries []download.PlanItem
 	// ProcessorJars 是 processor 运行时依赖。
 	ProcessorJars []ProcessorJar
+	// InstallOnlyLibraries 是「仅安装期使用」的库目标路径。
+	//
+	// 由 install_profile.libraries 中、不出现于 version.json.libraries 的条目
+	// 构成。它们需要下载（processor 要用），但不属于该版本的 classpath，
+	// 因此不记入安装清单——否则重建会永久保留一份运行期用不到的文件。
+	InstallOnlyLibraries []string
 	// Processors 是按序执行的 client 侧 processor。
 	Processors []ProcessorStep
 	// DeclaredArtifacts 是 data 里以 Maven 坐标形态声明的路径（绝对路径）。
@@ -339,6 +345,7 @@ func planLoaderLibraries(plan *ForgeInstallPlan, profile forgeInstallProfile) *E
 	if jsonErr := json.Unmarshal(plan.VersionJSON, &document); jsonErr != nil {
 		return installerError("官方安装器的版本描述格式不正确。", false)
 	}
+	installOnly := processorOnlyCoordinates(document, profile)
 
 	sources := [][]forgeLibraryDocument{document.Libraries, profile.Libraries}
 	for _, libraries := range sources {
@@ -355,6 +362,9 @@ func planLoaderLibraries(plan *ForgeInstallPlan, profile forgeInstallProfile) *E
 			}
 			seen[item.TargetRelPath] = struct{}{}
 			plan.Libraries = append(plan.Libraries, *item)
+			if installOnly[strings.TrimSpace(library.Name)] {
+				plan.InstallOnlyLibraries = append(plan.InstallOnlyLibraries, item.TargetRelPath)
+			}
 		}
 	}
 	return nil
@@ -392,6 +402,35 @@ func loaderLibraryPlanItem(library forgeLibraryDocument) (*download.PlanItem, *E
 		ExpectedSHA1:  strings.ToLower(entry.SHA1),
 		ExpectedSize:  entry.Size,
 	}, nil
+}
+
+// processorOnlyCoordinates 返回「只在 install_profile 里出现、不在 version.json
+// 里出现」的库坐标。
+//
+// 这类库是 processor 的运行时依赖（例如 NeoForge 的 installertools），
+// 安装期才用得到，不属于该版本的 classpath：
+//
+//	version.json.libraries      运行期 classpath，必须下载并记入清单
+//	install_profile.libraries   安装期素材，下载即可，不进清单
+//
+// 两者可能列出同一坐标；只有**独占于 install_profile** 的才算安装期专用。
+func processorOnlyCoordinates(versionDocument forgeVersionDocument, profile forgeInstallProfile) map[string]bool {
+	runtime := make(map[string]bool, len(versionDocument.Libraries))
+	for _, library := range versionDocument.Libraries {
+		name := strings.TrimSpace(library.Name)
+		if name != "" {
+			runtime[name] = true
+		}
+	}
+	result := make(map[string]bool, len(profile.Libraries))
+	for _, library := range profile.Libraries {
+		name := strings.TrimSpace(library.Name)
+		if name == "" || runtime[name] {
+			continue
+		}
+		result[name] = true
+	}
+	return result
 }
 
 // resolveProcessorJarDep 是 resolveProcessorJar 的注入点。
