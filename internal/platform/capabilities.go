@@ -127,6 +127,7 @@ func (diskCapability) AvailableBytes(path string) (int64, error) { return availa
 type identityCapability struct{}
 
 func (identityCapability) ProcessState(pid uint32) (ProcessState, int64) { return processState(pid) }
+
 type proxyCapability struct{}
 
 func (proxyCapability) SystemProxy() (string, bool) { return systemProxy() }

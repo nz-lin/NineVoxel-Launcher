@@ -95,4 +95,3 @@ func PrepareInstallation(versionID string) (Installation, error) {
 	}
 	return result, nil
 }
-

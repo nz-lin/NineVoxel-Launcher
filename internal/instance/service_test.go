@@ -22,6 +22,7 @@ func testService(t *testing.T) *InstanceService {
 	})
 	return s
 }
+
 // testConfig 构造一个测试用实例配置。
 //
 // 内存与 Java 显式使用「自定义」模式：新模型的默认是「跟随全局」，

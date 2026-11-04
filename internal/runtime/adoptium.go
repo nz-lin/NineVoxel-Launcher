@@ -35,9 +35,9 @@ import (
 	"time"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
-	"example.com/ninevoxel/launcher/internal/platform"
 	"example.com/ninevoxel/launcher/internal/download"
 	"example.com/ninevoxel/launcher/internal/logging"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const (

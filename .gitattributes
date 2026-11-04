@@ -4,3 +4,8 @@
 
 # PowerShell 脚本同样统一为 LF，Windows PowerShell 与 pwsh 7 均可正常执行。
 *.ps1 text eol=lf
+
+# Go 源码固定 LF：gofmt 只输出 LF，而 Windows 上 core.autocrlf=true 会把工作区
+# 转成 CRLF，导致本地 `gofmt -l` 把大量未改动的文件报成「未格式化」，与 CI
+# （Linux 按 LF 检出）结论不一致。索引里的 blob 已经是 LF，本条只约束检出。
+*.go text eol=lf
