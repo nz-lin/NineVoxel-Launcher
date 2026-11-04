@@ -470,6 +470,7 @@ export default function App() {
         theme={settings.theme}
         onToggleTheme={handleToggleTheme}
         appVersion={appRuntime.appInfo?.appVersion}
+        globalMemoryMb={settings.maxMemoryMb}
       />
 
       {/* Main Workspace: Sidebar + Viewport */}

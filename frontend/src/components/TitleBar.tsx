@@ -3,6 +3,8 @@ import { Window } from '@wailsio/runtime';
 import { Minus, Square, X, Download, Terminal, Cpu, Coffee, Sun, Moon } from 'lucide-react';
 import { Instance, Account, DownloadTask } from '../types/launcher';
 
+import { resolveMemoryDisplay, formatMemoryDisplay } from '../services/memory';
+
 interface TitleBarProps {
   currentInstance?: Instance;
   currentAccount: Account;
@@ -14,6 +16,8 @@ interface TitleBarProps {
   isMaximized?: boolean;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
+  /** 全局默认最大内存（MB）：实例跟随全局时用它填充顶部指示器。 */
+  globalMemoryMb?: number;
   /** 启动器版本号，来自后端 `AppService.Snapshot()`；读取失败时为 undefined。 */
   appVersion?: string;
 }
@@ -29,9 +33,17 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   isMaximized = false,
   theme,
   onToggleTheme,
-  appVersion
+  appVersion,
+  globalMemoryMb
 }) => {
   const activeDownloads = downloadTasks.filter(t => t.status === 'downloading');
+  // 顶部指示器与启动页、实例卡片共用同一套口径：实例跟随全局时 memoryMb 为 0，
+  // 直接渲染会显示成「0 MB」。
+  const memoryDisplay = resolveMemoryDisplay({
+    memoryMode: currentInstance?.memoryMode,
+    memoryMb: currentInstance?.memoryMb,
+    globalMemoryMb,
+  });
 
   return (
     <div className="h-10 bg-white/90 dark:bg-neutral-950/80 backdrop-blur-md border-b border-slate-200/80 dark:border-neutral-800/60 select-none flex items-center justify-between px-3 text-xs text-slate-700 dark:text-neutral-300 z-50 shrink-0 transition-colors duration-150 [--wails-draggable:drag]">
@@ -74,7 +86,12 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded bg-slate-100 dark:bg-neutral-900/60 border border-slate-200 dark:border-neutral-800/50 text-slate-600 dark:text-neutral-400 text-[11px]">
           <Cpu className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
           <span>分配内存</span>
-          <span className="text-slate-900 dark:text-neutral-200 font-mono font-medium">{currentInstance ? `${currentInstance.memoryMb} MB` : '—'}</span>
+          <span className="text-slate-900 dark:text-neutral-200 font-mono font-medium">
+            {currentInstance ? formatMemoryDisplay(memoryDisplay) : '—'}
+          </span>
+          {currentInstance && memoryDisplay.followsGlobal && memoryDisplay.known && (
+            <span className="text-slate-400 dark:text-neutral-500">全局</span>
+          )}
         </div>
 
         {/* Java Runtime Manager quick toggle */}

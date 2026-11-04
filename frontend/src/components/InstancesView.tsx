@@ -17,6 +17,7 @@ import {
 import { Instance, InstanceGroup } from '../types/launcher';
 import { loaderDisplayName } from '../types/loader';
 import { GroupManagerModal } from './GroupManagerModal';
+import { resolveMemoryDisplay, formatMemoryDisplay } from '../services/memory';
 
 interface InstancesViewProps {
   instances: Instance[];
@@ -335,12 +336,15 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
             <span className="text-slate-400 dark:text-neutral-500 block text-[10px]">分配内存</span>
             {/* 跟随全局时 memoryMb 为 0：显示全局值并标注来源，避免「0 MB」。 */}
             {(() => {
-              const followsGlobal = (inst.memoryMode ?? 'global') !== 'custom' || !inst.memoryMb;
-              const effectiveMb = followsGlobal ? (globalMemoryMb ?? 0) : inst.memoryMb;
+              const display = resolveMemoryDisplay({
+                memoryMode: inst.memoryMode,
+                memoryMb: inst.memoryMb,
+                globalMemoryMb,
+              });
               return (
                 <span className="font-semibold text-slate-800 dark:text-neutral-200">
-                  {effectiveMb > 0 ? `${effectiveMb} MB` : '跟随全局'}
-                  {followsGlobal && effectiveMb > 0 && (
+                  {formatMemoryDisplay(display)}
+                  {display.followsGlobal && display.known && (
                     <span className="text-slate-400 dark:text-neutral-500 font-normal">（全局）</span>
                   )}
                 </span>

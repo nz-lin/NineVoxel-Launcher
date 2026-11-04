@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Instance, Account } from '../types/launcher';
 import type { LaunchPhase } from '../types/launch';
+import { resolveMemoryDisplay, formatMemoryDisplay } from '../services/memory';
 
 interface LaunchViewProps {
   currentInstance: Instance;
@@ -54,8 +55,11 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
   const [selectorOpen, setSelectorOpen] = useState(false);
 
   // 实例跟随全局内存时 memoryMb 为 0，显示全局值并标注来源。
-  const followsGlobalMemory = (currentInstance.memoryMode ?? 'global') !== 'custom' || !currentInstance.memoryMb;
-  const effectiveMemoryMb = followsGlobalMemory ? (globalMemoryMb ?? 0) : currentInstance.memoryMb;
+  const memoryDisplay = resolveMemoryDisplay({
+    memoryMode: currentInstance.memoryMode,
+    memoryMb: currentInstance.memoryMb,
+    globalMemoryMb,
+  });
 
   const isLaunching = launchPhase === 'preparing';
   const isRunning = launchPhase === 'running';
@@ -208,8 +212,8 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
               <span className="text-neutral-100 font-medium">Java: {currentInstance.javaVersion.split(' ')[0]} {currentInstance.javaVersion.split(' ')[1]}</span>
               <span>/</span>
               <span className="text-neutral-100 font-medium">
-                内存: {effectiveMemoryMb > 0 ? `${effectiveMemoryMb} MB` : '跟随全局'}
-                {followsGlobalMemory && effectiveMemoryMb > 0 && (
+                内存: {formatMemoryDisplay(memoryDisplay)}
+                {memoryDisplay.followsGlobal && memoryDisplay.known && (
                   <span className="text-neutral-400 font-normal">（全局）</span>
                 )}
               </span>
