@@ -36,6 +36,31 @@ type DiskSpaceProbe interface {
 	AvailableBytes(path string) (int64, error)
 }
 
+// ProcessProbe 查询进程的身份信息，用于判定租约是否残留。
+//
+// 为什么需要它：启动器崩溃后，磁盘上的运行时租约不会被主动清除。恢复时必须
+// 判断「登记租约时那个进程是否还活着」。**不能只看 PID**——操作系统会复用
+// PID，必须结合进程启动时间比对。
+type ProcessProbe interface {
+	// ProcessState 返回进程状态与启动时间（UTC 毫秒）。
+	//
+	// 第二个返回值为启动时间，仅在状态为 ProcessAlive 时有效。
+	// 无法读取进程信息时返回 ProcessUnknown，调用方应保守处理。
+	ProcessState(pid uint32) (ProcessState, int64)
+}
+
+// ProcessState 是进程存活判定结果。
+type ProcessState int
+
+const (
+	// ProcessUnknown 表示无法判定（权限不足、平台不支持）。
+	ProcessUnknown ProcessState = iota
+	// ProcessGone 表示进程不存在。
+	ProcessGone
+	// ProcessAlive 表示进程存在。
+	ProcessAlive
+)
+
 // Capabilities 是一组编译期选定的平台能力实现。
 type Capabilities struct {
 	Directory DirectoryOpener
@@ -43,6 +68,7 @@ type Capabilities struct {
 	Theme     ThemeProbe
 	ArgFile   ArgFileCodec
 	Process   ProcessDecorator
+	Identity  ProcessProbe
 	Disk      DiskSpaceProbe
 }
 
@@ -55,6 +81,7 @@ var Current = Capabilities{
 	Theme:     themeCapability{},
 	ArgFile:   argFileCapability{},
 	Process:   processCapability{},
+	Identity:  identityCapability{},
 	Disk:      diskCapability{},
 }
 
@@ -81,3 +108,7 @@ func (processCapability) HideWindow(cmd *exec.Cmd) { HideWindow(cmd) }
 type diskCapability struct{}
 
 func (diskCapability) AvailableBytes(path string) (int64, error) { return availableBytes(path) }
+
+type identityCapability struct{}
+
+func (identityCapability) ProcessState(pid uint32) (ProcessState, int64) { return processState(pid) }
