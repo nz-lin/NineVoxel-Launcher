@@ -852,14 +852,23 @@ func (s *InstanceService) DeleteInstance(req IDRequest) (List, error) {
 
 // describeRenameFailure 把目录改名失败翻译成可操作的说明。
 //
-// 只覆盖 Windows 与 POSIX 上最常见、且处置方式不同的两类原因；
-// 其余情况原样交给底层错误，不编造原因。
-func describeRenameFailure(err error) string {
+// Windows 上「Access is denied」有两种完全不同的成因，处置方式也不同：
+//
+//	目录被占用   有进程把它或它的子目录当作工作目录 / 持有句柄
+//	权限不足     目录的 ACL 不允许改名
+//
+// 不能只看错误文本——两者都是 Access is denied。用「能否在目录内写文件」
+// 区分：能写说明 ACL 没问题，问题在占用。实测中把占用误报成「没有写入
+// 权限」会让用户去查文件权限，而实际只要关掉游戏。
+func describeRenameFailure(target string, err error) string {
 	if err == nil {
 		return ""
 	}
 	text := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(text, "cross-device link"),
+		strings.Contains(text, "not same device"):
+		return "回收站与实例不在同一磁盘卷"
 	case strings.Contains(text, "being used by another process"),
 		strings.Contains(text, "used by another process"),
 		strings.Contains(text, "resource busy"),
@@ -867,13 +876,55 @@ func describeRenameFailure(err error) string {
 		return "实例目录仍被占用，请先关闭游戏再删除"
 	case strings.Contains(text, "access is denied"),
 		strings.Contains(text, "permission denied"):
+		if directoryWritable(target) {
+			return "实例目录被占用（通常是游戏尚未完全退出），请关闭游戏后重试"
+		}
 		return "没有该实例目录的写入权限"
-	case strings.Contains(text, "cross-device link"),
-		strings.Contains(text, "not same device"):
-		return "回收站与实例不在同一磁盘卷"
 	default:
 		return "无法移动实例目录"
 	}
+}
+
+// directoryWritable 判断目录本身是否可写。
+//
+// 只用于区分「占用」与「权限」：写入一个临时探针文件即可，不修改任何
+// 既有内容。探针创建失败或删除失败都视为不可写。
+func directoryWritable(directory string) bool {
+	probe, err := os.CreateTemp(directory, ".archive-probe-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	if removeErr := os.Remove(name); removeErr != nil {
+		return false
+	}
+	return true
+}
+
+// renameWithRetry 带退避重试地改名目录。
+//
+// Windows 上杀毒软件扫描、索引服务会在短时间内持有句柄，这类占用通常
+// 几十到几百毫秒后释放。重试几次可以避免「明明没在玩游戏却删不掉」。
+// 长期占用（游戏仍在运行）重试也无效，由调用方给出占用提示。
+func renameWithRetry(source, target string) error {
+	const attempts = 5
+	delay := 80 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := os.Rename(source, target); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		// 最后一次失败后不再等待。
+		if attempt == attempts-1 {
+			break
+		}
+		time.Sleep(delay)
+		delay *= 2
+	}
+	return lastErr
 }
 
 // deleteInstanceLocked 执行实际的归档与删除；调用方必须持有 s.mu。
@@ -886,6 +937,12 @@ func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 		return List{}, err
 	}
 	source := filepath.Dir(game)
+	// 运行中的游戏会把实例目录锁住（Windows 上目录不能改名）：
+	// 进程的工作目录落在 `<实例>/.minecraft`，句柄未释放前改名必然失败。
+	// 提前检查租约，把「删到一半失败」变成「一开始就说清楚」。
+	if item.VersionID != "" && s.versionInUseByRunningGame(item.VersionID) {
+		return List{}, errors.New("该实例的游戏仍在运行，请先退出游戏后再删除")
+	}
 	trashedAtMS := time.Now().UnixMilli()
 	trash, err := managedPath(s.root, trashRootRel+"/"+item.ID+fmt.Sprint("-", time.Now().UnixNano()))
 	if err != nil {
@@ -900,14 +957,13 @@ func (s *InstanceService) deleteInstanceLocked(item Instance) (List, error) {
 		if err := s.writeItemManifestStateLocked(item, trashedAtMS); err == nil {
 			marked = true
 		}
-		if err := os.Rename(source, trash); err != nil {
+		if err := renameWithRetry(source, trash); err != nil {
 			if marked {
 				_ = s.writeItemManifestStateLocked(item, 0)
 			}
-			// 带上底层原因：Windows 上最常见的两种是「文件被占用」（游戏仍在
-			// 运行）与「权限不足」，两者的处置方式完全不同，只回一句
-			// 「归档失败」用户无从下手。
-			return List{}, fmt.Errorf("归档实例失败：%s（%w）", describeRenameFailure(err), err)
+			// 带上底层原因：Access is denied 既可能是占用也可能是权限，
+			// 只回一句「归档失败」会让用户查错方向。
+			return List{}, fmt.Errorf("归档实例失败：%s（%w）", describeRenameFailure(source, err), err)
 		}
 		moved = true
 	} else if !os.IsNotExist(err) {
