@@ -1,0 +1,285 @@
+# NineVoxel Launcher — GitHub Actions CI
+#
+# 工程检查与桌面构建流水线：
+#   - Linux：gofmt、go vet、SQLite 门槛、Wails bindings、前端类型检查与生产构建；
+#   - Windows / macOS：全量 Go 测试 + 原生桌面二进制构建。
+#
+# 版本锁定与仓库声明保持一致：
+#   - Go       -> go.mod 的 toolchain（go1.27.3）
+#   - Node     -> .node-version（22.16.0）
+#   - pnpm     -> frontend/package.json packageManager（pnpm@10.33.0）
+#   - Wails    -> github.com/wailsapp/wails/v3 v3.0.0
+#
+# GitHub 托管 runner 不使用自建标签；macOS 使用 Apple Silicon runner，
+# Windows 使用 windows-latest，二者都与 GitLab CI 的目标产物一致。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.27.3"
+  NODE_VERSION: "22.16.0"
+  PNPM_VERSION: "10.33.0"
+  WAILS_VERSION: "v3.0.0"
+
+jobs:
+  check:
+    name: 静态检查 / 绑定 / 前端
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Go 版本
+        run: go version
+
+      - name: gofmt
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files -z -- '*.go' > /tmp/go-files.bin 2>/dev/null && [ -s /tmp/go-files.bin ]; then
+            echo "使用 git ls-files -z 列出受版本控制的 Go 文件"
+          else
+            echo "git ls-files 不可用或结果为空，回退到 find"
+            find . -name '*.go' -type f \
+              -not -path './.git/*' \
+              -not -path './.cache/*' \
+              -not -path './frontend/*' \
+              -not -path './bin/*' \
+              -not -path './.task/*' \
+              -print0 > /tmp/go-files.bin
+          fi
+          test -s /tmp/go-files.bin || { echo "未找到任何 Go 文件"; exit 1; }
+          xargs -0 gofmt -l < /tmp/go-files.bin > /tmp/gofmt-unformatted.txt
+          if [ -s /tmp/gofmt-unformatted.txt ]; then
+            echo "以下 Go 文件未按 gofmt 格式化："
+            cat /tmp/gofmt-unformatted.txt
+            exit 1
+          fi
+          echo "gofmt 检查通过"
+
+      - name: 准备 embed 占位目录
+        run: |
+          mkdir -p frontend/dist
+          [ -f frontend/dist/index.html ] || printf '<!doctype html>\n' > frontend/dist/index.html
+
+      - name: go vet（Windows 目标交叉分析）
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+          echo "go vet 检查通过（GOOS=windows GOARCH=amd64 CGO_ENABLED=0）"
+
+      - name: SQLite 门槛（Windows 交叉构建 + 冒烟测试 + libc 版本）
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /tmp/ninevoxel-launcher.exe .
+          test -s /tmp/ninevoxel-launcher.exe || { echo "CGO_ENABLED=0 的 windows/amd64 构建未产出二进制"; exit 1; }
+          CGO_ENABLED=0 go test ./internal/database/...
+          libc_version="$(go list -m -f '{{.Version}}' modernc.org/libc)"
+          if [ "${libc_version}" != "v1.79.0" ]; then
+            echo "modernc.org/libc 期望 v1.79.0，实际为 ${libc_version}"
+            exit 1
+          fi
+          echo "SQLite 门槛通过（libc ${libc_version}）"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: 安装前端依赖
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: 安装 Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: 生成 Wails bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 wails3 generate bindings -clean=true -ts -i
+          test -d frontend/bindings || { echo "绑定生成未产出 frontend/bindings"; exit 1; }
+
+      - name: 前端类型检查
+        run: pnpm --dir frontend run lint
+
+      - name: 前端生产构建
+        run: pnpm --dir frontend run build
+
+      - name: 校验前端产物
+        shell: bash
+        run: test -d frontend/dist || { echo "前端构建未产出 frontend/dist"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wails-bindings
+          path: frontend/bindings
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  desktop-windows:
+    name: Windows x64 构建
+    runs-on: windows-latest
+    timeout-minutes: 30
+    needs: check
+    env:
+      GOOS: windows
+      GOARCH: amd64
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wails-bindings
+          path: frontend/bindings
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: 安装前端依赖
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: 安装 Wails CLI
+        shell: pwsh
+        run: |
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@${env:WAILS_VERSION}"
+          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Go 测试
+        shell: pwsh
+        run: go test ./... -count=1
+
+      - name: Wails 构建
+        shell: pwsh
+        run: wails3 task build GOOS=windows ARCH=amd64
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "bin\ninevoxel-launcher.exe")) { throw "Windows 二进制产物不存在" }
+          git diff --exit-code -- go.mod go.sum
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: bin/
+          retention-days: 7
+
+  desktop-macos:
+    name: macOS arm64 构建
+    runs-on: macos-14
+    timeout-minutes: 30
+    needs: check
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+      ARCH: arm64
+      CGO_ENABLED: "1"
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wails-bindings
+          path: frontend/bindings
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: 校验工具链
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go version | awk '{print $3}')" = "go${GO_VERSION}"
+          test "$(node --version)" = "v${NODE_VERSION}"
+          test "$(pnpm --version)" = "${PNPM_VERSION}"
+          xcode-select -p
+          test -x "$(xcrun --find clang)"
+
+      - name: 安装前端依赖
+        run: pnpm --dir frontend install --frozen-lockfile
+
+      - name: 安装 Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install "github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Go 测试
+        run: go test ./... -count=1
+
+      - name: Wails 构建
+        run: wails3 task build GOOS=darwin ARCH=arm64
+
+      - name: 校验产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f bin/ninevoxel-launcher || { echo "macOS arm64 二进制产物不存在"; exit 1; }
+          git diff --exit-code -- go.mod go.sum
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: bin/
+          retention-days: 7

@@ -13,7 +13,7 @@ NineVoxel Launcher 是面向 Minecraft Java Edition 的跨平台桌面启动器�
 | 前端 | React 19、TypeScript、Tailwind CSS 4 |
 | 前端构建 | Vite 8、pnpm（锁文件 `frontend/pnpm-lock.yaml`） |
 
-版本锁定：`go.mod` / `go.sum`、`.node-version`（Node 22.16.0）、`frontend/pnpm-lock.yaml`、CI 变量（`.gitlab-ci.yml`）。
+版本锁定：`go.mod` / `go.sum`、`.node-version`（Node 22.16.0）、`frontend/pnpm-lock.yaml`、CI 变量（`.github/workflows/ci.yml`）。
 
 Vite 只用于前端构建与开发调试，**运行期不参与**：前端产物 `frontend/dist` 通过 `//go:embed` 嵌入二进制，由 Wails 资源服务器直接提供。
 

@@ -8,7 +8,7 @@ Frontend code lives in `frontend/src/`, organized into `components/`, `hooks/`, 
 
 ## Build, Test, and Development Commands
 
-Use the Go toolchain in `go.mod`, Node from `.node-version`, and pnpm matching `.gitlab-ci.yml`.
+Use the Go toolchain in `go.mod`, Node from `.node-version`, and pnpm matching `.github/workflows/ci.yml`.
 
 - `pnpm --dir frontend install --frozen-lockfile`: install locked frontend dependencies.
 - `wails3 generate bindings -clean=true -ts -i`: generate TypeScript bindings before frontend checks or builds.
