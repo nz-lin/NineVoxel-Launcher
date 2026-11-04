@@ -154,7 +154,7 @@ const (
 	messagePathRelative = "请填写 Java 可执行文件的完整路径（不支持相对路径）。"
 
 	// messagePathIsDirectory 表示用户选中的是一个目录而不是文件。
-	messagePathIsDirectory = "所选路径是一个目录，请选择 java.exe 这类可执行文件。"
+	messagePathIsDirectory = "所选路径是一个目录，请选择 Java 可执行文件。"
 
 	// messagePathResolveFailed 表示路径归一化失败。
 	messagePathResolveFailed = "无法解析该路径，请检查路径是否正确。"
@@ -163,7 +163,7 @@ const (
 	messageJavaNotExist = "未在该路径找到 Java 可执行文件，请确认路径是否正确。"
 
 	// messageJavaNotRegular 表示不是普通文件（例如符号链接指向的目录、设备文件）。
-	messageJavaNotRegular = "所选路径不是普通文件，请选择 java.exe 这类可执行文件。"
+	messageJavaNotRegular = "所选路径不是普通文件，请选择 Java 可执行文件。"
 
 	// messageJavaNoPermission 表示读取文件信息时权限不足。
 	messageJavaNoPermission = "没有权限读取该文件，请检查文件权限。"

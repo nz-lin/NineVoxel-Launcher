@@ -10,6 +10,7 @@ package launch
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -427,9 +428,16 @@ func TestProfileDatabaseUnavailableDegrades(t *testing.T) {
 		profileDatabasePath = originalPathFunc
 	})
 
+	root := t.TempDir()
+	javaName := "java"
+	if runtime.GOOS == "windows" {
+		javaName = "java.exe"
+	}
+	javaPath := newFakeJava(t, root, javaName)
+	gameDir := newFakeGameDirectory(t, root)
 	summary, saveErr := SaveLaunchProfile(SaveLaunchProfileRequest{
-		JavaPath:      `C:\jdk\bin\java.exe`,
-		GameDirectory: `C:\game`,
+		JavaPath:      javaPath,
+		GameDirectory: gameDir,
 		VersionID:     "1.20.1",
 	})
 	if saveErr == nil {

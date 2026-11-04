@@ -667,10 +667,14 @@ func TestIsSHA256Hex(t *testing.T) {
 func TestInstallRuntimeFromSourceSucceeds(t *testing.T) {
 	requireAdoptiumPlatform(t)
 
+	executableRel := "bin/java"
+	if runtime.GOOS == "windows" {
+		executableRel = "bin/java.exe"
+	}
 	zipBody := adoptiumTestZip(t, map[string]string{
-		"jdk-21.0.13+9/bin/java.exe": "java",
-		"jdk-21.0.13+9/lib/modules":  "modules",
-		"jdk-21.0.13+9/release":      "release notes",
+		"jdk-21.0.13+9/" + executableRel: "java",
+		"jdk-21.0.13+9/lib/modules":      "modules",
+		"jdk-21.0.13+9/release":          "release notes",
 	})
 	link := "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.13_9.zip"
 	server := &adoptiumTestServer{
@@ -696,7 +700,7 @@ func TestInstallRuntimeFromSourceSucceeds(t *testing.T) {
 	}
 
 	finalDir := filepath.Join(fixture.runtimeDir(), wantRuntimeID)
-	executable := filepath.Join(finalDir, "bin", "java.exe")
+	executable := filepath.Join(finalDir, filepath.FromSlash(executableRel))
 	if _, err := os.Stat(executable); err != nil {
 		t.Fatalf("安装后找不到可执行文件 %s: %v", executable, err)
 	}

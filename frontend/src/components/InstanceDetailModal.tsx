@@ -32,6 +32,7 @@ import {
   InstanceGroup
 } from '../types/launcher';
 import { AppSelect } from './AppSelect';
+import { ConfirmDialog } from './ConfirmDialog';
 import { MOCK_MODS, MOCK_SHADERS, MOCK_RESOURCEPACKS } from '../data/mockData';
 import { instanceService } from '../services/instance';
 import { useLoaderVersions } from '../hooks/useLoaderVersions';
@@ -116,6 +117,7 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   const isLoaderBusy = loaderActionBusy || isInstalling;
 
   const [notification, setNotification] = useState<string | null>(null);
+  const [confirmUninstallOpen, setConfirmUninstallOpen] = useState(false);
 
   const showNotify = (msg: string) => {
     setNotification(msg);
@@ -170,7 +172,12 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   };
 
   const handleUninstallLoader = () => {
-    if (isLoaderBusy || !confirm('确认卸载当前模组加载器并回退为原版 (Vanilla) 吗？已有 .jar 模组将被停用。')) return;
+    if (isLoaderBusy) return;
+    setConfirmUninstallOpen(true);
+  };
+
+  const confirmUninstallLoader = () => {
+    setConfirmUninstallOpen(false);
     void (async () => {
       setLoaderActionBusy(true);
       setLoaderActionError(null);
@@ -1063,6 +1070,17 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {confirmUninstallOpen && (
+        <ConfirmDialog
+          title="卸载模组加载器"
+          message="确认卸载当前模组加载器并回退为原版 (Vanilla) 吗？已有 .jar 模组将被停用，但不会被删除。"
+          confirmLabel="卸载"
+          danger
+          onConfirm={confirmUninstallLoader}
+          onCancel={() => setConfirmUninstallOpen(false)}
+        />
       )}
     </div>
   );

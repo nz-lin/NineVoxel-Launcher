@@ -957,11 +957,11 @@ func TestSelectRuntimeKeepsSingleSelected(t *testing.T) {
 	fixture := newRuntimeInstallFixture(t, defaultRuntimeFiles())
 	ctx := context.Background()
 	nowMs := runtimeSelectionNowMs()
-	firstID := "local-windows-x64-17.0.9"
-	secondID := "local-windows-x64-21.0.5"
+	firstID := "local-current-17.0.9"
+	secondID := "local-current-21.0.5"
 	for _, row := range []runtimeRow{
-		{ID: firstID, Kind: SourceDownloaded, Component: "", MajorVersion: 17, FullVersion: "17.0.9", Platform: "windows", Arch: "x64", Bitness: 64, Vendor: VendorOpenJDK, CreatedAtMs: nowMs},
-		{ID: secondID, Kind: SourceDownloaded, Component: "", MajorVersion: 21, FullVersion: "21.0.5", Platform: "windows", Arch: "x64", Bitness: 64, Vendor: VendorOpenJDK, CreatedAtMs: nowMs},
+		{ID: firstID, Kind: SourceDownloaded, Component: "", MajorVersion: 17, FullVersion: "17.0.9", Platform: currentPlatformName(), Arch: currentArch(), Bitness: bitnessValue(currentBitness()), Vendor: VendorOpenJDK, CreatedAtMs: nowMs},
+		{ID: secondID, Kind: SourceDownloaded, Component: "", MajorVersion: 21, FullVersion: "21.0.5", Platform: currentPlatformName(), Arch: currentArch(), Bitness: bitnessValue(currentBitness()), Vendor: VendorOpenJDK, CreatedAtMs: nowMs},
 	} {
 		createRuntimeInstallDir(t, fixture, row.ID)
 		if saveErr := saveRuntime(ctx, row); saveErr != nil {

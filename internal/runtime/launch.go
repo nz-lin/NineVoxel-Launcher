@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 )
 
@@ -28,7 +29,14 @@ func ResolveRuntimeExecutable(runtimeID string) (string, error) {
 				return "", errors.New("Java 运行时目录不可用")
 			}
 			executable := filepath.Join(directory, "bin", javaExecutableName())
-			if info, statErr := os.Stat(executable); statErr != nil || !info.Mode().IsRegular() {
+			if !isRegularExecutable(executable) && goruntime.GOOS == "darwin" {
+				// 兼容修复前安装的 macOS 运行时：旧布局是 <dir>/Contents/Home/bin/java。
+				legacy := filepath.Join(directory, "Contents", "Home", "bin", javaExecutableName())
+				if isRegularExecutable(legacy) {
+					executable = legacy
+				}
+			}
+			if !isRegularExecutable(executable) {
 				return "", errors.New("Java 运行时文件已缺失，请重新安装")
 			}
 			return executable, nil
@@ -48,6 +56,12 @@ func ResolveRuntimeExecutable(runtimeID string) (string, error) {
 		}
 	}
 	return "", errors.New("找不到该 Java 运行时，请重新选择")
+}
+
+// isRegularExecutable 判断路径存在且为非空普通文件。
+func isRegularExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // ResolveSelectedRuntimeExecutable resolves the runtime currently selected in

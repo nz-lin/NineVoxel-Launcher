@@ -99,7 +99,7 @@ type PickJavaResult struct {
 // 选择对话框相关的提示文案。
 const (
 	// dialogTitleJavaExecutable 是 Java 文件选择对话框的标题。
-	dialogTitleJavaExecutable = "选择 Java 可执行文件（java.exe）"
+	dialogTitleJavaExecutable = "选择 Java 可执行文件"
 
 	// filterNameJavaExecutable 是文件过滤器在对话框中的显示名。
 	filterNameJavaExecutable = "Java 可执行文件 (*.exe)"

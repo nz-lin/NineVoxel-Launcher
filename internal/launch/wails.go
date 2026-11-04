@@ -17,6 +17,7 @@
 package launch
 
 import (
+	"runtime"
 	"strings"
 	"sync"
 
@@ -167,16 +168,19 @@ func (s *LaunchService) PickJavaExecutable() (PickJavaResult, error) {
 		}, nil
 	}
 
-	// 构造带过滤器的文件对话框：只显示 .exe，但允许选择其他类型，
-	// 因为「无扩展名」的 Java 也允许校验（第二层只给警告）。
-	dialog := wailsApp.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+	// Windows 的 Java 可执行文件有 .exe 扩展名；macOS/Linux 的 java 通常没有扩展名，
+	// 不能沿用 .exe 过滤器，否则用户根本选不到目标文件。
+	options := &application.OpenFileDialogOptions{
 		CanChooseFiles:       true,
 		CanChooseDirectories: false,
 		Title:                dialogTitleJavaExecutable,
-		Filters: []application.FileFilter{
+	}
+	if runtime.GOOS == "windows" {
+		options.Filters = []application.FileFilter{
 			{DisplayName: filterNameJavaExecutable, Pattern: filterPatternJavaExecutable},
-		},
-	})
+		}
+	}
+	dialog := wailsApp.Dialog.OpenFileWithOptions(options)
 
 	// 附着到主窗口：避免对话框与主窗口的模态/焦点关系不正确。
 	if window := wailsApp.Window.Current(); window != nil {

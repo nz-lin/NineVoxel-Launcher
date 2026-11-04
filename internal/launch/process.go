@@ -83,6 +83,13 @@ const (
 //   - `APPDATA` / `LOCALAPPDATA`：部分 Java 库与 Minecraft 自身读取用户级路径；
 //     缺失会让游戏表现为「全新安装」（读不到已有配置）。
 //   - `PROCESSOR_ARCHITECTURE`：JVM 与 native 库用它选择正确的位数实现。
+//   - `HOME` / `USER` / `LOGNAME`：macOS/Linux 上 JVM 与 Minecraft 用它定位用户目录；
+//     缺失会让部分库把 `user.home` 判成空值或退回不可写位置。
+//   - `TMPDIR`：macOS 的临时目录由该变量给出，JVM 与 native 解压依赖它。
+//   - `LANG` / `LC_ALL` / `LC_CTYPE`：决定 JVM 的默认字符集与区域设置，
+//     缺失时中文日志与含中文的路径可能出现乱码。
+//   - `TZ`：保持用户时区，避免日志与游戏内时间偏移。
+//   - `DISPLAY` / `XAUTHORITY`：Linux 图形环境启动 JVM 所需；macOS 上不存在时自然跳过。
 //
 // 明确**不注入**：
 //   - `JAVA_HOME`：用户环境里的值可能是错的或指向另一个 JDK，
@@ -99,6 +106,16 @@ var processEnvWhitelist = []string{
 	"APPDATA",
 	"LOCALAPPDATA",
 	"PROCESSOR_ARCHITECTURE",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"TMPDIR",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TZ",
+	"DISPLAY",
+	"XAUTHORITY",
 }
 
 // 进程启动相关的错误与提示文案。

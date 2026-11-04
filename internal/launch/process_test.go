@@ -324,6 +324,8 @@ func TestProcessEnvWhitelistContainsRequiredKeys(t *testing.T) {
 	required := []string{
 		"SystemRoot", "PATH", "TEMP", "TMP",
 		"USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROCESSOR_ARCHITECTURE",
+		"HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+		"DISPLAY", "XAUTHORITY",
 	}
 
 	present := make(map[string]bool, len(processEnvWhitelist))
