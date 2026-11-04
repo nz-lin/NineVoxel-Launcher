@@ -32,6 +32,12 @@ interface InstancesViewProps {
   onOpenFolder: (path: string) => void;
   groups: InstanceGroup[];
   defaultGroup: string;
+  /**
+   * 全局默认最大内存（MB）。
+   *
+   * 实例跟随全局时 `memoryMb` 为 0，直接显示「分配内存 0 MB」会误导用户。
+   */
+  globalMemoryMb?: number;
   onCreateGroup: (name: string) => Promise<void>;
   onDeleteGroup: (name: string, moveTo?: string) => Promise<void>;
 }
@@ -50,6 +56,7 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
   onOpenFolder,
   groups,
   defaultGroup,
+  globalMemoryMb,
   onCreateGroup,
   onDeleteGroup
 }) => {
@@ -326,7 +333,19 @@ export const InstancesView: React.FC<InstancesViewProps> = ({
           </div>
           <div>
             <span className="text-slate-400 dark:text-neutral-500 block text-[10px]">分配内存</span>
-            <span className="font-semibold text-slate-800 dark:text-neutral-200">{inst.memoryMb} MB</span>
+            {/* 跟随全局时 memoryMb 为 0：显示全局值并标注来源，避免「0 MB」。 */}
+            {(() => {
+              const followsGlobal = (inst.memoryMode ?? 'global') !== 'custom' || !inst.memoryMb;
+              const effectiveMb = followsGlobal ? (globalMemoryMb ?? 0) : inst.memoryMb;
+              return (
+                <span className="font-semibold text-slate-800 dark:text-neutral-200">
+                  {effectiveMb > 0 ? `${effectiveMb} MB` : '跟随全局'}
+                  {followsGlobal && effectiveMb > 0 && (
+                    <span className="text-slate-400 dark:text-neutral-500 font-normal">（全局）</span>
+                  )}
+                </span>
+              );
+            })()}
           </div>
           <div>
             <span className="text-slate-400 dark:text-neutral-500 block text-[10px]">本地 Java</span>

@@ -35,6 +35,7 @@ import { AppSelect } from './AppSelect';
 import { ConfirmDialog } from './ConfirmDialog';
 import { MOCK_MODS, MOCK_SHADERS, MOCK_RESOURCEPACKS } from '../data/mockData';
 import { instanceService } from '../services/instance';
+import { pickJavaExecutable } from '../services/launch';
 import { useLoaderVersions } from '../hooks/useLoaderVersions';
 import {
   MOD_LOADER_OPTIONS,
@@ -116,6 +117,9 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   );
   const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || '');
   const [selectedJavaRuntimeId, setSelectedJavaRuntimeId] = useState(instance.customJavaRuntimeId || '');
+  /** 选择本地 java 可执行文件的进行状态与错误提示。 */
+  const [javaPickBusy, setJavaPickBusy] = useState(false);
+  const [javaPickError, setJavaPickError] = useState<string | null>(null);
   const [partitionName, setPartitionName] = useState(instance.partition || defaultGroup);
 
   // Mod Search & Filter
@@ -412,6 +416,35 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
     };
     setResourcePackList(prev => [newPack, ...prev]);
     showNotify('已导入 Default 3D 材质包');
+  };
+
+  /**
+   * 打开系统文件对话框选择 java 可执行文件。
+   *
+   * 用户取消时保持原值：`canceled` 为 true 说明什么都没选，
+   * 清空已有配置只会让用户困惑。
+   */
+  const handlePickJavaPath = () => {
+    if (javaPickBusy) return;
+    void (async () => {
+      setJavaPickBusy(true);
+      setJavaPickError(null);
+      try {
+        const result = await pickJavaExecutable();
+        if (result.canceled) {
+          return;
+        }
+        if (result.errorCode) {
+          setJavaPickError(result.errorMessage || '无法使用该文件作为 Java');
+          return;
+        }
+        setSelectedJavaPath(result.javaPath);
+      } catch (cause) {
+        setJavaPickError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setJavaPickBusy(false);
+      }
+    })();
   };
 
   // --- Save / Persist All Changes ---
@@ -992,29 +1025,75 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
               </div>
 
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-2">
-                <label className="text-xs font-semibold text-slate-800 dark:text-neutral-200 block">
-                  实例专属 Java
-                </label>
-                <AppSelect
-                  value={selectedJavaRuntimeId}
-                  onChange={setSelectedJavaRuntimeId}
-                  options={[
-                    { value: '', label: '跟随全局 Java 设置', hint: '使用设置页或 Java 管理器选择的运行时' },
-                    ...javaRuntimes
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold text-slate-800 dark:text-neutral-200">
+                    实例专属 Java
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <ModeToggle
+                      active={javaMode === 'global'}
+                      onClick={() => setJavaMode('global')}
+                      label="跟随全局"
+                    />
+                    <ModeToggle
+                      active={javaMode === 'managed'}
+                      onClick={() => setJavaMode('managed')}
+                      label="运行时"
+                    />
+                    <ModeToggle
+                      active={javaMode === 'custom'}
+                      onClick={() => setJavaMode('custom')}
+                      label="指定路径"
+                    />
+                  </div>
+                </div>
+
+                {javaMode === 'global' && (
+                  <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                    按版本要求的 Java 版本自动匹配运行时；没有匹配项时使用设置页选择的 Java。
+                  </p>
+                )}
+
+                {javaMode === 'managed' && (
+                  <AppSelect
+                    value={selectedJavaRuntimeId}
+                    onChange={setSelectedJavaRuntimeId}
+                    options={javaRuntimes
                       .filter((runtime) => runtime.status === 'ready')
                       .map((runtime) => ({
                         value: runtime.id,
                         label: `${runtime.vendor} ${runtime.majorVersion}`,
                         hint: `${runtime.versionString} · ${runtime.architecture}`,
-                      })),
-                  ]}
-                  ariaLabel="实例专属 Java"
-                  placeholder="跟随全局 Java 设置"
-                />
-                <p className="text-[11px] text-slate-500 dark:text-neutral-500">
-                  仅保存运行时标识；实际可执行文件路径由后端解析，不会下发到界面。
-                  {!selectedJavaRuntimeId && selectedJavaPath && ' 当前另有已保存的实例 Java 路径，将在跟随全局时继续使用。'}
-                </p>
+                      }))}
+                    ariaLabel="实例专属 Java 运行时"
+                    placeholder="选择 Java 运行时"
+                  />
+                )}
+
+                {javaMode === 'custom' && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <input
+                        readOnly
+                        value={selectedJavaPath ? '已选择 java 可执行文件' : ''}
+                        placeholder="尚未选择 java 可执行文件"
+                        className="flex-1 px-3 py-2 rounded-lg bg-white dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 text-xs text-slate-700 dark:text-neutral-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={handlePickJavaPath}
+                        disabled={javaPickBusy}
+                        className="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-neutral-800 hover:bg-slate-200 dark:hover:bg-neutral-700 disabled:opacity-60 text-xs text-slate-700 dark:text-neutral-300 cursor-pointer"
+                      >
+                        {javaPickBusy ? '选择中…' : '选择…'}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-neutral-500">
+                      绝对路径只保存在后端，不会写入界面或日志。
+                      {javaPickError && <span className="text-rose-500"> {javaPickError}</span>}
+                    </p>
+                  </>
+                )}
               </div>
 
               {/* Dedicated RAM Allocation */}

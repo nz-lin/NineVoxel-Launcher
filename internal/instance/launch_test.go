@@ -59,6 +59,53 @@ func TestResolveLaunchConfigReadsManifestAndGameDirectory(t *testing.T) {
 	if !resolved.Installed || resolved.MemoryMB != 6144 || resolved.CustomJavaRuntimeID != "runtime-test" {
 		t.Fatalf("实例启动配置 = %#v", resolved)
 	}
+	// JavaMode 必须一并返回：只返回路径不返回模式时，启动侧无法区分
+	// 「用户显式指定」与「未指定」，表现为实例专属 Java 保存后仍然跟随全局。
+	if resolved.JavaMode != launch.JavaManaged {
+		t.Fatalf("Java 模式 = %q，期望 %q", resolved.JavaMode, launch.JavaManaged)
+	}
+}
+
+// TestResolveLaunchConfigNormalizesEmptyJavaMode 验证空模式归一化为跟随全局。
+//
+// 空字符串在 switch 里会落空，行为取决于零值——必须显式归一化，
+// 否则「旧数据」与「前端部分提交」会走出不确定的启动路径。
+func TestResolveLaunchConfigNormalizesEmptyJavaMode(t *testing.T) {
+	restore := launchDataRoot
+	root := t.TempDir()
+	launchDataRoot = func() (string, *artifact.Error) { return root, nil }
+	t.Cleanup(func() { launchDataRoot = restore })
+
+	id := "inst-0123456789abcdef0123456789abcdef"
+	directory := filepath.Join(root, "instances", id)
+	versionDirectory := filepath.Join(root, "versions", "1.21.4")
+	if err := os.MkdirAll(versionDirectory, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDirectory, "1.21.4.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// 直接写清单，绕过 validConfig 的归一化：模拟磁盘上的旧数据。
+	if err := writeInstanceManifest(directory, instanceManifest{
+		ID: id,
+		Config: Config{
+			Name:      "旧实例",
+			MCVersion: "1.21.4",
+			Loader:    "vanilla",
+		},
+		InstallationState: "installed",
+		CreatedAtMS:       1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := ResolveLaunchConfig(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.JavaMode != launch.JavaFollowGlobal {
+		t.Fatalf("空模式应归一化为跟随全局，实际 %q", resolved.JavaMode)
+	}
 }
 
 func TestResolveLaunchConfigDoesNotUseSQLiteIndexForMissingFolder(t *testing.T) {

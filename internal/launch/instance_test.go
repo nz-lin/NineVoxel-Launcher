@@ -145,12 +145,16 @@ func replaceLaunchResolvers(t *testing.T) func() {
 	oldInstance := resolveInstanceLaunchConfig
 	oldSelected := resolveSelectedJavaRuntime
 	oldRuntime := resolveJavaRuntimeByID
+	oldMajor := resolveJavaForMajor
+	oldRequired := requiredJavaMajorFor
 	oldString := launchSettingString
 	oldInt := launchSettingInt
 	return func() {
 		resolveInstanceLaunchConfig = oldInstance
 		resolveSelectedJavaRuntime = oldSelected
 		resolveJavaRuntimeByID = oldRuntime
+		resolveJavaForMajor = oldMajor
+		requiredJavaMajorFor = oldRequired
 		launchSettingString = oldString
 		launchSettingInt = oldInt
 	}

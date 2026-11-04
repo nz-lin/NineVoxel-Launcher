@@ -202,13 +202,16 @@ func Options(in Bootstrap) application.Options {
 			MCVersion:           config.MCVersion,
 			MemoryMB:            config.MemoryMB,
 			JVMArgs:             config.JVMArgs,
+			JavaMode:            config.JavaMode,
 			CustomJavaPath:      config.CustomJavaPath,
 			CustomJavaRuntimeID: config.CustomJavaRuntimeID,
 			Installed:           config.Installed,
 		}, nil
 	})
 	launch.SetJavaRuntimeResolvers(runtime.ResolveRuntimeExecutable, runtime.ResolveSelectedRuntimeExecutable)
-	instance.SetInstallJavaResolver(func(customPath, customRuntimeID string) (string, error) {
+	// 按版本要求的 Java 大版本自动匹配：没有显式全局 Java 时的默认路径。
+	launch.SetJavaMajorResolver(runtime.ResolveRuntimeExecutableForMajor)
+	instance.SetInstallJavaResolver(func(customPath, customRuntimeID, mcVersion string) (string, error) {
 		if customRuntimeID != "" {
 			return runtime.ResolveRuntimeExecutable(customRuntimeID)
 		}
@@ -217,6 +220,12 @@ func Options(in Bootstrap) application.Options {
 		}
 		if globalPath := settings.StringSetting(settings.KeyLaunchJavaPath, ""); globalPath != "" {
 			return globalPath, nil
+		}
+		// 没有显式配置时按版本要求自动匹配：安装器对 Java 版本同样敏感。
+		if major := launch.RequiredJavaMajorForVersion(mcVersion); major > 0 {
+			if path, majorErr := runtime.ResolveRuntimeExecutableForMajor(major); majorErr == nil {
+				return path, nil
+			}
 		}
 		return runtime.ResolveSelectedRuntimeExecutable()
 	})

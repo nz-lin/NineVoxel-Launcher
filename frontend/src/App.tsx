@@ -500,6 +500,7 @@ export default function App() {
               currentInstance={currentInstance}
               allInstances={instances}
               currentAccount={currentAccount}
+              globalMemoryMb={settings.maxMemoryMb}
               onSelectInstance={handleSelectInstance}
               onLaunchGame={handleLaunchGame}
               onStopGame={handleStopGame}
@@ -519,6 +520,7 @@ export default function App() {
             <InstancesView
               instances={instances}
               currentInstanceId={currentInstanceId}
+              globalMemoryMb={settings.maxMemoryMb}
               onSelectCurrent={handleSelectInstance}
               onLaunchInstance={(inst) => {
                 void (async () => {

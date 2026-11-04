@@ -18,14 +18,17 @@ var (
 	prepareLoaderInstaller = loader.PrepareInstaller
 	executeLoaderInstaller = loader.RunInstaller
 	detectLoaderVersionID  = loader.DetectInstalledVersionID
-	resolveInstallerJava   = func(string, string) (string, error) {
+	resolveInstallerJava   = func(string, string, string) (string, error) {
 		return "", errors.New("尚未配置安装器 Java 解析器")
 	}
 )
 
 // SetInstallJavaResolver injects the same Java priority used by launch:
 // instance runtime, instance path, global path, then selected runtime.
-func SetInstallJavaResolver(resolver func(customPath, customRuntimeID string) (string, error)) {
+//
+// 第三个参数是 MC 版本：没有显式配置时按该版本声明的 Java 要求自动匹配。
+// 安装器对 Java 版本同样敏感——用 Java 25 跑 1.7.10 的 Forge installer 会直接失败。
+func SetInstallJavaResolver(resolver func(customPath, customRuntimeID, mcVersion string) (string, error)) {
 	if resolver != nil {
 		resolveInstallerJava = resolver
 	}
@@ -70,7 +73,7 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 		return err
 	}
 	artifacts.Downloaded = append(artifacts.Downloaded, installer.Plan.Items[0].TargetRelPath)
-	javaPath, err := resolveInstallerJava(item.CustomJavaPath, item.CustomJavaRuntimeID)
+	javaPath, err := resolveInstallerJava(item.CustomJavaPath, item.CustomJavaRuntimeID, item.MCVersion)
 	if err != nil {
 		return fmt.Errorf("无法为 %s 安装器准备 Java：%w", strings.ToUpper(string(kind)), err)
 	}

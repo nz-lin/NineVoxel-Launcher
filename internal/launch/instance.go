@@ -52,8 +52,18 @@ var (
 	resolveJavaRuntimeByID = func(string) (string, error) {
 		return "", errors.New("Java 运行时解析器尚未初始化")
 	}
-	launchSettingString = settings.StringSetting
-	launchSettingInt    = settings.IntSetting
+	// resolveJavaForMajor 按版本要求的 Java 大版本挑选运行时。
+	//
+	// 未注入时为空，调用方必须判空：自动匹配是增强能力，缺失时退回
+	// 「已选运行时」，不能让启动直接失败。
+	resolveJavaForMajor func(int) (string, error)
+	// requiredJavaMajorFor 返回版本声明的 Java 大版本要求（0 表示未知）。
+	//
+	// 抽成变量是为了让「自动匹配」本身可测：真实实现要读核心根的版本 JSON，
+	// 单元测试不该为此准备一整份版本元数据。
+	requiredJavaMajorFor = requiredJavaMajorVersion
+	launchSettingString  = settings.StringSetting
+	launchSettingInt     = settings.IntSetting
 )
 
 // SetInstanceLaunchResolver injects the local-first instance resolver.
@@ -73,6 +83,16 @@ func SetJavaRuntimeResolvers(
 	}
 	if selected != nil {
 		resolveSelectedJavaRuntime = selected
+	}
+}
+
+// SetJavaMajorResolver 注入「按版本要求的 Java 大版本挑选运行时」的解析器。
+//
+// 由 internal/app 在装配阶段绑定到 runtime 包：launch 不直接依赖 runtime，
+// 避免把运行时探测与下载带进启动参数组装的依赖链。
+func SetJavaMajorResolver(resolver func(int) (string, error)) {
+	if resolver != nil {
+		resolveJavaForMajor = resolver
 	}
 }
 
@@ -133,12 +153,29 @@ func resolveStartLaunchRequest(req StartLaunchRequest) (StartLaunchRequest, *Err
 		if globalPath := strings.TrimSpace(launchSettingString(settings.KeyLaunchJavaPath, "")); globalPath != "" {
 			resolved.JavaPath = globalPath
 		} else {
-			javaPath, javaErr := resolveSelectedJavaRuntime()
-			if javaErr != nil {
-				return StartLaunchRequest{}, newInputError(ErrorCodeLaunchRequest,
-					"未找到可用的 Java：请在设置中选择 Java，或先在 Java 管理器中安装运行时。")
+			// 没有显式全局 Java 时，先按版本声明的 Java 大版本自动匹配。
+			//
+			// 为什么优先于「已选运行时」：用户通常不会手动配置 Java，
+			// 而「已选运行时」往往只是上次装某个版本时选中的那个——
+			// 用 Java 25 跑要求 Java 8 的 1.7.10 会直接崩，而版本 JSON 里的
+			// javaVersion.majorVersion 是权威要求。
+			autoMatched := false
+			if resolveJavaForMajor != nil {
+				if major := requiredJavaMajorFor(resolved.VersionID); major > 0 {
+					if path, majorErr := resolveJavaForMajor(major); majorErr == nil {
+						resolved.JavaPath = path
+						autoMatched = true
+					}
+				}
 			}
-			resolved.JavaPath = javaPath
+			if !autoMatched {
+				javaPath, javaErr := resolveSelectedJavaRuntime()
+				if javaErr != nil {
+					return StartLaunchRequest{}, newInputError(ErrorCodeLaunchRequest,
+						"未找到可用的 Java：请在设置中选择 Java，或先在 Java 管理器中安装运行时。")
+				}
+				resolved.JavaPath = javaPath
+			}
 		}
 	}
 
@@ -157,6 +194,40 @@ func resolveStartLaunchRequest(req StartLaunchRequest) (StartLaunchRequest, *Err
 	resolved.AdditionalJvmArgs = withMaxHeap(resolved.AdditionalJvmArgs, memoryMB)
 
 	return resolved, nil
+}
+
+// RequiredJavaMajorForVersion 返回某个版本声明的 Java 大版本要求；0 表示未知。
+//
+// 供启动器在装配阶段复用同一套判定（安装器选择 Java 时也要用）：
+// 两处各写一份「怎么读版本要求」迟早会漂移。
+func RequiredJavaMajorForVersion(versionID string) int {
+	return requiredJavaMajorVersion(versionID)
+}
+
+// requiredJavaMajorVersion 返回某个版本声明的 Java 大版本要求。
+//
+// 读的是核心根里的版本 JSON（含继承链合并）：加载器版本的 JSON 通常不重复声明
+// javaVersion，要求来自它继承的原版版本，因此必须走合并链而不是只读顶层文件。
+//
+// 任何读取失败或未声明都返回 0：这是「不知道要求」，调用方应退回原有逻辑，
+// 而不是把启动卡死在这里。
+func requiredJavaMajorVersion(versionID string) int {
+	id := strings.TrimSpace(versionID)
+	if id == "" {
+		return 0
+	}
+	resourceRoot, rootErr := resolveResourceRoot()
+	if rootErr != nil {
+		return 0
+	}
+	traits, traitsErr := AssessVersionTraits(resourceRoot, id)
+	if traitsErr != nil {
+		return 0
+	}
+	if traits.JavaMajorVersion <= 0 {
+		return 0
+	}
+	return traits.JavaMajorVersion
 }
 
 // withMaxHeap removes caller-provided heap-size flags and appends the

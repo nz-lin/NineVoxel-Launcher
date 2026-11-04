@@ -20,6 +20,13 @@ interface LaunchViewProps {
   currentInstance: Instance;
   allInstances: Instance[];
   currentAccount: Account;
+  /**
+   * 全局默认最大内存（MB），来自设置快照。
+   *
+   * 实例跟随全局时 `memoryMb` 为 0；直接显示会得到「内存: 0 MB」，
+   * 比不显示更误导，因此需要全局值兜底。
+   */
+  globalMemoryMb?: number;
   onSelectInstance: (instance: Instance) => void;
   onLaunchGame: () => void;
   onStopGame: () => void;
@@ -34,6 +41,7 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
   currentInstance,
   allInstances,
   currentAccount,
+  globalMemoryMb,
   onSelectInstance,
   onLaunchGame,
   onStopGame,
@@ -44,6 +52,10 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
   onOpenFolder
 }) => {
   const [selectorOpen, setSelectorOpen] = useState(false);
+
+  // 实例跟随全局内存时 memoryMb 为 0，显示全局值并标注来源。
+  const followsGlobalMemory = (currentInstance.memoryMode ?? 'global') !== 'custom' || !currentInstance.memoryMb;
+  const effectiveMemoryMb = followsGlobalMemory ? (globalMemoryMb ?? 0) : currentInstance.memoryMb;
 
   const isLaunching = launchPhase === 'preparing';
   const isRunning = launchPhase === 'running';
@@ -195,7 +207,12 @@ export const LaunchView: React.FC<LaunchViewProps> = ({
             <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-neutral-300">
               <span className="text-neutral-100 font-medium">Java: {currentInstance.javaVersion.split(' ')[0]} {currentInstance.javaVersion.split(' ')[1]}</span>
               <span>/</span>
-              <span className="text-neutral-100 font-medium">内存: {currentInstance.memoryMb} MB</span>
+              <span className="text-neutral-100 font-medium">
+                内存: {effectiveMemoryMb > 0 ? `${effectiveMemoryMb} MB` : '跟随全局'}
+                {followsGlobalMemory && effectiveMemoryMb > 0 && (
+                  <span className="text-neutral-400 font-normal">（全局）</span>
+                )}
+              </span>
               <span>/</span>
               <span className="text-neutral-100 font-medium">已装载 {currentInstance.modsCount} 个模组</span>
               <span>/</span>

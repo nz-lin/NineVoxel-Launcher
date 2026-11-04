@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/launch"
 )
 
 // launchDataRoot is replaceable in tests; production always uses artifact.DataRoot.
@@ -15,10 +16,15 @@ var launchDataRoot = artifact.DataRoot
 // instance. It is intentionally not exposed through the Wails service: the
 // game directory is an absolute path and must stay in the backend.
 type LaunchConfig struct {
-	GameDirectory       string
-	MCVersion           string
-	MemoryMB            int
-	JVMArgs             string
+	GameDirectory string
+	MCVersion     string
+	MemoryMB      int
+	JVMArgs       string
+	// JavaMode 决定 Java 来源；只在 managed / custom 时才采用下面两个字段。
+	//
+	// 必须一起返回：之前只返回路径不返回模式，启动侧无法区分「用户显式指定」
+	// 与「未指定」，表现为实例专属 Java 保存后仍然跟随全局。
+	JavaMode            launch.JavaMode
 	CustomJavaPath      string
 	CustomJavaRuntimeID string
 	Installed           bool
@@ -75,11 +81,18 @@ func ResolveLaunchConfig(instanceID string) (LaunchConfig, error) {
 	}
 	installed := manifest.InstallationState == "installed" &&
 		coreVersionInstalled(root, launchVersionID)
+	// 模式字段可能为空（旧数据或前端的部分提交）：归一化为「跟随全局」，
+	// 避免空字符串在 switch 里落空后行为不确定。
+	javaMode := manifest.JavaMode
+	if javaMode != launch.JavaManaged && javaMode != launch.JavaCustom {
+		javaMode = launch.JavaFollowGlobal
+	}
 	return LaunchConfig{
 		GameDirectory:       gameDirectory,
 		MCVersion:           launchVersionID,
 		MemoryMB:            manifest.MemoryMB,
 		JVMArgs:             manifest.JVMArgs,
+		JavaMode:            javaMode,
 		CustomJavaPath:      manifest.CustomJavaPath,
 		CustomJavaRuntimeID: manifest.CustomJavaRuntimeID,
 		Installed:           installed,
