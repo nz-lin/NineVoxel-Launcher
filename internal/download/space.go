@@ -3,6 +3,8 @@ package download
 import (
 	"os"
 	"path/filepath"
+
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 // spaceSafetyMarginPercent 是磁盘预检的默认余量百分比。
@@ -61,9 +63,9 @@ func CheckDiskSpace(rootDir string, totalBytes int64) (SpaceCheck, *Error) {
 	if !ok {
 		return SpaceCheck{}, newSystemError(ErrorCodeSpace, messageDiskSpaceProbeFailed, false)
 	}
-	available, probeErr := availableBytes(probeDir)
+	available, probeErr := platform.Current.Disk.AvailableBytes(probeDir)
 	if probeErr != nil {
-		return SpaceCheck{}, probeErr
+		return SpaceCheck{}, newSystemError(ErrorCodeSpace, messageDiskSpaceProbeFailed, false)
 	}
 	check := SpaceCheck{
 		RootDir:        rootDir,

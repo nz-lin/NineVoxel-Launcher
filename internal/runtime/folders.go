@@ -10,7 +10,7 @@ import (
 )
 
 // openRuntimeDirectory is replaceable in tests so no desktop window is opened.
-var openRuntimeDirectory = platform.OpenDirectory
+var openRuntimeDirectory = func(target string) error { return platform.Current.Directory.OpenDirectory(target) }
 
 // OpenRuntimeFolder 打开数据根下的 runtimes 目录。
 //

@@ -116,7 +116,7 @@ func WindowOptions(initialTheme string) application.WebviewWindowOptions {
 // 这正是之前出错的地方：用户设了浅色但系统是深色，若按系统外观取色，
 // 窗口仍会先闪一块深色底。
 func backgroundColourForTheme(initialTheme string) application.RGBA {
-	if settings.ResolveThemeIsDark(initialTheme, platform.SystemPrefersDark()) {
+	if settings.ResolveThemeIsDark(initialTheme, platform.Current.Theme.PrefersDark()) {
 		return application.NewRGB(darkBackgroundRed, darkBackgroundGreen, darkBackgroundBlue)
 	}
 	return application.NewRGB(lightBackgroundRed, lightBackgroundGreen, lightBackgroundBlue)

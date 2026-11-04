@@ -123,7 +123,7 @@ func (s *AppService) Snapshot() (AppInfo, error) {
 		GOOS:                runtime.GOOS,
 		GOARCH:              runtime.GOARCH,
 		DataDirectoryStatus: s.dataDirectoryStatus,
-		TotalMemoryMb:       int64(platform.TotalMemoryBytes() >> 20),
+		TotalMemoryMb:       int64(platform.Current.Memory.TotalBytes() >> 20),
 	}, nil
 }
 

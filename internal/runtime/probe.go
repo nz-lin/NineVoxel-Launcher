@@ -478,7 +478,7 @@ func runJavaVersion(path string) (string, *AppError) {
 	// 参数数组，禁止 shell 拼接（AGENTS.md 9.1）。
 	command := exec.CommandContext(ctx, path, probeVersionArgument)
 	// 隐藏控制台窗口：否则 Windows 会为 `java.exe -version` 闪出一个黑框。
-	platform.HideWindow(command)
+	platform.Current.Process.HideWindow(command)
 	stdoutBuffer := &cappedBuffer{limit: probeMaxOutputBytes}
 	stderrBuffer := &cappedBuffer{limit: probeMaxOutputBytes}
 	command.Stdout = stdoutBuffer

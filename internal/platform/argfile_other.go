@@ -5,7 +5,7 @@
 // Linux / macOS 上 JVM 读取参数文件时使用平台默认字符集，实践中为 UTF-8，
 // 因此直接按 UTF-8 写入即可。
 
-package launch
+package platform
 
 // encodeArgFileContent 在非 Windows 平台上按 UTF-8 写入参数文件。
 func encodeArgFileContent(text string) ([]byte, error) {

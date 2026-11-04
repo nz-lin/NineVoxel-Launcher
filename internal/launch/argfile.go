@@ -11,7 +11,7 @@
 //  2. 参数文件的编码必须与「JVM 读取它时使用的默认字符集」一致：Windows 上
 //     是系统 ANSI 代码页（中文系统为 GBK），与 Java 主版本无关——已在
 //     Java 17 / 21 / 25 上实测，UTF-8 编码会让含中文的路径变成乱码。
-//     见 argfile_windows.go 的 `encodeArgFileContent`。
+//     具体编码由 `internal/platform` 的 ArgFileCodec 按平台提供。
 
 package launch
 
@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"example.com/ninevoxel/launcher/internal/logging"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const (
@@ -72,7 +73,7 @@ func prepareProcessArguments(args []string, javaMajor int) ([]string, func(), *E
 		_ = os.RemoveAll(tempDir)
 	}
 
-	content, encodeErr := encodeArgFileContent(buildArgFileText(args))
+	content, encodeErr := platform.Current.ArgFile.Encode(buildArgFileText(args))
 	if encodeErr != nil {
 		cleanup()
 		return nil, nil, newInputError(ErrorCodeLaunchArgsTooLong, messageArgFileUnencodable)

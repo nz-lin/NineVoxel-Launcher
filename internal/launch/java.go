@@ -234,7 +234,7 @@ func runJavaVersion(absPath string) (*javaVersionProbe, []string, *Error) {
 	// 唯一的进程创建点：路径作为独立参数传入，不经过任何 shell 解析。
 	command := exec.CommandContext(ctx, absPath, javaVersionArgument)
 	// 隐藏控制台窗口：否则 Windows 会为 `java.exe -version` 闪出一个黑框。
-	platform.HideWindow(command)
+	platform.Current.Process.HideWindow(command)
 
 	// 两个缓冲分别收集两路输出，随后按「stdout 在前、stderr 在后」合并。
 	var stdoutBuffer bytes.Buffer

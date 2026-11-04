@@ -120,7 +120,7 @@ type InstanceService struct {
 	installDone    map[string]chan struct{}
 }
 
-var openInstanceDirectory = platform.OpenDirectory
+var openInstanceDirectory = func(target string) error { return platform.Current.Directory.OpenDirectory(target) }
 
 func NewWailsService() application.Service { return application.NewService(&InstanceService{}) }
 

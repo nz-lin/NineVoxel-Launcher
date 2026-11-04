@@ -7,7 +7,7 @@
 // 简体中文 Windows 的代码页是 GBK，若按 UTF-8 写参数文件，含中文的游戏路径
 // 在 JVM 眼里就是乱码，游戏随即以「找不到主类」报错，排查成本极高。
 
-package launch
+package platform
 
 import (
 	"errors"
