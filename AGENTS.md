@@ -28,6 +28,11 @@ The shared game core lives under `artifact.DataRoot()`:
 - Instance folders contain only mutable state (mods, saves, config, logs).
 - `versions/<id>/.nv-core-manifest.json` records every required file with size and SHA-256.
   It is the single source of truth for "is this version complete".
+- The manifest must be **derived from version declarations** (version JSON with its
+  inheritance chain, `install_profile.json`, asset index), never from what happened
+  during the install. Two real bugs had the same root: recording "files this run
+  downloaded" or "artifacts this run generated" produces an empty or partial manifest
+  whenever the files already existed, and rebuild then deletes them as leftovers.
 - `internal/core` owns all core writes. Do not delete or overwrite core files from
   `instance`, `launch` or `loader`.
 
