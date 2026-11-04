@@ -38,7 +38,7 @@ type TaskStore interface {
 }
 
 // 任务表涉及的列，集中定义以便读写两侧保持一致。
-const taskColumns = `id, parent_task_id, artifact_id, version_id, task_type, state, source_uri,
+const taskColumns = `id, parent_task_id, artifact_id, version_id, operation_id, task_type, state, source_uri,
 	staging_rel_path, target_rel_path, target_kind, expected_size, downloaded_size,
 	range_start, expected_sha1, expected_sha256, etag, last_modified, plan_hash,
 	retry_count, error_code, error_message_safe, verified_at_ms, created_at_ms,
@@ -49,8 +49,9 @@ const taskColumns = `id, parent_task_id, artifact_id, version_id, task_type, sta
 // 用 ON CONFLICT(id) DO UPDATE 而不是「先查后写」：状态推进频率高（每秒多次进度），
 // 先查后写会在并发下产生竞态，也让每次更新多一次往返。
 const saveTaskSQL = `INSERT INTO download_tasks (` + taskColumns + `)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
+		operation_id = excluded.operation_id,
 		state = excluded.state,
 		staging_rel_path = excluded.staging_rel_path,
 		target_rel_path = excluded.target_rel_path,
@@ -96,6 +97,7 @@ func (s *SQLiteTaskStore) Save(ctx context.Context, task Task) error {
 		task.ParentTaskID,
 		task.ArtifactID,
 		task.VersionID,
+		task.OperationID,
 		task.TaskType,
 		string(task.State),
 		task.SourceURI,
@@ -157,6 +159,7 @@ func (s *SQLiteTaskStore) LoadAll(ctx context.Context) ([]Task, error) {
 			&task.ParentTaskID,
 			&task.ArtifactID,
 			&task.VersionID,
+			&task.OperationID,
 			&task.TaskType,
 			&stateRaw,
 			&task.SourceURI,

@@ -749,6 +749,7 @@ func TestSQLiteTaskStoreRoundTrip(t *testing.T) {
 		ID:               "task-round-trip",
 		ParentTaskID:     "parent-1",
 		ArtifactID:       "artifact-1",
+		OperationID:      "inst-demo",
 		TaskType:         TaskTypeClientJar,
 		State:            StateQueued,
 		SourceURI:        "https://source.example/client.jar",
@@ -790,6 +791,9 @@ func TestSQLiteTaskStoreRoundTrip(t *testing.T) {
 	}
 	if got.ExpectedSHA1 != "sha1-value" || got.ExpectedSHA256 != "sha256-value" {
 		t.Fatalf("哈希未持久化：%+v", got)
+	}
+	if got.OperationID != "inst-demo" {
+		t.Fatalf("operationId 未持久化：%q", got.OperationID)
 	}
 }
 
