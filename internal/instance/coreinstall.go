@@ -118,7 +118,7 @@ func (s *InstanceService) writeCoreManifest(kind loader.Kind, mcVersion, loaderV
 		NativesDir:        artifacts.NativesDir,
 		AssetIndex:        artifacts.AssetIndex,
 		AssetObjects:      artifacts.AssetObjects,
-		ProcessorOutputs:  processorOutputs(s.root, versionID, artifacts.Downloaded),
+		ProcessorOutputs:  mergeProcessorOutputs(artifacts.ProcessorOutputs, processorOutputs(s.root, versionID, artifacts.Downloaded)),
 	})
 	if buildErr != nil {
 		return buildErr
@@ -163,6 +163,32 @@ func (s *InstanceService) installWithManifest(ctx context.Context, kind loader.K
 		return errors.New("安装未产生可用的版本标识")
 	}
 	return s.writeCoreManifest(kind, mcVersion, loaderVersion, versionID, artifacts)
+}
+
+// mergeProcessorOutputs 合并显式记录的与扫描得到的 processor 产物。
+//
+// 两者都要保留：现代 Forge 把产物放在 `libraries/`（安装流程显式记录），
+// 而部分版本的安装器会往 `versions/<id>/` 写 jar（扫描得到）。
+// 按路径去重，避免同一文件在清单里出现两次。
+func mergeProcessorOutputs(explicit, scanned []string) []string {
+	if len(explicit) == 0 {
+		return scanned
+	}
+	seen := make(map[string]struct{}, len(explicit)+len(scanned))
+	result := make([]string, 0, len(explicit)+len(scanned))
+	for _, group := range [][]string{explicit, scanned} {
+		for _, path := range group {
+			if path == "" {
+				continue
+			}
+			if _, exists := seen[path]; exists {
+				continue
+			}
+			seen[path] = struct{}{}
+			result = append(result, path)
+		}
+	}
+	return result
 }
 
 // processorOutputs 找出安装器额外生成、且不在下载计划中的版本级产物。

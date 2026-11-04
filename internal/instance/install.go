@@ -147,6 +147,11 @@ type installArtifacts struct {
 	AssetObjects []string
 	// NativesDir 是解压目录；为空表示该版本没有 natives。
 	NativesDir string
+	// ProcessorOutputs 是加载器 processor 生成的产物路径。
+	//
+	// 这些文件没有独立下载源，只能由安装流程生成；显式记录比事后扫描目录
+	// 更可靠——扫描无法区分「本次生成」与「上次残留」。
+	ProcessorOutputs []string
 }
 
 func (s *InstanceService) runPlan(ctx context.Context, id string, plan download.TransferPlan, base, span float64) error {

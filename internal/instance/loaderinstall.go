@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/download"
 	"example.com/ninevoxel/launcher/internal/loader"
 	"example.com/ninevoxel/launcher/internal/version"
 )
@@ -16,10 +17,26 @@ import (
 var (
 	ensureLoaderProfile    = loader.EnsureProfile
 	prepareLoaderInstaller = loader.PrepareInstaller
-	executeLoaderInstaller = loader.RunInstaller
-	detectLoaderVersionID  = loader.DetectInstalledVersionID
 	resolveInstallerJava   = func(string, string, string) (string, error) {
 		return "", errors.New("尚未配置安装器 Java 解析器")
+	}
+
+	// 以下注入点便于测试替换：安装编排涉及网络与子进程，
+	// 单元测试需要在不联网、不起 JVM 的前提下验证顺序与错误处理。
+	planForgeInstall      = loader.PlanForgeInstall
+	processorJarPlan      = loader.ProcessorJarPlan
+	loaderLibraryPlan     = loader.LoaderLibraryPlan
+	writeForgeVersionJSON = loader.WriteVersionJSON
+	processorJarPaths     = loader.ProcessorJarPaths
+	runForgeProcessors    = loader.RunForgeProcessors
+	cleanupForgeInstall   = loader.CleanupTempDir
+
+	// runLoaderInstallPlan 执行安装期的下载计划。
+	//
+	// 抽成变量是因为它需要走全局下载队列（绑定真实数据根），
+	// 而集成测试要在临时目录里跑完整安装流程。
+	runLoaderInstallPlan = func(s *InstanceService, ctx context.Context, id string, plan download.TransferPlan, base, span float64) error {
+		return s.runPlan(ctx, id, plan, base, span)
 	}
 )
 
@@ -51,6 +68,21 @@ func (s *InstanceService) installProfileLoader(ctx context.Context, item Instanc
 	return nil
 }
 
+// installInstallerLoader 安装 Forge / NeoForge。
+//
+// 流程（顺序不可调整）：
+//  1. 下载原版：processor 需要原版 jar 作为输入；
+//  2. 下载官方安装器（已通过 SHA-1 校验）；
+//  3. 解析安装器里的 install_profile.json 与 version.json，得到安装计划；
+//  4. 下载 processor 依赖与加载器依赖库；
+//  5. 写入版本描述；
+//  6. 按序执行 processor 并校验产出；
+//  7. 写核心清单（唯一安装成功判据）。
+//
+// 为什么自己编排 processor 而不执行官方安装器的 main class：
+// `--installClient` 是上游可能移除的入口，而 processor jar 是安装器自带、
+// 由官方维护的产物。编排它们不改变「加载器产物由官方代码生成」这一前提，
+// 只是不再依赖那个命令行入口。
 func (s *InstanceService) installInstallerLoader(ctx context.Context, item Instance, kind loader.Kind) error {
 	prepared, err := version.PrepareInstallation(item.MCVersion)
 	if err != nil {
@@ -60,70 +92,107 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	if appErr != nil {
 		return appErr
 	}
-	artifacts, installErr := s.installPreparedRange(ctx, item, prepared, s.runPlan, 0.6)
+
+	// 原版下载占前 55%：它通常是最大的一块（客户端 jar + 资源对象）。
+	artifacts, installErr := s.installPreparedRange(ctx, item, prepared, s.runPlan, 0.55)
 	if installErr != nil {
 		return installErr
 	}
-	// 安装产物写入共享核心，实例目录只保留可变状态。
-	before, err := versionDirectorySet(s.root)
-	if err != nil {
-		return err
-	}
-	if err := s.runPlan(ctx, item.ID, installer.Plan, 0.6, 0.1); err != nil {
+	if err := runLoaderInstallPlan(s, ctx, item.ID, installer.Plan, 0.55, 0.05); err != nil {
 		return err
 	}
 	artifacts.Downloaded = append(artifacts.Downloaded, installer.Plan.Items[0].TargetRelPath)
+
 	javaPath, err := resolveInstallerJava(item.CustomJavaPath, item.CustomJavaRuntimeID, item.MCVersion)
 	if err != nil {
 		return fmt.Errorf("无法为 %s 安装器准备 Java：%w", strings.ToUpper(string(kind)), err)
 	}
-	if err := s.progress(item.ID, "", 0.72, 0); err != nil {
+
+	vanillaJar, jarErr := vanillaClientJarPath(s.root, item.MCVersion)
+	if jarErr != nil {
+		return jarErr
+	}
+	plan, planErr := planForgeInstall(ctx, kind, s.root, installer.InstallerPath, vanillaJar)
+	if planErr != nil {
+		return planErr
+	}
+	defer cleanupForgeInstall(plan)
+
+	if err := s.progress(item.ID, "", 0.62, 0); err != nil {
 		return err
 	}
-	workDir, workErr := installerWorkDir(s.root)
-	if workErr != nil {
-		return workErr
+	// processor 依赖：只有几十 KB 到几百 KB，先下载它们才能执行。
+	if jarPlan := processorJarPlan(plan); len(jarPlan.Items) > 0 {
+		if err := runLoaderInstallPlan(s, ctx, item.ID, jarPlan, 0.62, 0.08); err != nil {
+			return err
+		}
 	}
-	defer os.RemoveAll(workDir)
-	if err := executeLoaderInstaller(ctx, javaPath, loader.InstallerContext{
-		WorkingDirectory: workDir,
-		GameDirectory:    s.root,
-		ResourceRoot:     s.root,
-	}, installer.InstallerPath); err != nil {
+	// 加载器依赖库：几十 MB，是安装阶段的主要下载量。
+	if libPlan := loaderLibraryPlan(plan); len(libPlan.Items) > 0 {
+		if err := runLoaderInstallPlan(s, ctx, item.ID, libPlan, 0.7, 0.15); err != nil {
+			return err
+		}
+	}
+	for _, library := range plan.Libraries {
+		artifacts.Downloaded = append(artifacts.Downloaded, library.TargetRelPath)
+	}
+
+	if err := writeForgeVersionJSON(s.root, plan); err != nil {
 		return err
 	}
-	versionID, err := detectLoaderVersionID(s.root, kind, item.MCVersion, item.LoaderVersion, before)
-	if err != nil {
-		return fmt.Errorf("%s 安装器未生成可用的版本目录：%w", strings.ToUpper(string(kind)), err)
+	jarPaths, pathsErr := processorJarPaths(s.root, plan)
+	if pathsErr != nil {
+		return pathsErr
 	}
+	if err := s.progress(item.ID, "", 0.86, 0); err != nil {
+		return err
+	}
+	if err := runForgeProcessors(ctx, javaPath, plan, jarPaths, nil); err != nil {
+		return err
+	}
+
+	// processor 产出显式记入清单：它们没有下载源，扫描目录无法区分
+	// 「本次生成」与「上次残留」。
+	for _, step := range plan.Processors {
+		for _, output := range step.Outputs {
+			if relative, relErr := filepath.Rel(s.root, output.AbsolutePath); relErr == nil {
+				artifacts.ProcessorOutputs = append(artifacts.ProcessorOutputs, filepath.ToSlash(relative))
+			}
+		}
+	}
+
 	// 清单是唯一的「安装成功」判据：写不出来就说明产物不完整。
-	if err := s.writeCoreManifest(kind, item.MCVersion, item.LoaderVersion, versionID, artifacts); err != nil {
+	if err := s.writeCoreManifest(kind, item.MCVersion, item.LoaderVersion, plan.VersionID, artifacts); err != nil {
 		return err
 	}
-	if err := s.setResolvedVersionID(item.ID, versionID); err != nil {
+	if err := s.setResolvedVersionID(item.ID, plan.VersionID); err != nil {
 		return err
 	}
 	if err := s.progress(item.ID, "", 0.99, 0); err != nil {
 		return err
 	}
-	s.removeObsoleteLoaderVersion(item, versionID)
+	s.removeObsoleteLoaderVersion(item, plan.VersionID)
 	return nil
 }
 
-// installerWorkDir 创建本次安装专用的临时工作区。
+// vanillaClientJarPath 返回原版客户端 jar 的绝对路径。
 //
-// 为什么不让安装器直接用核心根当工作目录：它会在工作目录里生成并改写
-// launcher_profiles.json。多个安装并发时，共享同一份配置会互相覆盖。
-func installerWorkDir(root string) (string, error) {
-	base := filepath.Join(root, "temp", "installers")
-	if mkErr := os.MkdirAll(base, 0o755); mkErr != nil {
-		return "", errors.New("无法创建安装器工作目录")
+// 这是 processor 的输入。它必须已经存在：加载器安装永远排在原版安装之后，
+// 缺失说明原版安装本身不完整，应让用户先修好原版而不是在加载器阶段猜。
+func vanillaClientJarPath(root, minecraftVersion string) (string, error) {
+	relative, pathErr := artifact.VersionRelPath(minecraftVersion, minecraftVersion+".jar")
+	if pathErr != nil {
+		return "", errors.New("原版客户端路径无效")
 	}
-	dir, tempErr := os.MkdirTemp(base, "install-")
-	if tempErr != nil {
-		return "", errors.New("无法创建安装器工作目录")
+	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
+	if resolveErr != nil {
+		return "", errors.New("原版客户端路径无效")
 	}
-	return dir, nil
+	info, statErr := os.Stat(absolute)
+	if statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return "", errors.New("原版客户端文件缺失，请先完成原版安装")
+	}
+	return absolute, nil
 }
 
 func (s *InstanceService) setResolvedVersionID(instanceID, versionID string) error {

@@ -5,16 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/download"
-	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const installerChecksumMaxBytes = 4 << 10
@@ -138,144 +133,6 @@ func installerPlanHash(kind Kind, minecraftVersion, loaderVersion, checksum stri
 	return hex.EncodeToString(sum[:16])
 }
 
-// InstallerContext 明确区分安装器的三种路径语义。
-//
-// 不要用一个参数同时承担「工作目录」和「安装目标」：官方安装器会在自己的工作
-// 目录里读写 launcher_profiles.json 等临时文件，而安装产物必须落在核心根。
-// 两者混同会让并发安装互相覆盖配置。
-type InstallerContext struct {
-	// WorkingDirectory 是安装器进程的工作目录，每次安装独立。
-	WorkingDirectory string
-	// GameDirectory 是 --installClient 的目标目录（= 核心根）。
-	GameDirectory string
-	// ResourceRoot 是只读资源根。
-	//
-	// 当前与 GameDirectory 相同；分开表达便于将来把安装重定向到暂存目录后
-	// 再原子切换。
-	ResourceRoot string
-}
-
-// RunInstaller executes the verified official installer in client mode.
-//
-// 参数 paths.GameDirectory 会被**显式**传给安装器（`--installClient <path>`）。
-// 不能只依赖进程工作目录：现代 Forge / NeoForge 安装器在没有参数时会把
-// `%APPDATA%\.minecraft`（macOS 为 `~/Library/Application Support/minecraft`）
-// 当作目标目录，工作目录根本不起作用，结果是「安装成功但装到了别处」。
-//
-// 安装器会在自己的 JVM 里下载依赖，因此代理参数必须一并传给子 JVM，
-// 否则在需要代理的网络环境下会以 `Connection reset` 失败。
-func RunInstaller(ctx context.Context, javaPath string, paths InstallerContext, installerPath string) error {
-	if !filepath.IsAbs(javaPath) {
-		return installerError("安装器 Java 路径无效。", false)
-	}
-	if !filepath.IsAbs(paths.GameDirectory) || !filepath.IsAbs(installerPath) {
-		return installerError("安装器目录无效。", false)
-	}
-	if !filepath.IsAbs(paths.WorkingDirectory) {
-		return installerError("安装器工作目录无效。", false)
-	}
-	if info, err := os.Stat(installerPath); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-		return installerError("官方安装器文件不完整，请重试下载。", true)
-	}
-	if err := ensureLauncherProfiles(paths.WorkingDirectory); err != nil {
-		return err
-	}
-	if err := copyLauncherProfiles(paths.WorkingDirectory, paths.GameDirectory); err != nil {
-		return err
-	}
-
-	args := make([]string, 0, 12)
-	args = append(args, platform.JavaProxyOptions()...)
-	args = append(args, "-jar", installerPath, "--installClient", paths.GameDirectory)
-	command := exec.CommandContext(ctx, javaPath, args...)
-	// 工作目录仍设为安装目标：安装器会在其中写 installer.log 等辅助文件，
-	// 放在核心根便于用户排查。
-	command.Dir = paths.GameDirectory
-	output := &limitedBuffer{limit: 128 << 10}
-	command.Stdout = output
-	command.Stderr = output
-	if err := command.Run(); err != nil {
-		if ctx.Err() != nil {
-			return installerError("加载器安装已中断，请重试。", true)
-		}
-		return installerError(installerFailureMessage(output.String()), true)
-	}
-	return nil
-}
-
-// copyLauncherProfiles 把工作区里的 launcher_profiles.json 复制到安装目标目录。
-//
-// 官方安装器要求该文件存在。我们在独立工作区里生成模板，再带到核心根：
-// 这样多个安装并发时不会互相改写，同时满足安装器的前置条件。
-//
-// 已存在时不覆盖：它可能包含用户手工添加的内容，覆盖没有收益。
-func copyLauncherProfiles(workDir, gameDir string) error {
-	source := filepath.Join(workDir, "launcher_profiles.json")
-	target := filepath.Join(gameDir, "launcher_profiles.json")
-	if _, statErr := os.Stat(target); statErr == nil {
-		return nil
-	}
-	content, readErr := os.ReadFile(source)
-	if readErr != nil {
-		return installerError("无法读取安装器工作区配置。", false)
-	}
-	if writeErr := os.WriteFile(target, content, 0o644); writeErr != nil {
-		return installerError("无法写入安装器配置。", false)
-	}
-	return nil
-}
-
-// ensureLauncherProfiles creates the minimal launcher profile document that
-// Forge/NeoForge installers require. Existing user data is never replaced; only
-// a missing file is created, while malformed files fail with an actionable error.
-func ensureLauncherProfiles(gameDirectory string) error {
-	path := filepath.Join(gameDirectory, "launcher_profiles.json")
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.Mode().IsRegular() {
-			return installerError("实例目录中的 launcher_profiles.json 不是普通文件。", false)
-		}
-		if info.Size() > 2<<20 {
-			return installerError("实例目录中的 launcher_profiles.json 过大。", false)
-		}
-		body, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return installerError("无法读取实例目录中的 launcher_profiles.json。", false)
-		}
-		var document map[string]any
-		if jsonErr := json.Unmarshal(body, &document); jsonErr != nil {
-			return installerError("实例目录中的 launcher_profiles.json 格式损坏，请修复后再安装加载器。", false)
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return installerError("无法检查实例目录中的 launcher_profiles.json。", false)
-	}
-
-	body := []byte("{\n  \"profiles\": {},\n  \"settings\": {},\n  \"version\": 3\n}\n")
-	temp, createErr := os.CreateTemp(gameDirectory, ".launcher-profiles-*")
-	if createErr != nil {
-		return installerError("无法创建启动器配置文件。", false)
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if _, writeErr := temp.Write(body); writeErr != nil {
-		temp.Close()
-		return installerError("无法写入启动器配置文件。", false)
-	}
-	if syncErr := temp.Sync(); syncErr != nil {
-		temp.Close()
-		return installerError("无法同步启动器配置文件。", false)
-	}
-	if closeErr := temp.Close(); closeErr != nil {
-		return installerError("无法关闭启动器配置文件。", false)
-	}
-	if renameErr := os.Rename(tempPath, path); renameErr != nil {
-		return installerError("无法提交启动器配置文件。", false)
-	}
-	return nil
-}
-
 // installerFailureMessage 把安装器输出归纳成一句可读的失败原因。
 //
 // 安装器的完整输出可能有几十 KB 且混着下载日志，不能直接展示；但它对失败
@@ -323,63 +180,6 @@ func (b *limitedBuffer) Write(data []byte) (int, error) {
 		_, _ = b.buffer.Write(data)
 	}
 	return original, nil
-}
-
-// DetectInstalledVersionID finds the version directory created by a Forge or
-// NeoForge installer. The expected identifier is preferred; a scan is used for
-// loader releases whose directory naming changed across versions.
-func DetectInstalledVersionID(gameDirectory string, kind Kind, minecraftVersion, loaderVersion string, before map[string]bool) (string, error) {
-	expected, err := VersionID(kind, minecraftVersion, loaderVersion)
-	if err != nil {
-		return "", err
-	}
-	if installedLoaderVersionJSON(gameDirectory, expected, minecraftVersion) {
-		return expected, nil
-	}
-	entries, readErr := os.ReadDir(filepath.Join(gameDirectory, "versions"))
-	if readErr != nil {
-		return "", errors.New("安装器未生成版本目录")
-	}
-	matches := make([]string, 0, 2)
-	for _, entry := range entries {
-		id := entry.Name()
-		if !entry.IsDir() || before[id] || !safeVersionID(id) {
-			continue
-		}
-		if !installedLoaderVersionJSON(gameDirectory, id, minecraftVersion) {
-			continue
-		}
-		lower := strings.ToLower(id)
-		if strings.Contains(lower, string(kind)) || (kind == KindNeoForge && minecraftVersion == "1.20.1" && strings.Contains(lower, "forge")) {
-			matches = append(matches, id)
-		}
-	}
-	if len(matches) == 1 {
-		return matches[0], nil
-	}
-	if len(matches) > 1 {
-		return "", errors.New("安装器生成了多个候选版本目录")
-	}
-	return "", errors.New("安装器未生成可识别的版本目录")
-}
-
-func installedLoaderVersionJSON(gameDirectory, versionID, minecraftVersion string) bool {
-	if !safeVersionID(versionID) {
-		return false
-	}
-	body, err := os.ReadFile(filepath.Join(gameDirectory, "versions", versionID, versionID+".json"))
-	if err != nil || len(body) == 0 || len(body) > 8<<20 {
-		return false
-	}
-	var document struct {
-		ID           string `json:"id"`
-		InheritsFrom string `json:"inheritsFrom"`
-		MainClass    string `json:"mainClass"`
-	}
-	if err := json.Unmarshal(body, &document); err != nil {
-		return false
-	}
-	return document.ID == versionID && document.InheritsFrom == minecraftVersion && strings.TrimSpace(document.MainClass) != ""
 }
 
 func safeVersionID(versionID string) bool {

@@ -41,6 +41,16 @@ Recovery paths:
   verifies and repairs each version. The switch is journaled; `core.RecoverRebuild`
   runs at startup and rolls back incomplete transactions.
 
+Loader installation (`internal/loader`):
+
+- Fabric/Quilt: the official metadata is a ready-to-launch version JSON.
+- Forge/NeoForge: the official installer's `install_profile.json` is parsed and its
+  bundled processor jars are executed in order (`loader.PlanForgeInstall` +
+  `loader.RunForgeProcessors`). The installer's `--installClient` CLI entry point is
+  deliberately not used: it is an implementation detail upstream may remove.
+- Processor jars are cached under `cache/processors/` and are not part of any
+  manifest; the produced client jar is recorded in the `processor` group.
+
 Known limitations:
 
 - Locks are process-local; do not point multiple launcher processes at one DataRoot.
