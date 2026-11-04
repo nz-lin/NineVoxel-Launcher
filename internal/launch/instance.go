@@ -101,6 +101,130 @@ func SetJavaMajorResolver(resolver func(int) (string, error)) {
 	}
 }
 
+// Java 来源取值，供启动前检查把「为什么能用」告诉界面。
+const (
+	// JavaSourceInstanceCustom 表示实例显式指定的 Java 可执行文件。
+	JavaSourceInstanceCustom = "instance_custom"
+	// JavaSourceInstanceManaged 表示实例指定的启动器托管运行时。
+	JavaSourceInstanceManaged = "instance_managed"
+	// JavaSourceGlobalPath 表示全局设置里的 Java 路径。
+	JavaSourceGlobalPath = "global_path"
+	// JavaSourceAutoMajor 表示按版本声明的大版本自动匹配到的运行时。
+	JavaSourceAutoMajor = "auto_major"
+	// JavaSourceSelected 表示回退到「已选运行时」。
+	JavaSourceSelected = "selected"
+	// JavaSourceMissing 表示没有任何可用的 Java。
+	JavaSourceMissing = "missing"
+)
+
+// JavaReadiness 描述一次启动前的 Java 可用性。
+//
+// 它存在的意义是让界面在**启动之前**知道「缺什么、缺哪个大版本」，从而弹出
+// 可操作的对话框，而不是让用户点一下启动、读一条错误、再自己去 Java 管理器里
+// 猜要装哪个版本。
+type JavaReadiness struct {
+	// Ready 表示按启动时的优先级已经能解析出 Java。
+	Ready bool `json:"ready"`
+	// InstanceID 是被检查的实例。
+	InstanceID string `json:"instanceId"`
+	// VersionID 是实例实际启动的版本；空表示实例未安装。
+	VersionID string `json:"versionId"`
+	// RequiredJavaMajor 是版本声明的 Java 大版本要求；0 表示未知。
+	RequiredJavaMajor int `json:"requiredJavaMajor"`
+	// Source 是解析结果来自哪一级优先级，取值见 JavaSource*。
+	Source string `json:"source"`
+	// Message 是 Ready 为 false 时的可读原因。
+	Message string `json:"message"`
+}
+
+// ResolveInstanceJavaReadiness 用与启动完全相同的优先级解析实例的 Java。
+//
+// 与 resolveStartLaunchRequest 共用 resolveJavaPath：两处各写一份「怎么挑
+// Java」迟早会漂移，表现为「检查说可以启动，启动却报缺少 Java」。
+//
+// 参数 instanceID 为实例标识。返回的 *Error 只在实例本身不可读时出现；
+// 「找不到 Java」通过 Ready=false 表达，不当作错误。
+func ResolveInstanceJavaReadiness(instanceID string) (JavaReadiness, *Error) {
+	id := strings.TrimSpace(instanceID)
+	if id == "" {
+		return JavaReadiness{}, newInputError(ErrorCodeLaunchRequest, "请先选择要启动的实例。")
+	}
+	config, err := resolveInstanceLaunchConfig(id)
+	if err != nil {
+		return JavaReadiness{}, newInputError(ErrorCodeLaunchRequest, err.Error())
+	}
+	versionID := strings.TrimSpace(config.MCVersion)
+	readiness := JavaReadiness{
+		InstanceID:        id,
+		VersionID:         versionID,
+		RequiredJavaMajor: requiredJavaMajorFor(versionID),
+	}
+	if !config.Installed {
+		readiness.Source = JavaSourceMissing
+		readiness.Message = "实例游戏资源尚未安装完成，请先完成安装。"
+		return readiness, nil
+	}
+
+	_, source, javaErr := resolveJavaPath(config, versionID)
+	readiness.Source = source
+	if javaErr != nil {
+		readiness.Message = javaErr.Message
+		return readiness, nil
+	}
+	readiness.Ready = true
+	return readiness, nil
+}
+
+// resolveJavaPath 按固定优先级解析要使用的 Java 可执行文件。
+//
+// 优先级（顺序不可调整，改动会直接改变用户已配置的 Java 是否生效）：
+//  1. 实例显式指定的托管运行时 / 可执行文件；
+//  2. 全局设置里的 Java 路径；
+//  3. 按版本声明的大版本自动匹配；
+//  4. 已选运行时。
+//
+// 第 3 步优先于第 4 步的理由：用户通常不会手动配置 Java，而「已选运行时」
+// 往往只是上次装某个版本时选中的那个——用 Java 25 跑要求 Java 8 的 1.7.10
+// 会直接崩，版本 JSON 里的 javaVersion.majorVersion 才是权威要求。
+//
+// 返回解析出的路径、来源标记与错误。错误只在「确实没有可用 Java」或
+// 「实例指定的运行时不可用」时出现；后者刻意不静默回退，否则用户会以为
+// 自己指定的 Java 生效了。
+func resolveJavaPath(config InstanceLaunchConfig, versionID string) (string, string, *Error) {
+	switch config.JavaMode {
+	case JavaManaged:
+		javaPath, javaErr := resolveJavaRuntimeByID(config.CustomJavaRuntimeID)
+		if javaErr != nil {
+			return "", JavaSourceMissing, newInputError(ErrorCodeLaunchRequest,
+				"实例指定的 Java 运行时不可用："+javaErr.Error())
+		}
+		return javaPath, JavaSourceInstanceManaged, nil
+	case JavaCustom:
+		if custom := strings.TrimSpace(config.CustomJavaPath); custom != "" {
+			return custom, JavaSourceInstanceCustom, nil
+		}
+	}
+
+	if globalPath := strings.TrimSpace(launchSettingString(settings.KeyLaunchJavaPath, "")); globalPath != "" {
+		return globalPath, JavaSourceGlobalPath, nil
+	}
+
+	if resolveJavaForMajor != nil {
+		if major := requiredJavaMajorFor(versionID); major > 0 {
+			if path, majorErr := resolveJavaForMajor(major); majorErr == nil {
+				return path, JavaSourceAutoMajor, nil
+			}
+		}
+	}
+
+	javaPath, javaErr := resolveSelectedJavaRuntime()
+	if javaErr != nil {
+		return "", JavaSourceMissing, newInputError(ErrorCodeLaunchRequest,
+			"未找到可用的 Java：请安装或指定一个 Java 运行时。")
+	}
+	return javaPath, JavaSourceSelected, nil
+}
+
 // resolveStartLaunchRequest turns an instance-scoped request into the complete
 // structured request consumed by the existing launch plan builder.
 //
@@ -142,47 +266,19 @@ func resolveStartLaunchRequest(req StartLaunchRequest) (StartLaunchRequest, *Err
 		}
 
 		// Java：只有显式选择 managed / custom 时才覆盖全局。
-		switch config.JavaMode {
-		case JavaManaged:
-			javaPath, javaErr := resolveJavaRuntimeByID(config.CustomJavaRuntimeID)
-			if javaErr != nil {
-				return StartLaunchRequest{}, newInputError(ErrorCodeLaunchRequest,
-					"实例指定的 Java 运行时不可用："+javaErr.Error())
-			}
-			resolved.JavaPath = javaPath
-		case JavaCustom:
-			resolved.JavaPath = strings.TrimSpace(config.CustomJavaPath)
+		javaPath, _, javaErr := resolveJavaPath(config, resolved.VersionID)
+		if javaErr != nil {
+			return StartLaunchRequest{}, javaErr
 		}
+		resolved.JavaPath = javaPath
 	}
 
 	if strings.TrimSpace(resolved.JavaPath) == "" {
-		if globalPath := strings.TrimSpace(launchSettingString(settings.KeyLaunchJavaPath, "")); globalPath != "" {
-			resolved.JavaPath = globalPath
-		} else {
-			// 没有显式全局 Java 时，先按版本声明的 Java 大版本自动匹配。
-			//
-			// 为什么优先于「已选运行时」：用户通常不会手动配置 Java，
-			// 而「已选运行时」往往只是上次装某个版本时选中的那个——
-			// 用 Java 25 跑要求 Java 8 的 1.7.10 会直接崩，而版本 JSON 里的
-			// javaVersion.majorVersion 是权威要求。
-			autoMatched := false
-			if resolveJavaForMajor != nil {
-				if major := requiredJavaMajorFor(resolved.VersionID); major > 0 {
-					if path, majorErr := resolveJavaForMajor(major); majorErr == nil {
-						resolved.JavaPath = path
-						autoMatched = true
-					}
-				}
-			}
-			if !autoMatched {
-				javaPath, javaErr := resolveSelectedJavaRuntime()
-				if javaErr != nil {
-					return StartLaunchRequest{}, newInputError(ErrorCodeLaunchRequest,
-						"未找到可用的 Java：请在设置中选择 Java，或先在 Java 管理器中安装运行时。")
-				}
-				resolved.JavaPath = javaPath
-			}
+		javaPath, _, javaErr := resolveJavaPath(InstanceLaunchConfig{}, resolved.VersionID)
+		if javaErr != nil {
+			return StartLaunchRequest{}, javaErr
 		}
+		resolved.JavaPath = javaPath
 	}
 
 	memoryMB := resolved.MemoryMB

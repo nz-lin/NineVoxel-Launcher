@@ -15,6 +15,7 @@ import { CreateInstanceModal } from './components/CreateInstanceModal';
 import { InstanceDetailModal } from './components/InstanceDetailModal';
 import { AccountManagerModal } from './components/AccountManagerModal';
 import { JavaRuntimeManagerModal } from './components/JavaRuntimeManagerModal';
+import { JavaRequiredDialog } from './components/JavaRequiredDialog';
 import { InstanceTrashModal } from './components/InstanceTrashModal';
 import { DownloadsDrawer } from './components/DownloadsDrawer';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -129,6 +130,14 @@ export default function App() {
   const activeLaunchObservedRef = useRef(false);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [javaManagerOpen, setJavaManagerOpen] = useState(false);
+  /** 启动被「缺少 Java」拦下时记录待重试的实例与版本要求。 */
+  const [javaRequired, setJavaRequired] = useState<{
+    instance: Instance;
+    requiredMajor: number;
+    reason: string;
+  } | null>(null);
+  /** 用户补齐 Java 后要自动重试的那次启动；为空表示没有待重试项。 */
+  const pendingJavaLaunchRef = useRef<Instance | null>(null);
   const [trashOpen, setTrashOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
 
@@ -228,11 +237,37 @@ export default function App() {
     showToast(String(cause));
   };
 
-  const startInstanceGame = async (instance: Instance) => {
+  /**
+   * 启动实例。
+   *
+   * 先做一次 Java 就绪检查：缺 Java 是启动阶段唯一「用户可自行修复且不知道
+   * 该装什么」的阻塞点，直接报错会把用户推到 Java 管理器里盲猜大版本。
+   *
+   * `allowJavaPrompt=false` 用于「用户刚补齐 Java 后的自动重试」：此时如果
+   * 仍不满足，应当如实报错，而不是再弹一次同一个对话框形成循环。
+   */
+  const startInstanceGame = async (instance: Instance, allowJavaPrompt = true) => {
     if (instance.installationState !== 'installed') {
       showToast('请先在实例列表完成游戏资源安装。');
       setCurrentTab('instances');
       return;
+    }
+    if (allowJavaPrompt) {
+      try {
+        const readiness = await instanceService.checkLaunchJava(instance.id);
+        if (!readiness.ready) {
+          pendingJavaLaunchRef.current = instance;
+          setJavaRequired({
+            instance,
+            requiredMajor: readiness.requiredJavaMajor,
+            reason: readiness.message,
+          });
+          return;
+        }
+      } catch {
+        // 检查本身失败不阻断启动：真正的启动会给出权威错误，
+        // 在这里拦下反而可能把一个能玩的实例变成「打不开」。
+      }
     }
     try {
       activeLaunchObservedRef.current = true;
@@ -242,6 +277,39 @@ export default function App() {
       reportError(cause);
     }
   };
+
+  /** 关闭「缺少 Java」对话框，放弃本次启动。 */
+  const dismissJavaRequired = () => {
+    pendingJavaLaunchRef.current = null;
+    setJavaRequired(null);
+  };
+
+  /** 用户补齐 Java 后自动重试那次被拦下的启动。 */
+  const retryPendingJavaLaunch = async () => {
+    const pending = pendingJavaLaunchRef.current;
+    pendingJavaLaunchRef.current = null;
+    setJavaRequired(null);
+    if (pending) {
+      await startInstanceGame(pending, false);
+    }
+  };
+
+  /** 对话框内「指定本机 Java」：成功即重试启动，失败把原因留在对话框里。 */
+  const handleChooseJavaForLaunch = async (): Promise<{ ok: boolean; message: string }> => {
+    const result = await handleChooseJavaPath();
+    if (result.ok) {
+      await retryPendingJavaLaunch();
+    }
+    return result;
+  };
+
+  // 下载完成即重试。只在有「待重试启动」时动作：安装可能是用户在 Java 管理器
+  // 里主动发起的，那种情况不该突然启动游戏。
+  useEffect(() => {
+    if (!pendingJavaLaunchRef.current) return;
+    if (javaRuntimesState.installProgress?.phase !== 'completed') return;
+    void retryPendingJavaLaunch();
+  }, [javaRuntimesState.installProgress?.phase]);
 
   const handleLaunchGame = () => {
     if (currentInstance) void startInstanceGame(currentInstance);
@@ -662,6 +730,24 @@ export default function App() {
         onClearJavaPath={handleClearJavaPath}
         installProgress={javaRuntimesState.installProgress}
       />
+
+      {javaRequired && (
+        <JavaRequiredDialog
+          isOpen
+          instanceName={javaRequired.instance.name}
+          requiredMajor={javaRequired.requiredMajor}
+          reason={javaRequired.reason}
+          installProgress={javaRuntimesState.installProgress}
+          onDownload={(major) => handleDownloadRuntime(major, 'adoptium')}
+          onChooseLocal={handleChooseJavaForLaunch}
+          onOpenManager={() => {
+            // 大版本未知时无法预选下载项，只能把用户带到管理器里自己判断。
+            dismissJavaRequired();
+            setJavaManagerOpen(true);
+          }}
+          onClose={dismissJavaRequired}
+        />
+      )}
 
       {trashOpen && (
         <InstanceTrashModal

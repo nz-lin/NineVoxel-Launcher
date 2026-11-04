@@ -143,6 +143,15 @@ export const instanceService = {
   async deleteVersionPatch(instanceId: string) {
     return call(() => InstanceService.DeleteVersionPatch({ instanceId }))
   },
+  /**
+   * 启动前检查 Java 是否就绪。
+   *
+   * 与真正的启动共用同一份优先级解析；`ready=false` 不是错误，而是提示界面
+   * 弹出「安装或指定 Java」的对话框，并可用 `requiredJavaMajor` 预选版本。
+   */
+  async checkLaunchJava(instanceId: string) {
+    return call(() => InstanceService.CheckLaunchJava({ instanceId }))
+  },
   async listTrash() {
     return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))
   },
