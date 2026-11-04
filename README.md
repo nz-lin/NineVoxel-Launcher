@@ -79,18 +79,29 @@ wails3 task package               # 当前平台安装包
 
 ## 数据与日志位置
 
-应用数据根（SQLite `app.db`、`versions/`、`artifacts/`、`downloads/`、`runtimes/`）：
+应用根目录 `<AppRoot>`：
 
-- 便携模式：可执行文件同级 `data/` 已存在时优先使用；该目录不可写时直接报错，不回退
+- 便携模式：可执行文件同级已存在 `data/` 时，`<AppRoot>` 就是可执行文件目录
+- macOS：`~/Library/Application Support/NineVoxel-Launcher`
+- Windows：`%LocalAppData%\NineVoxel-Launcher`
+- Linux：`$XDG_DATA_HOME/NineVoxel-Launcher` 或 `~/.local/share/NineVoxel-Launcher`
+
+数据目录 `<AppRoot>/data`（SQLite `app.db`、`versions/`、`artifacts/`、`downloads/`、`runtimes/`）：
+
+- 便携模式：`<exe 目录>/data`
 - macOS：`~/Library/Application Support/NineVoxel-Launcher/data`
-- Windows：`%AppData%\NineVoxel-Launcher\data`
-- 兜底：用户配置目录不可写时使用可执行文件同级 `data/`
+- Windows：`%LocalAppData%\NineVoxel-Launcher\data`
+- Linux：`$XDG_DATA_HOME/NineVoxel-Launcher/data` 或 `~/.local/share/NineVoxel-Launcher/data`
 
-日志目录（`launcher.log`、`app-YYYYMMDD[-序号].log`、`game-<launchId>-YYYYMMDD[-序号].log`）：
+日志目录 `<AppRoot>/logs`（`launcher.log`、`app-YYYYMMDD[-序号].log`、`game-<launchId>-YYYYMMDD[-序号].log`）：
 
+- 便携模式：`<exe 目录>/logs`
 - macOS：`~/Library/Application Support/NineVoxel-Launcher/logs`
 - Windows：`%LocalAppData%\NineVoxel-Launcher\logs`
-- 兜底：可执行文件同级 `logs/`
+- Linux：`$XDG_DATA_HOME/NineVoxel-Launcher/logs` 或 `~/.local/share/NineVoxel-Launcher/logs`
+- 兜底：`<AppRoot>/logs` 不可写时使用 `<exe 目录>/logs`
+
+旧版本目录会在启动时自动迁移：Windows 从 `%AppData%` 迁到 `%LocalAppData%`，Linux 从 `~/.config` 迁到 XDG data 目录；旧日志会复制到新日志目录。
 
 `webview/`（WebView2 用户数据目录）只对 Windows 有意义：优先 `<exe 目录>\webview`，不可写时回退 `%LocalAppData%\NineVoxel-Launcher\webview`；macOS 使用系统 WKWebView 的数据目录，应用不再创建该目录。
 
