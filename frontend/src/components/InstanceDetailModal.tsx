@@ -55,6 +55,30 @@ interface InstanceDetailModalProps {
   defaultGroup: string;
 }
 
+/**
+ * 二选一模式开关。
+ *
+ * 用两个互斥按钮而不是复选框：模式的语义是「二选一」，
+ * 复选框会让人以为可以同时开启。
+ */
+const ModeToggle: React.FC<{ active: boolean; onClick: () => void; label: string }> = ({
+  active,
+  onClick,
+  label,
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer ${
+      active
+        ? 'bg-emerald-600 text-white'
+        : 'bg-slate-100 dark:bg-neutral-800 text-slate-600 dark:text-neutral-400 hover:bg-slate-200 dark:hover:bg-neutral-700'
+    }`}
+  >
+    {label}
+  </button>
+)
+
 export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   instance,
   onClose,
@@ -79,8 +103,17 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   const [modsList, setModsList] = useState<ModItem[]>([]);
   const [shaderList, setShaderList] = useState<ShaderPackItem[]>([]);
   const [resourcePackList, setResourcePackList] = useState<ResourcePackItem[]>([]);
-  const [memoryMb, setMemoryMb] = useState(instance.memoryMb);
+  /** 内存来源：默认跟随全局，与后端「模式为空即跟随全局」保持一致。 */
+  const [memoryMode, setMemoryMode] = useState<'global' | 'custom'>(instance.memoryMode ?? 'global');
+  const [memoryMb, setMemoryMb] = useState(instance.memoryMb || 4096);
+  /** JVM 参数来源：默认跟随全局。 */
+  const [jvmMode, setJvmMode] = useState<'global' | 'custom'>(instance.jvmMode ?? 'global');
   const [jvmArgs, setJvmArgs] = useState(instance.jvmArgs);
+  /** Java 来源：已有运行时或路径的旧实例自动归入对应模式，避免升级后丢配置。 */
+  const [javaMode, setJavaMode] = useState<'global' | 'managed' | 'custom'>(
+    instance.javaMode
+      ?? (instance.customJavaRuntimeId ? 'managed' : instance.customJavaPath ? 'custom' : 'global'),
+  );
   const [selectedJavaPath, setSelectedJavaPath] = useState(instance.customJavaPath || '');
   const [selectedJavaRuntimeId, setSelectedJavaRuntimeId] = useState(instance.customJavaRuntimeId || '');
   const [partitionName, setPartitionName] = useState(instance.partition || defaultGroup);
@@ -355,10 +388,13 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
         description,
         isFavorite: favorite,
         partition: partitionName,
+        memoryMode,
         memoryMb,
+        jvmMode,
         jvmArgs,
-        customJavaPath: selectedJavaRuntimeId ? '' : selectedJavaPath,
-        customJavaRuntimeId: selectedJavaRuntimeId,
+        javaMode,
+        customJavaPath: javaMode === 'custom' ? selectedJavaPath : '',
+        customJavaRuntimeId: javaMode === 'managed' ? selectedJavaRuntimeId : '',
       });
       onClose();
     } catch (cause) {
@@ -922,36 +958,80 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
 
               {/* Dedicated RAM Allocation */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
-                    此实例专属内存 (Override RAM)
+                    内存分配
                   </label>
-                  <span className="font-mono text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                    {memoryMb} MB ({(memoryMb / 1024).toFixed(1)} GB)
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <ModeToggle
+                      active={memoryMode === 'global'}
+                      onClick={() => setMemoryMode('global')}
+                      label="跟随全局"
+                    />
+                    <ModeToggle
+                      active={memoryMode === 'custom'}
+                      onClick={() => setMemoryMode('custom')}
+                      label="自定义"
+                    />
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min="512"
-                  max="65536"
-                  step="256"
-                  value={memoryMb}
-                  onChange={(e) => setMemoryMb(Number(e.target.value))}
-                  className="w-full accent-emerald-500 cursor-pointer"
-                />
+                {memoryMode === 'global' ? (
+                  <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                    使用全局设置中的最大内存。切换为自定义可为该实例单独分配。
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-slate-500 dark:text-neutral-400">此实例专属内存</span>
+                      <span className="font-mono text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                        {memoryMb} MB ({(memoryMb / 1024).toFixed(1)} GB)
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="512"
+                      max="65536"
+                      step="256"
+                      value={memoryMb}
+                      onChange={(e) => setMemoryMb(Number(e.target.value))}
+                      className="w-full accent-emerald-500 cursor-pointer"
+                    />
+                  </>
+                )}
               </div>
 
               {/* Custom JVM Args */}
               <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-2">
-                <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300 block">
-                  自定义 JVM 启动参数
-                </label>
-                <textarea
-                  value={jvmArgs}
-                  onChange={(e) => setJvmArgs(e.target.value)}
-                  rows={2}
-                  className="w-full p-2.5 bg-white dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 rounded-lg text-xs font-mono text-slate-800 dark:text-neutral-200 focus:outline-none focus:border-emerald-500"
-                />
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
+                    JVM 启动参数
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <ModeToggle
+                      active={jvmMode === 'global'}
+                      onClick={() => setJvmMode('global')}
+                      label="跟随全局"
+                    />
+                    <ModeToggle
+                      active={jvmMode === 'custom'}
+                      onClick={() => setJvmMode('custom')}
+                      label="自定义"
+                    />
+                  </div>
+                </div>
+                {jvmMode === 'global' ? (
+                  <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                    不添加额外的 JVM 参数。切换为自定义可为该实例追加参数。
+                  </p>
+                ) : (
+                  <textarea
+                    value={jvmArgs}
+                    onChange={(e) => setJvmArgs(e.target.value)}
+                    rows={2}
+                    placeholder="留空表示不加任何额外参数"
+                    className="w-full p-2.5 bg-white dark:bg-neutral-950 border border-slate-300 dark:border-neutral-800 rounded-lg text-xs font-mono text-slate-800 dark:text-neutral-200 focus:outline-none focus:border-emerald-500"
+                  />
+                )}
               </div>
             </div>
           )}

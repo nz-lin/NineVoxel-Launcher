@@ -61,7 +61,25 @@ export const CreateInstanceModal: React.FC<CreateInstanceModalProps> = ({
     setSaving(true);
     setError(null);
     try {
-      await onCreate({ name: name.trim(), mcVersion: version.trim(), loader: loaderType, loaderVersion: loaderType === 'vanilla' ? '' : loaderVersion, partition, icon, memoryMb, jvmArgs: '-XX:+UseG1GC', description: '', isFavorite: false, customJavaPath: '', customJavaRuntimeId: '' });
+      await onCreate({
+        name: name.trim(),
+        mcVersion: version.trim(),
+        loader: loaderType,
+        loaderVersion: loaderType === 'vanilla' ? '' : loaderVersion,
+        partition,
+        icon,
+        // 新建时内存取实例值（创建表单显式填写过），其余维度跟随全局；
+        // 用户可在详情页再改成自定义。
+        memoryMode: 'custom',
+        memoryMb,
+        jvmMode: 'custom',
+        jvmArgs: '-XX:+UseG1GC',
+        javaMode: 'global',
+        description: '',
+        isFavorite: false,
+        customJavaPath: '',
+        customJavaRuntimeId: '',
+      });
       onClose();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

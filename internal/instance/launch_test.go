@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/launch"
 )
 
 func TestResolveLaunchConfigReadsManifestAndGameDirectory(t *testing.T) {
@@ -29,8 +30,11 @@ func TestResolveLaunchConfigReadsManifestAndGameDirectory(t *testing.T) {
 		Name:                "测试实例",
 		MCVersion:           "1.21.4",
 		Loader:              "vanilla",
+		MemoryMode:          launch.MemoryCustom,
 		MemoryMB:            6144,
+		JVMMode:             launch.JVMCustom,
 		JVMArgs:             "-XX:+UseG1GC",
+		JavaMode:            launch.JavaManaged,
 		CustomJavaRuntimeID: "runtime-test",
 	}
 	if _, err := validConfig(config); err != nil {

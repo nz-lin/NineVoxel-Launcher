@@ -81,8 +81,14 @@ export interface Instance {
   customJavaPath?: string; // 允许实例独立指定使用的本地 javaruntime
   /** 实例专属 Java 运行时 id；空字符串表示跟随全局 Java 设置。 */
   customJavaRuntimeId?: string;
+  /** 内存取值来源：`global` 跟随全局，`custom` 使用 memoryMb。 */
+  memoryMode: 'global' | 'custom';
   memoryMb: number;
+  /** JVM 参数来源：`global` 不使用实例参数，`custom` 使用 jvmArgs（可为空）。 */
+  jvmMode: 'global' | 'custom';
   jvmArgs: string;
+  /** Java 来源：`global` 跟随全局，`managed` 用运行时 id，`custom` 用路径。 */
+  javaMode: 'global' | 'managed' | 'custom';
   modsCount: number;
   description: string;
   isFavorite: boolean;

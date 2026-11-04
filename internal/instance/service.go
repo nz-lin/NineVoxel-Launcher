@@ -18,6 +18,7 @@ import (
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/download"
+	"example.com/ninevoxel/launcher/internal/launch"
 	"example.com/ninevoxel/launcher/internal/loader"
 	"example.com/ninevoxel/launcher/internal/platform"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -25,18 +26,33 @@ import (
 
 // Config contains editable instance settings; file paths and state are backend-owned.
 type Config struct {
-	Name                string `json:"name"`
-	MCVersion           string `json:"mcVersion"`
-	Loader              string `json:"loader"`
-	LoaderVersion       string `json:"loaderVersion"`
-	Partition           string `json:"partition"`
-	Icon                string `json:"icon"`
-	MemoryMB            int    `json:"memoryMb"`
-	JVMArgs             string `json:"jvmArgs"`
-	Description         string `json:"description"`
-	IsFavorite          bool   `json:"isFavorite"`
-	CustomJavaPath      string `json:"customJavaPath"`
-	CustomJavaRuntimeID string `json:"customJavaRuntimeId"`
+	Name          string `json:"name"`
+	MCVersion     string `json:"mcVersion"`
+	Loader        string `json:"loader"`
+	LoaderVersion string `json:"loaderVersion"`
+	Partition     string `json:"partition"`
+	Icon          string `json:"icon"`
+
+	// MemoryMode 决定内存取值来源；MemoryMB 仅在 Mode 为 custom 时生效。
+	//
+	// 旧实现用 `MemoryMB == 0` 表达「跟随全局」，无法区分「未设置」与
+	// 「显式清空」。显式模式让意图可表达（见 configmode.go）。
+	MemoryMode launch.MemoryMode `json:"memoryMode"`
+	MemoryMB   int               `json:"memoryMb"`
+
+	// JVMMode 决定是否使用实例自己的 JVM 参数。
+	//
+	// custom + 空串 = 显式「不加额外参数」，与「跟随全局」语义不同。
+	JVMMode launch.JVMMode `json:"jvmMode"`
+	JVMArgs string         `json:"jvmArgs"`
+
+	Description string `json:"description"`
+	IsFavorite  bool   `json:"isFavorite"`
+
+	// JavaMode 决定 Java 可执行文件的来源；两个字段仅在对应模式下生效。
+	JavaMode            launch.JavaMode `json:"javaMode"`
+	CustomJavaPath      string          `json:"customJavaPath"`
+	CustomJavaRuntimeID string          `json:"customJavaRuntimeId"`
 }
 
 type Instance struct {
@@ -232,8 +248,10 @@ func validConfig(c Config) (Config, error) {
 	} else if _, versionErr := loader.VersionID(kind, c.MCVersion, c.LoaderVersion); versionErr != nil {
 		return c, versionErr
 	}
-	if c.MemoryMB < 512 || c.MemoryMB > 1048576 {
-		return c, errors.New("实例内存必须介于 512 MB 和 1048576 MB 之间")
+	// 三种覆盖模式的校验与归一化：模式决定取值是否参与启动，
+	// 非当前模式的字段会被清空，避免存储里出现误导性的组合。
+	if modeErr := applyModes(&c); modeErr != nil {
+		return c, modeErr
 	}
 	if len(c.JVMArgs) > 8192 || len(c.Description) > 4096 || len(c.Partition) > 240 || len(c.Icon) > 128 || len(c.CustomJavaPath) > 4096 || len(c.CustomJavaRuntimeID) > 256 {
 		return c, errors.New("实例设置内容过长")

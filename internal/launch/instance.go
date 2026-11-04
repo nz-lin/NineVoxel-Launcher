@@ -21,13 +21,23 @@ const (
 // instance. It deliberately uses no instance/runtime package types so the
 // assemble layer can inject resolvers without creating import cycles.
 type InstanceLaunchConfig struct {
-	GameDirectory       string
-	MCVersion           string
-	MemoryMB            int
-	JVMArgs             string
+	GameDirectory string
+	MCVersion     string
+
+	// MemoryMode 决定内存取值来源；MemoryMB 仅在 custom 模式下生效。
+	MemoryMode MemoryMode
+	MemoryMB   int
+
+	// JVMMode 决定是否采用实例自己的 JVM 参数。
+	JVMMode JVMMode
+	JVMArgs string
+
+	// JavaMode 决定 Java 来源；两个字段仅在对应模式下生效。
+	JavaMode            JavaMode
 	CustomJavaPath      string
 	CustomJavaRuntimeID string
-	Installed           bool
+
+	Installed bool
 }
 
 // Resolver injection points are populated by internal/app before any launch.
@@ -89,19 +99,32 @@ func resolveStartLaunchRequest(req StartLaunchRequest) (StartLaunchRequest, *Err
 		resolved.GameDirectory = config.GameDirectory
 		resolved.VersionID = config.MCVersion
 		resolved.JavaPath = ""
-		resolved.MemoryMB = config.MemoryMB
-		instanceArgs := splitLegacyArguments(config.JVMArgs)
-		resolved.AdditionalJvmArgs = append(instanceArgs, resolved.AdditionalJvmArgs...)
 
-		switch {
-		case strings.TrimSpace(config.CustomJavaRuntimeID) != "":
+		// 内存：模式决定是否采用实例值。跟随全局时置 0，交给下面的全局回退。
+		if config.MemoryMode == MemoryCustom {
+			resolved.MemoryMB = config.MemoryMB
+		} else {
+			resolved.MemoryMB = 0
+		}
+
+		// JVM 参数：仅 custom 模式采用实例值。特别注意 follow-global 时
+		// 必须完全不拼接——旧实现无条件 append，导致「跟随全局」也会带上
+		// 实例参数，与模式语义矛盾。
+		if config.JVMMode == JVMCustom {
+			instanceArgs := splitLegacyArguments(config.JVMArgs)
+			resolved.AdditionalJvmArgs = append(resolved.AdditionalJvmArgs, instanceArgs...)
+		}
+
+		// Java：只有显式选择 managed / custom 时才覆盖全局。
+		switch config.JavaMode {
+		case JavaManaged:
 			javaPath, javaErr := resolveJavaRuntimeByID(config.CustomJavaRuntimeID)
 			if javaErr != nil {
 				return StartLaunchRequest{}, newInputError(ErrorCodeLaunchRequest,
 					"实例指定的 Java 运行时不可用："+javaErr.Error())
 			}
 			resolved.JavaPath = javaPath
-		case strings.TrimSpace(config.CustomJavaPath) != "":
+		case JavaCustom:
 			resolved.JavaPath = strings.TrimSpace(config.CustomJavaPath)
 		}
 	}

@@ -37,8 +37,11 @@ func TestResolveStartLaunchRequestUsesInstanceConfiguration(t *testing.T) {
 		return InstanceLaunchConfig{
 			GameDirectory:       `C:\instances\inst-test\.minecraft`,
 			MCVersion:           "1.21.4",
+			MemoryMode:          MemoryCustom,
 			MemoryMB:            6144,
+			JVMMode:             JVMCustom,
 			JVMArgs:             "-XX:+UseG1GC -Xmx2G",
+			JavaMode:            JavaManaged,
 			CustomJavaRuntimeID: "runtime-test",
 			Installed:           true,
 		}, nil
@@ -70,9 +73,12 @@ func TestResolveStartLaunchRequestUsesInstanceConfiguration(t *testing.T) {
 	if request.MemoryMB != 6144 {
 		t.Fatalf("内存 = %d", request.MemoryMB)
 	}
+	// 顺序：本次请求附加 → 实例自定义 → 统一追加的 -Xmx。
+	// 实例参数现在排在请求附加之后（旧实现是之前），因为模式化之后
+	// 「实例配置」被明确当作比临时附加更"持久"的一层。
 	if len(request.AdditionalJvmArgs) != 3 ||
-		request.AdditionalJvmArgs[0] != "-XX:+UseG1GC" ||
-		request.AdditionalJvmArgs[1] != "-Dfoo=bar" ||
+		request.AdditionalJvmArgs[0] != "-Dfoo=bar" ||
+		request.AdditionalJvmArgs[1] != "-XX:+UseG1GC" ||
 		request.AdditionalJvmArgs[2] != "-Xmx6144M" {
 		t.Fatalf("JVM 参数 = %#v", request.AdditionalJvmArgs)
 	}

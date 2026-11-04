@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"example.com/ninevoxel/launcher/internal/launch"
 )
 
 func testService(t *testing.T) *InstanceService {
@@ -20,8 +22,18 @@ func testService(t *testing.T) *InstanceService {
 	})
 	return s
 }
+// testConfig 构造一个测试用实例配置。
+//
+// 内存与 Java 显式使用「自定义」模式：新模型的默认是「跟随全局」，
+// 后者会把 MemoryMB 归一化为 0，测试若依赖具体数值就会失效。
 func testConfig(name string) Config {
-	return Config{Name: name, MCVersion: "1.21.4", Loader: "vanilla", MemoryMB: 4096}
+	return Config{
+		Name:       name,
+		MCVersion:  "1.21.4",
+		Loader:     "vanilla",
+		MemoryMode: launch.MemoryCustom,
+		MemoryMB:   4096,
+	}
 }
 
 func TestInstancePersistenceAndSelection(t *testing.T) {
@@ -427,6 +439,7 @@ func TestInstanceRejectsInvalidInputAndPaths(t *testing.T) {
 		t.Fatalf("rejected supported loader: %v", err)
 	}
 	config = testConfig("test")
+	config.MemoryMode = launch.MemoryCustom
 	config.MemoryMB = 128
 	if _, err := s.CreateInstance(config); err == nil {
 		t.Fatal("accepted invalid memory")
