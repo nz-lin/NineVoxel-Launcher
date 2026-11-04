@@ -279,6 +279,13 @@ func RegisterStartupEvents(wailsApp *application.App, onReady func()) {
 	// 完成一次恢复。
 	launch.RecoverRunLeases()
 
+	// 处理上次未完成的核心重建事务。
+	//
+	// 重建是「多目录逐个切换」，无法整体原子完成。若上次在切换中途崩溃，
+	// 磁盘上会留下新旧混合的核心；必须在允许任何安装或启动之前回滚，
+	// 否则后续操作会基于一个自相矛盾的核心。
+	recoverCoreRebuild()
+
 	// 设置服务的发射器：`settings.changed.v1` 必须绑定应用实例才能推送。
 	//
 	// 这一行此前遗漏，表现为每次保存设置都在日志里打印

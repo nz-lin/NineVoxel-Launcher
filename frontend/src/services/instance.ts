@@ -68,6 +68,8 @@ function toGroupList(raw: { items: InstanceGroup[] | null; defaultGroup: string 
   }
 }
 
+// 本模块封装实例相关后端调用，并把绑定类型转换成前端视图模型。
+// 重建核心是低频、长耗时操作，返回统计而不是进度流。
 export const instanceService = {
   async list() {
     const result = await call(() => InstanceService.ListInstances())
@@ -97,6 +99,15 @@ export const instanceService = {
    */
   async repairCore(instanceId: string) {
     return call(() => InstanceService.RepairInstanceForUser({ instanceId }))
+  },
+  /**
+   * 重建共享游戏核心：按已安装清单生成干净核心后事务化切换。
+   *
+   * 会先校验并修复参与重建的版本；文件无法修复时明确要求重新安装，
+   * 而不是复制一份不完整的数据。
+   */
+  async rebuildCore() {
+    return call(() => InstanceService.RebuildCoreForUser())
   },
   async listTrash() {
     return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))

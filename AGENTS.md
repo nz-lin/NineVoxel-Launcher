@@ -20,6 +20,36 @@ Use the Go toolchain in `go.mod`, Node from `.node-version`, and pnpm matching `
 
 Build frontend assets before root Go checks: `main.go` embeds `frontend/dist`, which is absent in a clean checkout.
 
+## Core Storage
+
+The shared game core lives under `artifact.DataRoot()`:
+
+- `libraries/`, `assets/`, `versions/` and `core-index/` are shared by every instance.
+- Instance folders contain only mutable state (mods, saves, config, logs).
+- `versions/<id>/.nv-core-manifest.json` records every required file with size and SHA-256.
+  It is the single source of truth for "is this version complete".
+- `internal/core` owns all core writes. Do not delete or overwrite core files from
+  `instance`, `launch` or `loader`.
+
+Recovery paths:
+
+- **Repair** (`instance.RepairInstance`) re-downloads only missing or corrupt files.
+  Loader-processor outputs and version metadata have no independent download source,
+  so damage there asks the user to reinstall.
+- **Rebuild** (`instance.RebuildCoreForUser`) re-creates a clean core from the
+  manifests of installed instances and switches atomically per directory. It first
+  verifies and repairs each version. The switch is journaled; `core.RecoverRebuild`
+  runs at startup and rolls back incomplete transactions.
+
+Known limitations:
+
+- Locks are process-local; do not point multiple launcher processes at one DataRoot.
+- There is no cross-platform sharing: natives and recipe fingerprints are platform-specific.
+- Automatic file-level garbage collection is not implemented; rebuild removes
+  unreferenced files as a side effect, but normal deletion keeps unused libraries/assets.
+- Rebuild copies an entire core while the old one still exists, so it needs roughly
+  one extra core's worth of free disk space.
+
 ## Coding Style & Naming Conventions
 
 Format Go with `gofmt`; use lowercase package names and exported `PascalCase` identifiers. Use two-space indentation for TypeScript/TSX, `PascalCase` component filenames, and `useCamelCase` hook names. Follow surrounding quote and semicolon conventions. Frontend `lint` performs type checking; no ESLint or Prettier configuration is present.

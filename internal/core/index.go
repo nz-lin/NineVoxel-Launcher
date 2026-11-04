@@ -66,6 +66,14 @@ func identityIndexPath() string {
 	return indexDirName + "/" + indexFileName
 }
 
+// IndexPath 返回版本索引相对核心根的路径。
+//
+// 重建需要把索引一并复制到暂存目录；索引文件的布局属于 core 的内部知识，
+// 因此由本包导出路径而不是让调用方拼字符串。
+func IndexPath() string {
+	return identityIndexPath()
+}
+
 // readIndex 读取核心根下的版本索引。
 //
 // 文件不存在时返回空索引而不是错误：首次启动或核心尚未安装任何版本时，

@@ -16,6 +16,8 @@ import {
   Palette
 } from 'lucide-react';
 import { LauncherSettings, JavaRuntime } from '../types/launcher';
+import { ConfirmDialog } from './ConfirmDialog';
+import { instanceService } from '../services/instance';
 
 /** 全局默认最大分配内存的下限（MB）：低于 2 GB 的堆无法启动现代 Minecraft。 */
 const MIN_MEMORY_MB = 2048;
@@ -102,6 +104,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [localSettings, setLocalSettings] = useState<LauncherSettings>(settings);
   const [savedBadge, setSavedBadge] = useState(false);
+  /** 核心重建的确认框、进行状态与结果提示。 */
+  const [confirmRebuildOpen, setConfirmRebuildOpen] = useState(false);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
+  const [rebuildMessage, setRebuildMessage] = useState<string | null>(null);
 
   // 滑块上限与刻度按真实物理内存计算，不再写死一个数字。
   const memoryCeilingMb = resolveMemoryCeilingMb(totalMemoryMb);
@@ -136,6 +142,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSave = (updated: LauncherSettings) => {
     setLocalSettings(updated);
     onUpdateSettings(updated);
+  };
+
+  /** 打开确认框：重建会整体替换核心目录，必须先让用户知道代价。 */
+  const handleRebuildCore = () => {
+    if (rebuildBusy) return;
+    setConfirmRebuildOpen(true);
+  };
+
+  const confirmRebuildCore = () => {
+    setConfirmRebuildOpen(false);
+    void (async () => {
+      setRebuildBusy(true);
+      setRebuildMessage(null);
+      try {
+        const result = await instanceService.rebuildCore();
+        const megabytes = (result.bytes / (1024 * 1024)).toFixed(1);
+        setRebuildMessage(
+          `已重建 ${result.versions} 个版本、${result.files} 个文件（${megabytes} MB）。`
+        );
+      } catch (cause) {
+        setRebuildMessage(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setRebuildBusy(false);
+      }
+    })();
   };
 
   return (
@@ -356,6 +387,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
+        {/* Section 2.5: Core Rebuild */}
+        <div className="p-5 rounded-2xl bg-white dark:bg-neutral-900/50 border border-slate-200 dark:border-neutral-800 space-y-4 shadow-xs">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2.5">
+              <RefreshCw className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">重建游戏核心</h2>
+                <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                  按已安装清单生成一份干净的核心并原子切换；未登记的残留文件不会进入新核心
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleRebuildCore}
+              disabled={rebuildBusy}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              {rebuildBusy ? '重建中…' : '重建核心'}
+            </button>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 space-y-1 text-[11px] text-slate-500 dark:text-neutral-400">
+            <p>重建前会逐文件校验；发现损坏会先尝试修复，无法修复时要求重新安装对应实例。</p>
+            <p>暂存核心与旧核心会短暂同时存在，请确保磁盘至少有一份核心大小的可用空间。</p>
+            <p>有游戏正在运行时无法重建；请先退出游戏。</p>
+          </div>
+
+          {rebuildMessage && (
+            <p className="text-[11px] text-slate-600 dark:text-neutral-300">{rebuildMessage}</p>
+          )}
+        </div>
+
         {/* Section 3: Memory Allocation & GC */}
         <div className="p-5 rounded-2xl bg-white dark:bg-neutral-900/50 border border-slate-200 dark:border-neutral-800 space-y-4 shadow-xs">
           <div className="flex items-center gap-2.5">
@@ -525,6 +588,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
       </div>
+
+      {confirmRebuildOpen && (
+        <ConfirmDialog
+          title="重建游戏核心"
+          message="将按已安装清单重新生成共享核心，并替换当前的 libraries、assets 与 versions。过程中请勿退出启动器；有游戏运行时请先退出。"
+          confirmLabel="开始重建"
+          onConfirm={confirmRebuildCore}
+          onCancel={() => setConfirmRebuildOpen(false)}
+        />
+      )}
     </div>
   );
 };
