@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 // 目录树常量：全部是**相对数据根**的 slash 形式路径（P3-03 卡面第 3 条）。
@@ -45,13 +47,6 @@ const (
 
 // 数据根解析用到的常量。
 const (
-	// appDirName 是应用在用户配置目录下的数据目录名。
-	//
-	// 必须与 internal/settings 的 appDataDirName 保持一致：
-	// 设置数据库落 `<数据根>/app.db`，启动配置落同一数据库，P3 的制品缓存
-	// 也必须落在同一数据根下，避免出现「两个数据目录」的割裂状态。
-	appDirName = "NineVoxel-Launcher"
-
 	// dataDirName 是数据根目录名（用户配置目录下的子目录，或便携版 exe 同级目录）。
 	dataDirName = "data"
 
@@ -159,8 +154,8 @@ func DataRoot() (string, *Error) {
 func collectDataRootInput() DataRootInput {
 	input := DataRootInput{}
 
-	if configDir, err := os.UserConfigDir(); err == nil && configDir != "" {
-		input.UserDataDir = filepath.Join(configDir, appDirName, dataDirName)
+	if appRoot := platform.AppRoot(); appRoot != "" {
+		input.UserDataDir = filepath.Join(appRoot, dataDirName)
 		_, input.UserDataWritable = directoryWritable(input.UserDataDir)
 	}
 

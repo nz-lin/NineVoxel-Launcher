@@ -108,6 +108,12 @@ func newApplication(initialTheme string) *application.App {
 func main() {
 	initStartupLogging()
 
+	// 目录策略迁移：Windows 从 %AppData% 迁到 %LocalAppData%，Linux 从 ~/.config
+	// 迁到 XDG_DATA_HOME。必须在读取主题/设置之前完成，否则会新建空数据库。
+	if err := platform.MigrateLegacyAppData(); err != nil {
+		log.Fatalf("迁移应用数据目录失败：%v", err)
+	}
+
 	// 注册正式事件协议的载荷类型，供绑定生成器生成前端类型定义（P1-06 迁移）。
 	// 事件名已从 P0 的 `app:runtime` 迁移为 `app.lifecycle.ready.v1`（domain.resource.action.v1 规范）；
 	// application.RegisterEvent 必须在 application.New 之前调用，因此注册点保留在本函数。
