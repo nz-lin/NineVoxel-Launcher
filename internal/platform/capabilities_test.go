@@ -38,7 +38,7 @@ func TestDiskSpaceProbeOnTempDir(t *testing.T) {
 
 // TestArgFileCodecProducesBytes 验证参数文件编码能力可用。
 func TestArgFileCodecProducesBytes(t *testing.T) {
-	encoded, err := Current.ArgFile.Encode("--username 玩家")
+	encoded, err := Current.ArgFile.Encode("--username Player")
 	if err != nil {
 		t.Fatalf("参数文件编码失败：%v", err)
 	}
