@@ -46,6 +46,9 @@ const (
 	// Windows 为 %LocalAppData%：日志不应写入会随漫游配置同步的 %AppData%。
 	LogDirectoryKindUserCache = "userCache"
 
+	// LogDirectoryKindAppRoot 表示日志落在 AppRoot/logs。
+	LogDirectoryKindAppRoot = "appRoot"
+
 	// LogDirectoryKindExeDir 表示日志回退到可执行文件同级目录。
 	LogDirectoryKindExeDir = "exeDir"
 )
@@ -117,83 +120,46 @@ func WebviewDataPath() string {
 	return ""
 }
 
-// userLogBaseDir 返回当前平台的用户级日志基目录及其来源类别。
-//
-// 平台差异是有意为之，不能统一用 os.UserCacheDir：
-//   - macOS：使用 ~/Library/Application Support。Caches 语义是「可再生成数据」，
-//     会被系统与清理工具删除，不适合承载需要事后排查的日志；Application Support
-//     与设置库同父目录（<base>/NineVoxel-Launcher/{data,logs}），便于一并收集。
-//   - Windows：保持 %LocalAppData%（os.UserCacheDir）。%AppData% 是漫游配置目录，
-//     日志写进去会随漫游配置同步，既污染服务器也拖慢登录。
-//   - 其他平台：沿用缓存目录，保持既有行为。
-//
-// 返回 false 表示拿不到该平台的标准用户目录，调用方应继续走 exe 同级回退。
-func userLogBaseDir() (string, string, bool) {
-	if runtime.GOOS == "darwin" {
-		if configDir, err := os.UserConfigDir(); err == nil && configDir != "" {
-			return configDir, LogDirectoryKindUserConfig, true
-		}
-		return "", "", false
-	}
-
-	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
-		return cacheDir, LogDirectoryKindUserCache, true
-	}
-	return "", "", false
-}
-
 // LogDirectory 返回启动日志目录。
 //
 // 目录优先级：
-//  1. 用户级日志基目录下的 NineVoxel-Launcher/logs（macOS 为 Application Support，
-//     Windows 为 %LocalAppData%，见 userLogBaseDir），用户目录通常可写；
-//  2. 不可写时回退到可执行文件所在目录下的 logs；
+//  1. `<AppRoot>/logs`（便携模式下 AppRoot 就是可执行文件目录）；
+//  2. AppRoot 不可写时回退可执行文件同级 `logs/`；
 //  3. 两处都不可写时返回空字符串，调用方应跳过文件日志并继续启动。
-//
-// 日志优先落在用户目录：安装到只读目录时仍要保证启动阶段的错误有可查记录。
 func LogDirectory() string {
-	// 第一步：优先使用用户级目录。
-	if baseDir, _, ok := userLogBaseDir(); ok {
-		dir := filepath.Join(baseDir, appDirName, logDirName)
+	if root := AppRoot(); root != "" {
+		dir := filepath.Join(root, logDirName)
 		if ProbeWritable(dir) {
 			return dir
 		}
 	}
-
-	// 第二步：回退到可执行文件同级目录。
 	if exePath, err := os.Executable(); err == nil {
 		dir := filepath.Join(filepath.Dir(exePath), logDirName)
 		if ProbeWritable(dir) {
 			return dir
 		}
 	}
-
-	// 第三步：两处都不可写时返回空字符串。
 	return ""
 }
 
 // LogDirectoryKind 返回给定日志目录的来源类别，供状态展示使用。
 //
-// 返回值为 LogDirectoryKind* 常量；无法识别时返回空字符串。
-// 该函数只做路径比较，不重新探测可写性：实际可写性已由 LogDirectory 保证。
+// 返回 appRoot / exeDir；无法识别时返回空字符串。
 func LogDirectoryKind(dir string) string {
 	if dir == "" {
 		return ""
 	}
-
-	if baseDir, kind, ok := userLogBaseDir(); ok {
-		expected := filepath.Join(baseDir, appDirName, logDirName)
+	if root := AppRoot(); root != "" {
+		expected := filepath.Join(root, logDirName)
 		if filepath.Clean(dir) == filepath.Clean(expected) {
-			return kind
+			return LogDirectoryKindAppRoot
 		}
 	}
-
 	if exePath, err := os.Executable(); err == nil {
 		expected := filepath.Join(filepath.Dir(exePath), logDirName)
 		if filepath.Clean(dir) == filepath.Clean(expected) {
 			return LogDirectoryKindExeDir
 		}
 	}
-
 	return ""
 }

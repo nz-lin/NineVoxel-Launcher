@@ -541,7 +541,7 @@ type DirectoryStatus struct {
 	// Enabled 表示日志目录是否可用；false 时本次运行只能输出到控制台。
 	Enabled bool `json:"enabled"`
 
-	// DirectoryKind 表示目录来源类别：userConfig / userCache / exeDir / unavailable。
+	// DirectoryKind 表示目录来源类别：appRoot / exeDir / unavailable。
 	DirectoryKind string `json:"directoryKind"`
 
 	// FileCount 为目录中结构化日志文件的数量。
@@ -556,12 +556,15 @@ type DirectoryStatus struct {
 
 // 目录来源类别常量：取值由 platform 包定义（日志目录的解析归 platform 所有）。
 //
-// userConfig 为新增取值（macOS 使用 Application Support），其余与 P1-05 D 节一致。
+// 取值由 platform 包定义，日志模块只做透传。
 const (
-	// DirectoryKindUserConfig 表示日志落在用户配置目录（macOS：Application Support）。
+	// DirectoryKindAppRoot 表示日志落在 AppRoot/logs。
+	DirectoryKindAppRoot = platform.LogDirectoryKindAppRoot
+
+	// DirectoryKindUserConfig 保留给旧客户端识别；新版本不再返回。
 	DirectoryKindUserConfig = platform.LogDirectoryKindUserConfig
 
-	// DirectoryKindUserCache 表示日志落在用户缓存目录（Windows：%LocalAppData%）。
+	// DirectoryKindUserCache 保留给旧客户端识别；新版本不再返回。
 	DirectoryKindUserCache = platform.LogDirectoryKindUserCache
 
 	// DirectoryKindExeDir 表示日志回退到可执行文件同级目录。

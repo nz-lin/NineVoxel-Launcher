@@ -104,7 +104,7 @@ export interface SettingsSnapshot {
   enabled: boolean
   /** 存储来源：sqlite / memory。 */
   storageKind: string
-  /** 数据库目录来源类别：userConfig / exeDir / unavailable（不是路径）。 */
+  /** 数据库目录来源类别：appRoot / exeDir / unavailable（不是路径）。 */
   pathKind: string
   /** 初始化失败的稳定错误码；成功时为空。 */
   initErrorCode: string

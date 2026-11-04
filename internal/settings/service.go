@@ -100,7 +100,7 @@ type SettingsSnapshot struct {
 	// StorageKind 为存储来源类别：sqlite / memory。
 	StorageKind string `json:"storageKind"`
 
-	// PathKind 为数据库目录来源类别：userConfig / exeDir / unavailable。
+	// PathKind 为数据库目录来源类别：appRoot / exeDir / unavailable。
 	PathKind string `json:"pathKind"`
 
 	// InitErrorCode 为初始化失败的稳定错误码；成功时为空。

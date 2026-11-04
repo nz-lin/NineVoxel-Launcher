@@ -21,26 +21,16 @@ func TestWebviewDataPathIsWindowsOnly(t *testing.T) {
 	}
 }
 
-// TestLogDirectoryKind 验证日志目录来源类别与平台策略一致。
+// TestLogDirectoryKind 验证日志目录来源类别为 AppRoot/logs。
 func TestLogDirectoryKind(t *testing.T) {
-	baseDir, expectedKind, ok := userLogBaseDir()
-	if !ok {
-		t.Skip("当前环境拿不到标准用户目录，跳过来源类别断言")
+	root := AppRoot()
+	if root == "" {
+		t.Skip("当前环境拿不到 AppRoot，跳过来源类别断言")
 	}
-
-	dir := filepath.Join(baseDir, appDirName, logDirName)
-	if got := LogDirectoryKind(dir); got != expectedKind {
-		t.Fatalf("LogDirectoryKind(%q) = %q，期望 %q", dir, got, expectedKind)
+	dir := filepath.Join(root, logDirName)
+	if got := LogDirectoryKind(dir); got != LogDirectoryKindAppRoot {
+		t.Fatalf("LogDirectoryKind(%q) = %q，期望 %q", dir, got, LogDirectoryKindAppRoot)
 	}
-
-	// macOS 必须使用 Application Support（userConfig）；其他平台保持缓存目录。
-	if runtime.GOOS == "darwin" && expectedKind != LogDirectoryKindUserConfig {
-		t.Fatalf("macOS 日志来源类别期望 %q，实际 %q", LogDirectoryKindUserConfig, expectedKind)
-	}
-	if runtime.GOOS != "darwin" && expectedKind != LogDirectoryKindUserCache {
-		t.Fatalf("%s 日志来源类别期望 %q，实际 %q", runtime.GOOS, LogDirectoryKindUserCache, expectedKind)
-	}
-
 	if got := LogDirectoryKind(""); got != "" {
 		t.Fatalf("空目录应返回空类别，实际 %q", got)
 	}
@@ -54,6 +44,9 @@ func TestLogDirectoryKindExeDir(t *testing.T) {
 	}
 
 	exeLogDir := filepath.Join(filepath.Dir(exePath), logDirName)
+	if root := AppRoot(); root != "" && filepath.Clean(exeLogDir) == filepath.Clean(filepath.Join(root, logDirName)) {
+		t.Skip("便携模式下 exe/logs 就是 AppRoot/logs")
+	}
 	if got := LogDirectoryKind(exeLogDir); got != LogDirectoryKindExeDir {
 		t.Fatalf("LogDirectoryKind(%q) = %q，期望 %q", exeLogDir, got, LogDirectoryKindExeDir)
 	}

@@ -124,7 +124,7 @@ type SnapshotDTO struct {
 	// StorageKind 为存储来源：sqlite / memory。
 	StorageKind string `json:"storageKind"`
 
-	// PathKind 为数据库目录来源类别：userConfig / exeDir / unavailable。
+	// PathKind 为数据库目录来源类别：appRoot / exeDir / unavailable。
 	// 该字段是类别而非路径，不含任何绝对路径。
 	PathKind string `json:"pathKind"`
 

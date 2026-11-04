@@ -27,9 +27,6 @@ import (
 
 // 数据目录与数据库文件名的常量。
 const (
-	// appDataDirName 是用户配置目录下使用的应用数据目录名。
-	appDataDirName = "NineVoxel-Launcher"
-
 	// dataSubDirName 是数据目录下的子目录名。
 	dataSubDirName = "data"
 
@@ -76,19 +73,22 @@ type DatabasePathStatus struct {
 	// Path 为解析出的数据库文件路径；为空表示两处候选目录都不可用。
 	Path string
 
-	// Kind 为路径来源类别：userConfig / exeDir / unavailable。
+	// Kind 为路径来源类别：appRoot / exeDir / unavailable。
 	Kind string
 }
 
 // 路径来源类别常量：与 internal/logging 的 directoryKind 风格保持一致。
 const (
-	// PathKindUserConfig 表示数据库落在用户配置目录。
+	// PathKindAppRoot 表示数据库落在平台 AppRoot 下。
+	PathKindAppRoot = "appRoot"
+
+	// PathKindUserConfig 保留给旧客户端识别；新版本不再返回。
 	PathKindUserConfig = "userConfig"
 
-	// PathKindExeDir 表示数据库回退到可执行文件同级目录。
+	// PathKindExeDir 表示数据库位于可执行文件同级目录（便携模式）。
 	PathKindExeDir = "exeDir"
 
-	// PathKindUnavailable 表示两处目录都不可用。
+	// PathKindUnavailable 表示目录不可用。
 	PathKindUnavailable = "unavailable"
 )
 
@@ -120,16 +120,19 @@ func ResolveDatabasePath() DatabasePathStatus {
 
 // databasePathKind 根据数据根位置返回数据库目录来源类别。
 //
-// artifact.DataRoot 只会返回用户配置目录或 exe 同级便携目录；无法匹配
-// 用户配置目录时按 exe 目录归类，供前端展示而不暴露绝对路径。
+// 只返回类别，不暴露绝对路径；便携模式下 AppRoot 就是可执行文件目录。
 func databasePathKind(root string) string {
-	if configDir, err := os.UserConfigDir(); err == nil && configDir != "" {
-		userRoot := filepath.Join(configDir, appDataDirName, dataSubDirName)
-		if filepath.Clean(root) == filepath.Clean(userRoot) {
-			return PathKindUserConfig
-		}
+	appRoot := platform.AppRoot()
+	if appRoot == "" {
+		return PathKindUserConfig
 	}
-	return PathKindExeDir
+	if filepath.Clean(root) != filepath.Clean(filepath.Join(appRoot, dataSubDirName)) {
+		return PathKindExeDir
+	}
+	if exePath, err := os.Executable(); err == nil && filepath.Clean(filepath.Dir(exePath)) == filepath.Clean(appRoot) {
+		return PathKindExeDir
+	}
+	return PathKindAppRoot
 }
 
 // OpenSQLiteStore 打开（必要时创建）SQLite 设置存储并执行迁移。

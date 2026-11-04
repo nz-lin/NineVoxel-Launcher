@@ -64,7 +64,7 @@ export interface LogStatus {
   /** 日志目录是否可写；false 时本次运行仅输出到控制台。 */
   enabled: boolean
 
-  /** 目录来源类别：userConfig（macOS Application Support）/ userCache（Windows %LocalAppData%）/ exeDir / unavailable。 */
+  /** 目录来源类别：appRoot / exeDir / unavailable。 */
   directoryKind: string
 
   /** 结构化日志文件数量。 */
