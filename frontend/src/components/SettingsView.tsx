@@ -13,7 +13,8 @@ import {
   HardDrive,
   Sun,
   Moon,
-  Palette
+  Palette,
+  Trash2
 } from 'lucide-react';
 import { LauncherSettings, JavaRuntime } from '../types/launcher';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -115,6 +116,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
    * 把进度条走到 100% 当成「成功」会在中途失败时给出错误结论。
    */
   const [rebuildProgress, setRebuildProgress] = useState<{ phase: string; ratio: number } | null>(null);
+  /** 清理未使用核心的确认框、进行状态与结果提示。 */
+  const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
 
   // 滑块上限与刻度按真实物理内存计算，不再写死一个数字。
   const memoryCeilingMb = resolveMemoryCeilingMb(totalMemoryMb);
@@ -166,6 +171,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleRebuildCore = () => {
     if (rebuildBusy) return;
     setConfirmRebuildOpen(true);
+  };
+
+  /** 清理未使用核心：只删无人引用、由启动器安装的版本目录。 */
+  const confirmCleanupUnusedCore = () => {
+    setConfirmCleanupOpen(false);
+    void (async () => {
+      setCleanupBusy(true);
+      setCleanupMessage(null);
+      try {
+        const report = await instanceService.cleanupUnusedCore();
+        const megabytes = (report.freedBytes / (1024 * 1024)).toFixed(1);
+        const removed = report.removed ?? [];
+        const skipped = report.skipped ?? [];
+        if (removed.length === 0) {
+          setCleanupMessage(
+            skipped.length > 0
+              ? `没有可回收的版本（${skipped.length} 个被跳过：仍被引用、正在运行或不是启动器安装的）。`
+              : '没有可回收的版本。'
+          );
+        } else {
+          setCleanupMessage(`已回收 ${removed.length} 个版本，释放 ${megabytes} MB。`);
+        }
+      } catch (cause) {
+        setCleanupMessage(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setCleanupBusy(false);
+      }
+    })();
   };
 
   const confirmRebuildCore = () => {
@@ -402,8 +435,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               实例目录只保留存档、模组与配置。
             </p>
             <p>
-              删除实例不会立即释放全部核心磁盘空间：暂时无人引用的依赖库与资源会保留下来，
-              供其他版本复用。
+              删除实例不会立即释放核心磁盘空间：版本目录会保留到没有实例引用为止，
+              可用下方「清理未使用核心」手动回收。
             </p>
           </div>
         </div>
@@ -457,6 +490,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {rebuildMessage && (
             <p className="text-[11px] text-slate-600 dark:text-neutral-300">{rebuildMessage}</p>
+          )}
+        </div>
+
+        {/* Section 2.6: Reclaim unused core */}
+        <div className="p-5 rounded-2xl bg-white dark:bg-neutral-900/50 border border-slate-200 dark:border-neutral-800 space-y-4 shadow-xs">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2.5">
+              <Trash2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">清理未使用核心</h2>
+                <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                  删除没有任何实例引用的版本目录（versions / loaders）
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                if (cleanupBusy) return;
+                setConfirmCleanupOpen(true);
+              }}
+              disabled={cleanupBusy}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold transition-colors cursor-pointer"
+            >
+              {cleanupBusy ? '清理中…' : '清理核心'}
+            </button>
+          </div>
+
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 space-y-1 text-[11px] text-slate-500 dark:text-neutral-400">
+            <p>只删除由启动器安装、且没有任何实例（含回收站）引用的版本；手动放入的版本目录永不自动删除。</p>
+            <p>正在运行或仍被引用的版本会被跳过；依赖库与资源不在本次回收范围内。</p>
+          </div>
+
+          {cleanupMessage && (
+            <p className="text-[11px] text-slate-600 dark:text-neutral-300">{cleanupMessage}</p>
           )}
         </div>
 
@@ -633,10 +700,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {confirmRebuildOpen && (
         <ConfirmDialog
           title="重建游戏核心"
-          message="将按已安装清单重新生成共享核心，并替换当前的 libraries、assets 与 versions。过程中请勿退出启动器；有游戏运行时请先退出。"
+          message="将按已安装清单重新生成共享核心，并替换当前的 libraries、assets、versions 与 loaders。过程中请勿退出启动器；有游戏运行时请先退出。"
           confirmLabel="开始重建"
           onConfirm={confirmRebuildCore}
           onCancel={() => setConfirmRebuildOpen(false)}
+        />
+      )}
+
+      {confirmCleanupOpen && (
+        <ConfirmDialog
+          title="清理未使用核心"
+          message="将删除没有任何实例引用的版本目录，释放磁盘空间。此操作不可撤销，但不会影响仍被引用的实例；正在运行的版本会自动跳过。"
+          confirmLabel="开始清理"
+          onConfirm={confirmCleanupUnusedCore}
+          onCancel={() => setConfirmCleanupOpen(false)}
         />
       )}
     </div>

@@ -122,6 +122,15 @@ export const instanceService = {
   async rebuildCore() {
     return call(() => InstanceService.RebuildCoreForUser())
   },
+  /**
+   * 回收无人引用的核心版本。
+   *
+   * 只删「由启动器安装」且没有任何实例（含回收站）引用的版本；用户手动放入
+   * 的目录、运行中的版本一律跳过并返回原因。
+   */
+  async cleanupUnusedCore() {
+    return call(() => InstanceService.CleanupUnusedCoreForUser())
+  },
   async listTrash() {
     return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))
   },

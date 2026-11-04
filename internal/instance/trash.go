@@ -138,6 +138,9 @@ func (s *InstanceService) DeleteInstancePermanently(req TrashIDRequest) (TrashLi
 	if err := os.RemoveAll(directory); err != nil {
 		return TrashList{}, errors.New("永久删除失败，文件可能正在被占用")
 	}
+	// 永久删除后回收不再被任何实例（含回收站）引用的核心版本。
+	// 失败不阻断删除结果：清理是附加收益，不该让用户看到「删除失败」。
+	s.reclaimUnusedCoreSilently()
 	return s.listTrashLocked()
 }
 
@@ -178,10 +181,20 @@ func (s *InstanceService) EmptyInstanceTrash() (TrashList, error) {
 	if failed > 0 {
 		return list, fmt.Errorf("清空回收站失败，%d 个条目的文件可能正在被占用", failed)
 	}
+	s.reclaimUnusedCoreSilently()
 	if skipped > 0 {
 		return list, fmt.Errorf("回收站中有 %d 个无法识别的条目，未自动删除", skipped)
 	}
 	return list, nil
+}
+
+// reclaimUnusedCoreSilently 在回收站变更后顺带清理核心。
+//
+// 刻意吞掉错误：调用方刚完成的是「删除实例」这类用户可见操作，核心清理只是
+// 附带的磁盘回收。把清理失败包装成操作失败会误导用户重复删除，而真正的
+// 清理入口（设置页）会如实报告原因。
+func (s *InstanceService) reclaimUnusedCoreSilently() {
+	_, _ = s.CleanupUnusedCore()
 }
 
 func (s *InstanceService) listTrashLocked() (TrashList, error) {
