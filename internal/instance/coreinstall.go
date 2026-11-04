@@ -2,9 +2,12 @@ package instance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/core"
 	"example.com/ninevoxel/launcher/internal/loader"
 )
@@ -38,7 +41,13 @@ func (s *InstanceService) coreInstallLock(identity string) func() {
 // 命中条件（全部满足才复用）：
 //   - 清单存在且结构合法；
 //   - 配方指纹一致（安装器 / profile / 平台未变）；
-//   - 快速校验通过（文件都在且大小一致）。
+//   - 快速校验通过（文件都在且大小一致）；
+//   - **版本 JSON 声明的库在磁盘上齐全**。
+//
+// 最后一条是清单自洽性之外的必要补充：清单可能生成得不完整（历史版本就出现过
+// 漏记整个 install_profile.libraries 的情况），此时清单校验会「通过」——因为它
+// 只检查自己列出的文件。而游戏启动时会因缺库直接失败，表现为
+// `installation is corrupted` 这类无法定位的错误。
 //
 // 任一不满足都返回未命中，由调用方重新安装。慢速校验（逐文件哈希）不放在
 // 这里：它在每次安装入口做会显著拖慢启动，改由修复流程按需触发。
@@ -66,7 +75,64 @@ func (s *InstanceService) installedVersionID(identity loader.Kind, mcVersion, lo
 	if verifyErr != nil || !report.Complete() {
 		return "", false
 	}
+	if !versionLibrariesPresent(s.root, expected) {
+		return "", false
+	}
 	return expected, true
+}
+
+// versionLibrariesPresent 检查版本 JSON 声明的库是否都在磁盘上。
+//
+// 只看这个版本自己的 JSON（不含继承链）：原版库由原版版本的清单负责，
+// 加载器版本的清单只应覆盖它自己声明的那部分。
+//
+// 无法读取版本 JSON 时返回 false：读不出内容就无法确认完整性，
+// 按「未安装」处理比盲目复用更安全。
+func versionLibrariesPresent(root, versionID string) bool {
+	relative, pathErr := artifact.VersionRelPath(versionID, versionID+".json")
+	if pathErr != nil {
+		return false
+	}
+	absolute, resolveErr := artifact.ResolveInsideRoot(root, relative)
+	if resolveErr != nil {
+		return false
+	}
+	body, readErr := os.ReadFile(absolute)
+	if readErr != nil || len(body) == 0 {
+		return false
+	}
+
+	var document struct {
+		Libraries []struct {
+			Downloads *struct {
+				Artifact *struct {
+					Path string `json:"path"`
+				} `json:"artifact"`
+			} `json:"downloads"`
+		} `json:"libraries"`
+	}
+	if jsonErr := json.Unmarshal(body, &document); jsonErr != nil {
+		return false
+	}
+
+	for _, library := range document.Libraries {
+		if library.Downloads == nil || library.Downloads.Artifact == nil {
+			continue
+		}
+		relativePath, validErr := artifact.ValidateRelativePath(library.Downloads.Artifact.Path)
+		if validErr != nil || relativePath != library.Downloads.Artifact.Path {
+			return false
+		}
+		target, targetErr := artifact.ResolveInsideRoot(root, artifact.DirLibraries+"/"+relativePath)
+		if targetErr != nil {
+			return false
+		}
+		info, statErr := os.Stat(target)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	return true
 }
 
 // recipeFingerprint 计算当前安装配方的指纹。

@@ -277,6 +277,169 @@ func TestPlanForgeInstallRequiresVanillaJar(t *testing.T) {
 	}
 }
 
+// TestPlanForgeInstallReadsProfileLibraries 验证 install_profile 的库也被下载。
+//
+// 这是 NeoForge 与 Forge 的关键差异：NeoForge 把加载器主 jar
+// （`neoforge:<ver>:universal`）放在 install_profile.json 的 libraries 里，
+// 而不在 version.json 里。只看 version.json 会装出「能启动但加载器本体缺失」
+// 的版本，客户端报 installation is corrupted。
+func TestPlanForgeInstallReadsProfileLibraries(t *testing.T) {
+	stubProcessorJar(t)
+	root, vanillaJar := prepareRoot(t, "26.3")
+	installer := buildInstallerWithProfileLibraries(t, "neoforge-26.3.0.101", "26.3",
+		// install_profile.libraries：只有这里有 NeoForge 的 universal 主 jar
+		[]map[string]any{
+			{
+				"name": "net.neoforged:neoforge:26.3.0.101:universal",
+				"downloads": map[string]any{"artifact": map[string]any{
+					"path": "net/neoforged/neoforge/26.3.0.101/neoforge-26.3.0.101-universal.jar",
+					"url":  "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.3.0.101/neoforge-26.3.0.101-universal.jar",
+					"sha1": strings.Repeat("c", 40),
+					"size": 7176996,
+				}},
+			},
+			// 两个来源都列出同一个库时必须去重
+			{
+				"name": "net.neoforged:srgutils:1.0.10",
+				"downloads": map[string]any{"artifact": map[string]any{
+					"path": "net/neoforged/srgutils/1.0.10/srgutils-1.0.10.jar",
+					"url":  "https://maven.neoforged.net/releases/net/neoforged/srgutils/1.0.10/srgutils-1.0.10.jar",
+					"sha1": strings.Repeat("e", 40),
+					"size": 72018,
+				}},
+			},
+		},
+		// version.json.libraries：运行时依赖
+		[]map[string]any{
+			{
+				"name": "org.ow2.asm:asm:9.11",
+				"downloads": map[string]any{"artifact": map[string]any{
+					"path": "org/ow2/asm/asm/9.11/asm-9.11.jar",
+					"url":  "https://maven.neoforged.net/releases/org/ow2/asm/asm/9.11/asm-9.11.jar",
+					"sha1": strings.Repeat("d", 40),
+					"size": 131056,
+				}},
+			},
+			{
+				"name": "net.neoforged:srgutils:1.0.10",
+				"downloads": map[string]any{"artifact": map[string]any{
+					"path": "net/neoforged/srgutils/1.0.10/srgutils-1.0.10.jar",
+					"url":  "https://maven.neoforged.net/releases/net/neoforged/srgutils/1.0.10/srgutils-1.0.10.jar",
+					"sha1": strings.Repeat("e", 40),
+					"size": 72018,
+				}},
+			},
+		})
+
+	plan, err := PlanForgeInstall(context.Background(), KindNeoForge, root, installer, vanillaJar)
+	if err != nil {
+		t.Fatalf("规划失败：%s", err.Message)
+	}
+	defer CleanupTempDir(plan)
+
+	paths := map[string]bool{}
+	for _, library := range plan.Libraries {
+		paths[library.TargetRelPath] = true
+	}
+	if !paths["net/neoforged/neoforge/26.3.0.101/neoforge-26.3.0.101-universal.jar"] {
+		t.Fatal("install_profile 的 universal jar 未被计划下载")
+	}
+	if !paths["org/ow2/asm/asm/9.11/asm-9.11.jar"] {
+		t.Fatal("version.json 的库未被计划下载")
+	}
+	// 3 个唯一路径（srgutils 被两个来源重复列出）。
+	if len(plan.Libraries) != 3 {
+		t.Fatalf("库数量 = %d，期望 3（去重后）", len(plan.Libraries))
+	}
+}
+
+// TestPlanForgeInstallRecordsDeclaredArtifacts 验证 data 里的 Maven 路径被记录。
+//
+// NeoForge 的 processor 不声明 outputs，产物只能靠 data 里的
+// `[group:artifact:version]` 定位；不记录就会让重建把它当残留删掉。
+func TestPlanForgeInstallRecordsDeclaredArtifacts(t *testing.T) {
+	stubProcessorJar(t)
+	root, vanillaJar := prepareRoot(t, "26.3")
+	installer := buildInstaller(t, "neoforge-26.3.0.101", "26.3", forgeFixture{
+		data: map[string]any{
+			"PATCHED":  map[string]string{"client": "[net.neoforged:minecraft-client-patched:26.3.0.101]"},
+			"BINPATCH": map[string]string{"client": "/data/client.lzma"},
+		},
+		processors: []map[string]any{{
+			// 无 sides → 双侧 → 客户端执行
+			"jar":  "net.neoforged.installertools:installertools:4.0.17:fatjar",
+			"args": []string{"--task", "PROCESS_MINECRAFT_JAR", "--output", "{PATCHED}"},
+			// 无 outputs 声明
+		}},
+		extraFiles: map[string]string{"data/client.lzma": "lzma"},
+	})
+
+	plan, err := PlanForgeInstall(context.Background(), KindNeoForge, root, installer, vanillaJar)
+	if err != nil {
+		t.Fatalf("规划失败：%s", err.Message)
+	}
+	defer CleanupTempDir(plan)
+
+	expected := filepath.Join(root, "libraries", "net", "neoforged", "minecraft-client-patched",
+		"26.3.0.101", "minecraft-client-patched-26.3.0.101.jar")
+	found := false
+	for _, declared := range plan.DeclaredArtifacts {
+		if declared == expected {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("data 产物未记录：期望 %q，实际 %v", expected, plan.DeclaredArtifacts)
+	}
+	// 无 sides 的 processor 必须进入客户端执行列表。
+	if len(plan.Processors) != 1 {
+		t.Fatalf("processor 数量 = %d，期望 1", len(plan.Processors))
+	}
+	if len(plan.Processors[0].Outputs) != 0 {
+		t.Fatalf("该 processor 不应有 outputs，实际 %d", len(plan.Processors[0].Outputs))
+	}
+}
+
+// buildInstallerWithProfileLibraries 生成带 install_profile.libraries 的安装器。
+func buildInstallerWithProfileLibraries(t *testing.T, versionID, mcVersion string, profileLibraries, versionLibraries []map[string]any) string {
+	t.Helper()
+	profile := map[string]any{
+		"spec":      1,
+		"profile":   "NeoForge",
+		"version":   versionID,
+		"minecraft": mcVersion,
+		"json":      "/version.json",
+		"data":      map[string]any{},
+		"processors": []map[string]any{{
+			"jar":  "net.neoforged.installertools:installertools:4.0.17:fatjar",
+			"args": []string{"--task", "PROCESS_MINECRAFT_JAR"},
+		}},
+		"libraries": profileLibraries,
+	}
+	version := map[string]any{
+		"id":           versionID,
+		"inheritsFrom": mcVersion,
+		"mainClass":    "net.neoforged.fml.startup.Client",
+		"libraries":    versionLibraries,
+	}
+
+	path := filepath.Join(t.TempDir(), "installer.jar")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	encodedProfile, _ := json.Marshal(profile)
+	encodedVersion, _ := json.Marshal(version)
+	entry, _ := archive.Create("install_profile.json")
+	_, _ = entry.Write(encodedProfile)
+	entry, _ = archive.Create("version.json")
+	_, _ = entry.Write(encodedVersion)
+	_ = archive.Close()
+	_ = file.Close()
+	return path
+}
+
 // ===== 参数替换 =====
 
 // TestSubstituteBuiltinsAndData 验证内置键与 data 键同时生效。

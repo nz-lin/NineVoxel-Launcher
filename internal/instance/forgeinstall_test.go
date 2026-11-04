@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"example.com/ninevoxel/launcher/internal/loader"
 )
 
 // 本文件覆盖加载器安装的两个易错点：
@@ -85,6 +87,99 @@ func TestBuildCoreManifestIncludesProcessorOutput(t *testing.T) {
 	}
 	if groups["versions/1.0-forge/1.0-forge.json"] != "versionJson" {
 		t.Fatalf("版本描述分组 = %q", groups["versions/1.0-forge/1.0-forge.json"])
+	}
+}
+
+// TestVersionLibrariesPresent 验证「版本 JSON 引用的库是否齐全」的检测。
+//
+// 这个检测解决的是清单自洽性的盲区：清单只校验自己列出的文件，
+// 若清单本身漏记了库（历史 bug），校验会「通过」但游戏起不来。
+func TestVersionLibrariesPresent(t *testing.T) {
+	root := t.TempDir()
+	versionID := "1.20.1-forge-47.3.12"
+	writeVersion := func(libraries string) {
+		dir := filepath.Join(root, "versions", versionID)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := `{"id":"` + versionID + `","inheritsFrom":"1.20.1","libraries":[` + libraries + `]}`
+		if err := os.WriteFile(filepath.Join(dir, versionID+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeLibrary := func(relative string) {
+		target := filepath.Join(root, "libraries", filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("jar"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 缺少版本 JSON。
+	if versionLibrariesPresent(root, versionID) {
+		t.Fatal("没有版本 JSON 时应返回 false")
+	}
+
+	// 库齐全。
+	writeVersion(`{"downloads":{"artifact":{"path":"a/b/1.0/b-1.0.jar"}}}`)
+	writeLibrary("a/b/1.0/b-1.0.jar")
+	if !versionLibrariesPresent(root, versionID) {
+		t.Fatal("库齐全时应返回 true")
+	}
+
+	// 库缺失（清单可能仍然「自洽」，但游戏会失败）。
+	writeVersion(`{"downloads":{"artifact":{"path":"a/missing/1.0/missing-1.0.jar"}}}`)
+	if versionLibrariesPresent(root, versionID) {
+		t.Fatal("引用的库缺失时应返回 false")
+	}
+
+	// 无 downloads 的条目是 processor 产物，不参与检查。
+	writeVersion(`{"name":"x:y:1.0"}`)
+	if !versionLibrariesPresent(root, versionID) {
+		t.Fatal("无下载地址的条目不应导致失败")
+	}
+
+	// 损坏的 JSON 视为不可用。
+	if err := os.WriteFile(filepath.Join(root, "versions", versionID, versionID+".json"), []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if versionLibrariesPresent(root, versionID) {
+		t.Fatal("损坏的版本 JSON 应返回 false")
+	}
+}
+
+// TestProcessorArtifactsOnlyIncludesExisting 验证只记录真实存在的产物。
+//
+// data 里的 `[net.minecraft:client:<ver>]` 一类是原版**输入**而不是产物，
+// 安装后并不存在；把它记入清单会让重建去保留一个永不存在的路径。
+func TestProcessorArtifactsOnlyIncludesExisting(t *testing.T) {
+	root := t.TempDir()
+	generated := filepath.Join(root, "libraries", "net", "neoforged",
+		"minecraft-client-patched", "26.3.0.101", "minecraft-client-patched-26.3.0.101.jar")
+	if err := os.MkdirAll(filepath.Dir(generated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, []byte("jar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(root, "libraries", "net", "minecraft", "client", "26.3", "client-26.3.jar")
+
+	plan := loader.ForgeInstallPlan{
+		Processors: []loader.ProcessorStep{
+			// 有 outputs 且真实存在
+			{Outputs: []loader.ProcessorOutput{{AbsolutePath: generated}}},
+			// 有 outputs 但不存在
+			{Outputs: []loader.ProcessorOutput{{AbsolutePath: absent}}},
+		},
+		DeclaredArtifacts: []string{generated, absent},
+	}
+
+	got := processorArtifacts(root, plan)
+	expected := "libraries/net/neoforged/minecraft-client-patched/26.3.0.101/minecraft-client-patched-26.3.0.101.jar"
+	if len(got) != 1 || got[0] != expected {
+		t.Fatalf("产物列表 = %v，期望 [%q]", got, expected)
 	}
 }
 

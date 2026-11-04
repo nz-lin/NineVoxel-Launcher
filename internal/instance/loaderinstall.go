@@ -153,13 +153,7 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 
 	// processor 产出显式记入清单：它们没有下载源，扫描目录无法区分
 	// 「本次生成」与「上次残留」。
-	for _, step := range plan.Processors {
-		for _, output := range step.Outputs {
-			if relative, relErr := filepath.Rel(s.root, output.AbsolutePath); relErr == nil {
-				artifacts.ProcessorOutputs = append(artifacts.ProcessorOutputs, filepath.ToSlash(relative))
-			}
-		}
-	}
+	artifacts.ProcessorOutputs = append(artifacts.ProcessorOutputs, processorArtifacts(s.root, plan)...)
 
 	// 清单是唯一的「安装成功」判据：写不出来就说明产物不完整。
 	if err := s.writeCoreManifest(kind, item.MCVersion, item.LoaderVersion, plan.VersionID, artifacts); err != nil {
@@ -173,6 +167,47 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	}
 	s.removeObsoleteLoaderVersion(item, plan.VersionID)
 	return nil
+}
+
+// processorArtifacts 汇总本次安装生成的、没有独立下载源的产物。
+//
+// 两个来源缺一不可：
+//
+//	outputs 声明    Forge 提供；有哈希，可校验
+//	data 声明       NeoForge 不提供 outputs，产物路径只在 data 里出现
+//
+// 只记录**实际存在**的路径：data 里的 `[net.minecraft:client:<ver>]` 一类
+// 是原版输入而不是产物，安装后并不存在，不该进清单。
+func processorArtifacts(root string, plan loader.ForgeInstallPlan) []string {
+	result := make([]string, 0, len(plan.Processors)+len(plan.DeclaredArtifacts))
+	seen := make(map[string]struct{}, cap(result))
+
+	record := func(absolute string) {
+		info, statErr := os.Stat(absolute)
+		if statErr != nil || !info.Mode().IsRegular() {
+			return
+		}
+		relative, relErr := filepath.Rel(root, absolute)
+		if relErr != nil || strings.HasPrefix(relative, "..") {
+			return
+		}
+		slash := filepath.ToSlash(relative)
+		if _, exists := seen[slash]; exists {
+			return
+		}
+		seen[slash] = struct{}{}
+		result = append(result, slash)
+	}
+
+	for _, step := range plan.Processors {
+		for _, output := range step.Outputs {
+			record(output.AbsolutePath)
+		}
+	}
+	for _, declared := range plan.DeclaredArtifacts {
+		record(declared)
+	}
+	return result
 }
 
 // vanillaClientJarPath 返回原版客户端 jar 的绝对路径。

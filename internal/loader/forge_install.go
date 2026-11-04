@@ -124,6 +124,12 @@ type ForgeInstallPlan struct {
 	ProcessorJars []ProcessorJar
 	// Processors 是按序执行的 client 侧 processor。
 	Processors []ProcessorStep
+	// DeclaredArtifacts 是 data 里以 Maven 坐标形态声明的路径（绝对路径）。
+	//
+	// 这些位置由 processor 生成，但部分版本（NeoForge）**不提供 outputs
+	// 哈希声明**，无法通过 outputs 判断与校验。安装结束后检查这些路径是否
+	// 真实存在，存在即记入清单的 processor 组——否则重建会把它们当残留删掉。
+	DeclaredArtifacts []string
 	// TempDir 是安装期临时目录；调用方在执行结束后必须整体删除。
 	TempDir string
 	// MinecraftJarSource 是原版客户端 jar 的绝对路径。
@@ -143,6 +149,12 @@ type forgeInstallProfile struct {
 	Minecraft  string                       `json:"minecraft"`
 	Data       map[string]forgeProfileValue `json:"data"`
 	Processors []forgeProcessorDocument     `json:"processors"`
+	// Libraries 是该安装格式自带的库列表。
+	//
+	// Forge 不提供这个字段（库全在 version.json 里），NeoForge 则把
+	// **自己的主 jar**（`neoforge:<version>:universal`，7 MB 量级）放在这里。
+	// 遗漏它会导致安装「成功」但运行时找不到加载器本体。
+	Libraries []forgeLibraryDocument `json:"libraries"`
 }
 
 // forgeProfileValue 是 data 条目的双侧取值。
@@ -251,10 +263,11 @@ func PlanForgeInstall(ctx context.Context, kind Kind, root, installerPath, minec
 		return ForgeInstallPlan{}, resolveErr
 	}
 	plan.TempDir = resolver.extractDir
+	plan.DeclaredArtifacts = resolver.mavenArtifacts
 	// 失败路径由调用方通过 plan.TempDir 清理；这里不 defer，
 	// 因为成功时临时目录还要留给执行阶段使用。
 
-	if err := planLoaderLibraries(&plan); err != nil {
+	if err := planLoaderLibraries(&plan, profile); err != nil {
 		return ForgeInstallPlan{}, err
 	}
 
@@ -304,44 +317,76 @@ func PlanForgeInstall(ctx context.Context, kind Kind, root, installerPath, minec
 	return plan, nil
 }
 
-// planLoaderLibraries 把 version.json 里带下载地址的库转成下载项。
+// planLoaderLibraries 汇总加载器自身的依赖库下载项。
 //
-// 缺失下载地址的条目是 processor 的产出（例如 Forge 的 client jar），
-// 由执行阶段生成，不能当作规划失败——这正是官方安装器同样处理的情形。
-func planLoaderLibraries(plan *ForgeInstallPlan) *Error {
+// 两个来源都必须读，缺一不可：
+//
+//	version.json        两家都有；包含加载器的运行时依赖
+//	install_profile     仅 NeoForge 有；包含 neoforge:<ver>:universal 主 jar
+//
+// 只看 version.json 会让 NeoForge 装出一个「能启动但加载器本体缺失」的
+// 版本，客户端会报 installation is corrupted。
+//
+// 按目标路径去重：两家可能列出同一个库。
+func planLoaderLibraries(plan *ForgeInstallPlan, profile forgeInstallProfile) *Error {
+	seen := make(map[string]struct{}, len(plan.Libraries))
+
 	var document forgeVersionDocument
 	if jsonErr := json.Unmarshal(plan.VersionJSON, &document); jsonErr != nil {
 		return installerError("官方安装器的版本描述格式不正确。", false)
 	}
-	for _, library := range document.Libraries {
-		if library.Downloads == nil || library.Downloads.Artifact == nil {
-			continue
+
+	sources := [][]forgeLibraryDocument{document.Libraries, profile.Libraries}
+	for _, libraries := range sources {
+		for _, library := range libraries {
+			item, err := loaderLibraryPlanItem(library)
+			if err != nil {
+				return err
+			}
+			if item == nil {
+				continue
+			}
+			if _, exists := seen[item.TargetRelPath]; exists {
+				continue
+			}
+			seen[item.TargetRelPath] = struct{}{}
+			plan.Libraries = append(plan.Libraries, *item)
 		}
-		entry := library.Downloads.Artifact
-		if strings.TrimSpace(entry.URL) == "" {
-			continue
-		}
-		relative, pathErr := artifact.ValidateRelativePath(entry.Path)
-		if pathErr != nil || relative != entry.Path {
-			return installerError("加载器依赖库的路径无效，文件可能已损坏。", false)
-		}
-		if err := validateDownloadTarget(entry.URL); err != nil {
-			return installerError("加载器依赖库的下载地址不在允许的来源列表中。", false)
-		}
-		if entry.Size <= 0 {
-			return installerError("加载器依赖库缺少文件大小，文件可能已损坏。", false)
-		}
-		plan.Libraries = append(plan.Libraries, download.PlanItem{
-			ArtifactID:    "loader-library/" + entry.Path,
-			TaskType:      download.TaskTypeLibrary,
-			SourceURI:     entry.URL,
-			TargetRelPath: relative,
-			TargetKind:    download.TargetKindShared,
-			ExpectedSHA1:  strings.ToLower(entry.SHA1),
-			ExpectedSize:  entry.Size,
-		})
 	}
 	return nil
+}
+
+// loaderLibraryPlanItem 把一条库记录转成下载项；跳过无下载地址的条目。
+//
+// 缺失下载地址的条目是 processor 的产出（例如 Forge 的 client jar），
+// 由执行阶段生成，不能当作规划失败——这正是官方安装器同样处理的情形。
+func loaderLibraryPlanItem(library forgeLibraryDocument) (*download.PlanItem, *Error) {
+	if library.Downloads == nil || library.Downloads.Artifact == nil {
+		return nil, nil
+	}
+	entry := library.Downloads.Artifact
+	if strings.TrimSpace(entry.URL) == "" {
+		return nil, nil
+	}
+	relative, pathErr := artifact.ValidateRelativePath(entry.Path)
+	if pathErr != nil || relative != entry.Path {
+		return nil, installerError("加载器依赖库的路径无效，文件可能已损坏。", false)
+	}
+	if err := validateDownloadTarget(entry.URL); err != nil {
+		return nil, installerError("加载器依赖库的下载地址不在允许的来源列表中。", false)
+	}
+	if entry.Size <= 0 {
+		return nil, installerError("加载器依赖库缺少文件大小，文件可能已损坏。", false)
+	}
+	return &download.PlanItem{
+		ArtifactID:    "loader-library/" + entry.Path,
+		TaskType:      download.TaskTypeLibrary,
+		SourceURI:     entry.URL,
+		TargetRelPath: relative,
+		TargetKind:    download.TargetKindShared,
+		ExpectedSHA1:  strings.ToLower(entry.SHA1),
+		ExpectedSize:  entry.Size,
+	}, nil
 }
 
 // resolveProcessorJarDep 是 resolveProcessorJar 的注入点。
@@ -471,6 +516,11 @@ type forgeValueResolver struct {
 	resolved      map[string]string
 	resolving     map[string]bool
 	profile       forgeInstallProfile
+	// mavenArtifacts 记录 data 里以 Maven 坐标形态声明的绝对路径。
+	//
+	// 这些位置由 processor 生成；部分版本不提供 outputs 哈希声明，
+	// 只能靠「安装后该路径是否存在」来判定产物。
+	mavenArtifacts []string
 }
 
 // newForgeValueResolver 构造解析器并预先解析全部 data 条目。
@@ -563,6 +613,7 @@ func (r *forgeValueResolver) resolveLiteral(raw string) (string, *Error) {
 		if resolveErr != nil {
 			return "", installerError("依赖库路径无效。", false)
 		}
+		r.recordMavenArtifact(absolute)
 		return absolute, nil
 	}
 
@@ -618,6 +669,16 @@ func (r *forgeValueResolver) extractInstallerEntry(name string) (string, *Error)
 		return target, nil
 	}
 	return "", installerError("官方安装器缺少必需的数据文件，文件可能已损坏。", false)
+}
+
+// recordMavenArtifact 记录一个 Maven 形态的路径（去重）。
+func (r *forgeValueResolver) recordMavenArtifact(absolute string) {
+	for _, existing := range r.mavenArtifacts {
+		if existing == absolute {
+			return
+		}
+	}
+	r.mavenArtifacts = append(r.mavenArtifacts, absolute)
 }
 
 // processorStep 构造一步 processor 执行：替换参数与产出路径。
