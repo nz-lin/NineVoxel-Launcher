@@ -380,6 +380,10 @@ export default function App() {
   };
 
   const handleOpenFolder = (folderPathOrId: string) => {
+    if (folderPathOrId === 'Ninevoxel/javaruntime') {
+      void runtimeService.openRuntimeFolder().catch(reportError);
+      return;
+    }
     const inst = instances.find(item => item.id === folderPathOrId || item.folderPath === folderPathOrId);
     if (inst) { void instanceService.openFolder(inst.id).catch(reportError); }
     else { showToast('此目录的打开入口尚未接入。'); }

@@ -274,7 +274,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div>
                 <h2 className="text-sm font-bold text-slate-900 dark:text-neutral-100">Java Runtime 独立隔离环境</h2>
                 <p className="text-[11px] text-slate-500 dark:text-neutral-400">
-                  本地存储根目录: <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">Ninevoxel/javaruntime/</code>
+                  本地存储目录: <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">数据根/runtimes/</code>
                 </p>
               </div>
             </div>
