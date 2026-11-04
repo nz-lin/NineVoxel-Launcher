@@ -151,16 +151,16 @@ func versionDirectorySet(gameDirectory string) (map[string]bool, error) {
 	return result, nil
 }
 
+// removeObsoleteLoaderVersion 清理切换加载器后不再需要的旧核心版本。
+//
+// 必须做引用检查：核心版本由所有实例共用，直接删除会让其他仍在使用该版本的
+// 实例无法启动，而故障现象与操作对象完全无关（A 实例换加载器，B 实例起不来）。
 func (s *InstanceService) removeObsoleteLoaderVersion(item Instance, currentVersionID string) {
 	previous := strings.TrimSpace(item.VersionID)
-	if previous == "" || previous == item.MCVersion || previous == currentVersionID || !safeVersionDirectoryName(previous) {
+	if previous == "" || previous == item.MCVersion || previous == currentVersionID {
 		return
 	}
-	target, err := managedPath(s.root, "versions/"+previous)
-	if err != nil {
-		return
-	}
-	_ = os.RemoveAll(target)
+	s.removeCoreVersionIfUnreferenced(previous, item.ID)
 }
 
 func safeVersionDirectoryName(versionID string) bool {
@@ -268,9 +268,8 @@ func (s *InstanceService) UninstallLoader(req IDRequest) (Instance, error) {
 	s.mu.Unlock()
 
 	if oldVersionID != "" && oldVersionID != item.MCVersion && safeVersionDirectoryName(oldVersionID) {
-		if target, pathErr := managedPath(s.root, "versions/"+oldVersionID); pathErr == nil {
-			_ = os.RemoveAll(target)
-		}
+		// 核心版本由所有实例共用：只有确认无人引用时才删除。
+		s.removeCoreVersionIfUnreferenced(oldVersionID, item.ID)
 	}
 	_ = disableJarMods(game)
 	return item, nil

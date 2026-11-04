@@ -481,7 +481,12 @@ func TestInstallationFailureRetryAndIdempotence(t *testing.T) {
 	if list.Items[0].InstallationState != "failed" || !strings.Contains(list.Items[0].InstallationError, "fixture") {
 		t.Fatalf("failure lost: %+v", list)
 	}
-	s.installer = func(context.Context, Instance) error { return nil }
+	s.installer = func(context.Context, Instance) error {
+		// 真实安装必然在核心中产出对应版本目录；这里如实模拟，
+		// 否则「已安装」状态会被核心校验判为不成立。
+		fixtureWrite(t, filepath.Join(s.root, "versions", "1.21.4", "1.21.4.json"), []byte(`{"id":"1.21.4"}`))
+		return nil
+	}
 	if _, err := s.InstallInstance(IDRequest{InstanceID: item.ID}); err != nil {
 		t.Fatal(err)
 	}

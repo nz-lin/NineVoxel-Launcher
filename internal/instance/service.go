@@ -263,7 +263,37 @@ func (s *InstanceService) listLocked() (List, error) {
 	if err := rows.Err(); err != nil {
 		return result, errors.New("读取实例列表失败")
 	}
+
+	// 派生「实际可启动状态」：核心版本被删除（例如另一个实例卸载加载器时
+	// 误删）后，清单里仍写着 installed，但启动必然失败。这里按核心现状修正
+	// 返回给界面的状态，让用户看到「需要重新安装」而不是一个装好的实例。
+	//
+	// 只改返回值、不回写存储：列表是只读操作，回写会让一次查询变成写事务，
+	// 也会把「核心暂时不可访问」误记成「实例未安装」。
+	for index := range result.Items {
+		result.Items[index] = s.withActualInstallState(result.Items[index])
+	}
 	return result, nil
+}
+
+// withActualInstallState 用核心现状修正实例的安装状态。
+//
+// 只处理「清单说已安装、但核心里找不到对应版本」这一种情况：其余状态
+// （安装中、失败、未安装）由各自的流程维护，不应在这里覆盖。
+func (s *InstanceService) withActualInstallState(item Instance) Instance {
+	if item.InstallationState != "installed" {
+		return item
+	}
+	versionID := strings.TrimSpace(item.VersionID)
+	if versionID == "" {
+		versionID = strings.TrimSpace(item.MCVersion)
+	}
+	if coreVersionInstalled(s.root, versionID) {
+		return item
+	}
+	item.InstallationState = "not_installed"
+	item.InstallationProgress = 0
+	return item
 }
 
 func (s *InstanceService) getLocked(id string) (Instance, error) {
