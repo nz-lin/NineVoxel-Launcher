@@ -85,6 +85,19 @@ export const instanceService = {
   async uninstallLoader(id: string) {
     return toInstance(await call(() => InstanceService.UninstallLoader({ instanceId: id })))
   },
+  /** 校验实例依赖的核心资源完整性（逐文件哈希）。 */
+  async verifyCore(instanceId: string) {
+    return call(() => InstanceService.VerifyInstance({ instanceId }))
+  },
+  /**
+   * 修复实例依赖的核心资源：只补齐缺失或损坏的文件。
+   *
+   * 返回 `needsReinstall` 时说明问题超出修复能力（加载器产物或版本元数据
+   * 损坏），界面应引导用户重新安装而不是重复点击修复。
+   */
+  async repairCore(instanceId: string) {
+    return call(() => InstanceService.RepairInstanceForUser({ instanceId }))
+  },
   async listTrash() {
     return toTrashItems(await call(() => InstanceService.ListInstanceTrash()))
   },

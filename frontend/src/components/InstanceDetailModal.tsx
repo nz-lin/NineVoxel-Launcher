@@ -125,6 +125,9 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
   // Loaders upgrade / switch state
   const [loaderActionBusy, setLoaderActionBusy] = useState(false);
   const [loaderActionError, setLoaderActionError] = useState<string | null>(null);
+  /** 核心资源校验与修复的进行状态与结果提示。 */
+  const [repairBusy, setRepairBusy] = useState(false);
+  const [repairMessage, setRepairMessage] = useState<string | null>(null);
   const [loaderInstallOpen, setLoaderInstallOpen] = useState(false);
   const [newLoaderType, setNewLoaderType] = useState<ModLoaderType>('fabric');
   const [newLoaderVer, setNewLoaderVer] = useState('');
@@ -224,6 +227,41 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
         setLoaderActionError(cause instanceof Error ? cause.message : String(cause));
       } finally {
         setLoaderActionBusy(false);
+      }
+    })();
+  };
+
+  /**
+   * 校验并修复核心资源。
+   *
+   * 先校验再修复：修复本身也会校验，但先跑一次能让用户知道「到底坏没坏」，
+   * 而不是点一次修复等半天才发现本来就没问题。
+   */
+  const handleVerifyAndRepair = () => {
+    if (repairBusy) return;
+    void (async () => {
+      setRepairBusy(true);
+      setRepairMessage(null);
+      try {
+        const check = await instanceService.verifyCore(instance.id);
+        if (!check.hasManifest) {
+          setRepairMessage('该版本缺少安装记录，无法校验，请重新安装。');
+          return;
+        }
+        if (check.complete) {
+          setRepairMessage(`已校验 ${check.checked} 个文件，全部完整。`);
+          return;
+        }
+        const report = await instanceService.repairCore(instance.id);
+        if (report.needsReinstall) {
+          setRepairMessage(report.reason || '部分文件无法自动修复，请重新安装。');
+          return;
+        }
+        setRepairMessage(`已修复 ${report.repaired} 个文件，共校验 ${report.checked} 个。`);
+      } catch (cause) {
+        setRepairMessage(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setRepairBusy(false);
       }
     })();
   };
@@ -488,6 +526,29 @@ export const InstanceDetailModal: React.FC<InstanceDetailModalProps> = ({
           {/* TAB 1: LOADERS MANAGEMENT (Install, Uninstall, Update) */}
           {activeTab === 'loaders' && (
             <div className="space-y-5">
+              {/* 核心资源校验与修复：文件损坏时不必重装整个版本 */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-950/60 border border-slate-200 dark:border-neutral-800 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <p className="text-xs font-semibold text-slate-700 dark:text-neutral-300">核心资源校验</p>
+                    <p className="text-[11px] text-slate-500 dark:text-neutral-400">
+                      逐文件校验并补齐缺失或损坏的依赖库、资源与原生库；不会改动存档与模组。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleVerifyAndRepair}
+                    disabled={repairBusy}
+                    className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs transition-colors cursor-pointer"
+                  >
+                    {repairBusy ? '处理中…' : '校验并修复'}
+                  </button>
+                </div>
+                {repairMessage && (
+                  <p className="text-[11px] text-slate-600 dark:text-neutral-400">{repairMessage}</p>
+                )}
+              </div>
+
               {loaderActionError && (
                 <div role="alert" className="flex items-start gap-2 p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-700 dark:text-rose-300">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
