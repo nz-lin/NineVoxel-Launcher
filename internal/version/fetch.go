@@ -30,6 +30,7 @@ import (
 
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/logging"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 // 版本元数据下载相关的常量。
@@ -49,7 +50,7 @@ const (
 // 与清单客户端共用同一套约束：https + 白名单 host、重定向每跳复检、跳数上限。
 func newFetchHTTPClient() *http.Client {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: platform.ProxyFunc(),
 		DialContext: (&net.Dialer{
 			Timeout:   fetchDialTimeout,
 			KeepAlive: 30 * time.Second,

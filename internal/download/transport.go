@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"example.com/ninevoxel/launcher/internal/logging"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const (
@@ -181,8 +182,9 @@ func NewHTTPTransport(opts HTTPTransportOptions) *HTTPTransport {
 	client := opts.Client
 	if client == nil {
 		client = &http.Client{
-			// 不设 Proxy：D-30 已冻结「不复用系统代理、不支持手配代理」。
+			// 代理：环境变量优先，其次操作系统设置（见 platform.ProxyFunc）。
 			Transport: &http.Transport{
+				Proxy:       platform.ProxyFunc(),
 				DialContext: (&net.Dialer{Timeout: transferConnectTimeout}).DialContext,
 				// 不猜协议、不启用压缩：Accept-Encoding 显式设为 identity。
 				ForceAttemptHTTP2: true,

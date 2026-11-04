@@ -797,10 +797,19 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 		return nil, newInputError(code, javaResult.ErrorMessage)
 	}
 
-	// 游戏根目录归一化（P2-02）。
+	// 游戏根目录归一化（P2-02）。这是实例的可变状态目录。
 	root, _, pathErr := normalizeGameRoot(req.GameDirectory)
 	if pathErr != nil {
 		return nil, pathErr
+	}
+
+	// 共享核心根：版本 JSON、libraries、assets、versions 都在这里。
+	//
+	// 版本元数据必须从核心根读取：实例目录在共享布局下只剩可变状态，
+	// 从实例目录找 versions/<id>/<id>.json 必然落空。
+	resourceRoot, rootErr := resolveResourceRoot()
+	if rootErr != nil {
+		return nil, rootErr
 	}
 
 	versionID := strings.TrimSpace(req.VersionID)
@@ -809,7 +818,7 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 	}
 
 	// P2-03：加载并合并版本。
-	outcome := loadMergedVersion(root, versionID)
+	outcome := loadMergedVersion(resourceRoot, versionID)
 	if outcome.merged == nil {
 		code := outcome.errorCode
 		if code == "" {
@@ -831,11 +840,6 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 
 	var plan *LaunchPlan
 	var planErr *Error
-	// 共享核心根：libraries / assets / versions 都从这里读取。
-	resourceRoot, rootErr := resolveResourceRoot()
-	if rootErr != nil {
-		return nil, rootErr
-	}
 	// AccountIdentity 全部字段为字符串，可直接与零值比较；
 	// 若将来加入切片/映射字段，这里必须改成显式判断（见 identity.go）。
 	if identity == (AccountIdentity{}) {

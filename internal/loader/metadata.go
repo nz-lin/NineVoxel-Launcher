@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const (
@@ -47,7 +48,7 @@ var metadataAllowedHosts = map[string]bool{
 
 func newMetadataHTTPClient() *http.Client {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: platform.ProxyFunc(),
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,

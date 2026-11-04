@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/platform"
 	"example.com/ninevoxel/launcher/internal/download"
 	"example.com/ninevoxel/launcher/internal/logging"
 )
@@ -219,7 +220,7 @@ var adoptiumMirrorEnabled = readMirrorEnabledSetting
 // 不使用 http.DefaultClient：默认客户端没有超时、且可能被其它包改写。
 func newAdoptiumHTTPClient() *http.Client {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: platform.ProxyFunc(),
 		DialContext: (&net.Dialer{
 			Timeout:   adoptiumDialTimeout,
 			KeepAlive: 30 * time.Second,

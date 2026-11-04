@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"example.com/ninevoxel/launcher/internal/logging"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 // 清单相关的常量。
@@ -131,7 +132,13 @@ var (
 	// newManifestHTTPClient 构造清单请求客户端，测试可替换以注入假 Transport。
 	newManifestHTTPClient = func() *http.Client {
 		return &http.Client{
-			Timeout:       manifestHTTPTimeout,
+			Timeout: manifestHTTPTimeout,
+			// 显式设置 Transport：不设时用 http.DefaultTransport，它只读环境变量，
+			// 在 Windows 上通过「Internet 选项」配置的代理会被忽略。
+			Transport: &http.Transport{
+				Proxy:               platform.ProxyFunc(),
+				TLSHandshakeTimeout: manifestHTTPTimeout,
+			},
 			CheckRedirect: checkManifestRedirect,
 		}
 	}

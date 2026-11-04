@@ -36,6 +36,19 @@ type DiskSpaceProbe interface {
 	AvailableBytes(path string) (int64, error)
 }
 
+// ProxyProbe 返回操作系统的代理配置。
+//
+// 为什么需要它：Go 的 `http.ProxyFromEnvironment` 只读 `HTTP_PROXY` /
+// `HTTPS_PROXY` 环境变量，不读 Windows 的「Internet 选项」与 macOS 的
+// 「网络偏好设置」。只依赖环境变量会让在系统设置里配了代理的用户静默走直连，
+// 表现为「明明能上网但下载极慢或失败」。
+type ProxyProbe interface {
+	// SystemProxy 返回形如 `http://127.0.0.1:7898` 的代理地址。
+	//
+	// 第二个返回值为 false 表示系统未启用代理或无法解析（例如使用 PAC）。
+	SystemProxy() (string, bool)
+}
+
 // ProcessProbe 查询进程的身份信息，用于判定租约是否残留。
 //
 // 为什么需要它：启动器崩溃后，磁盘上的运行时租约不会被主动清除。恢复时必须
@@ -69,6 +82,7 @@ type Capabilities struct {
 	ArgFile   ArgFileCodec
 	Process   ProcessDecorator
 	Identity  ProcessProbe
+	Proxy     ProxyProbe
 	Disk      DiskSpaceProbe
 }
 
@@ -82,6 +96,7 @@ var Current = Capabilities{
 	ArgFile:   argFileCapability{},
 	Process:   processCapability{},
 	Identity:  identityCapability{},
+	Proxy:     proxyCapability{},
 	Disk:      diskCapability{},
 }
 
@@ -112,3 +127,6 @@ func (diskCapability) AvailableBytes(path string) (int64, error) { return availa
 type identityCapability struct{}
 
 func (identityCapability) ProcessState(pid uint32) (ProcessState, int64) { return processState(pid) }
+type proxyCapability struct{}
+
+func (proxyCapability) SystemProxy() (string, bool) { return systemProxy() }

@@ -14,6 +14,7 @@ import (
 
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/download"
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const installerChecksumMaxBytes = 4 << 10
@@ -154,10 +155,15 @@ type InstallerContext struct {
 	ResourceRoot string
 }
 
-// RunInstaller executes the verified official installer in client mode. The
-// upstream installer performs its own downloads and processor steps; output is
-// captured only for a concise failure indication and never echoed verbatim to
-// the UI.
+// RunInstaller executes the verified official installer in client mode.
+//
+// 参数 paths.GameDirectory 会被**显式**传给安装器（`--installClient <path>`）。
+// 不能只依赖进程工作目录：现代 Forge / NeoForge 安装器在没有参数时会把
+// `%APPDATA%\.minecraft`（macOS 为 `~/Library/Application Support/minecraft`）
+// 当作目标目录，工作目录根本不起作用，结果是「安装成功但装到了别处」。
+//
+// 安装器会在自己的 JVM 里下载依赖，因此代理参数必须一并传给子 JVM，
+// 否则在需要代理的网络环境下会以 `Connection reset` 失败。
 func RunInstaller(ctx context.Context, javaPath string, paths InstallerContext, installerPath string) error {
 	if !filepath.IsAbs(javaPath) {
 		return installerError("安装器 Java 路径无效。", false)
@@ -174,14 +180,17 @@ func RunInstaller(ctx context.Context, javaPath string, paths InstallerContext, 
 	if err := ensureLauncherProfiles(paths.WorkingDirectory); err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, javaPath, "-jar", installerPath, "--installClient")
-	// 安装器自身以工作目录为基准寻找 launcher_profiles.json 等文件，
-	// 而 --installClient 不带目录参数时默认写入当前目录。
-	// 因此这里必须切到核心根，才能让产物与实例目录分离。
-	command.Dir = paths.GameDirectory
 	if err := copyLauncherProfiles(paths.WorkingDirectory, paths.GameDirectory); err != nil {
 		return err
 	}
+
+	args := make([]string, 0, 12)
+	args = append(args, platform.JavaProxyOptions()...)
+	args = append(args, "-jar", installerPath, "--installClient", paths.GameDirectory)
+	command := exec.CommandContext(ctx, javaPath, args...)
+	// 工作目录仍设为安装目标：安装器会在其中写 installer.log 等辅助文件，
+	// 放在核心根便于用户排查。
+	command.Dir = paths.GameDirectory
 	output := &limitedBuffer{limit: 128 << 10}
 	command.Stdout = output
 	command.Stderr = output
@@ -189,7 +198,7 @@ func RunInstaller(ctx context.Context, javaPath string, paths InstallerContext, 
 		if ctx.Err() != nil {
 			return installerError("加载器安装已中断，请重试。", true)
 		}
-		return installerError("官方安装器执行失败，请确认 Java 版本与磁盘权限后重试。", true)
+		return installerError(installerFailureMessage(output.String()), true)
 	}
 	return nil
 }
@@ -267,10 +276,42 @@ func ensureLauncherProfiles(gameDirectory string) error {
 	return nil
 }
 
+// installerFailureMessage 把安装器输出归纳成一句可读的失败原因。
+//
+// 安装器的完整输出可能有几十 KB 且混着下载日志，不能直接展示；但它对失败
+// 原因的描述往往很具体（缺少 launcher_profiles.json、代理不可用、Java 版本
+// 不匹配），只回一句「执行失败」会让用户无从下手。
+//
+// 只提取第一条匹配到的已知原因；都匹配不到时退回通用文案。
+func installerFailureMessage(output string) string {
+	lower := strings.ToLower(output)
+	cases := []struct {
+		marker  string
+		message string
+	}{
+		{"there is no minecraft launcher profile", "官方安装器未找到 launcher_profiles.json，请重试安装。"},
+		{"connection reset", "官方安装器下载依赖时连接被重置，请检查网络或代理设置后重试。"},
+		{"connection timed out", "官方安装器下载依赖超时，请检查网络或代理设置后重试。"},
+		{"unknownhostexception", "官方安装器无法解析下载地址的域名，请检查网络或 DNS 设置。"},
+		{"access denied", "官方安装器没有写入权限，请检查数据目录权限。"},
+		{"unsupportedclassversionerror", "当前 Java 版本过低，无法运行该加载器安装器，请改用更高版本的 Java。"},
+		{"could not find or load main class", "官方安装器文件可能已损坏，请重新下载后重试。"},
+	}
+	for _, item := range cases {
+		if strings.Contains(lower, item.marker) {
+			return item.message
+		}
+	}
+	return "官方安装器执行失败，请确认 Java 版本与磁盘权限后重试。"
+}
+
 type limitedBuffer struct {
 	buffer bytes.Buffer
 	limit  int
 }
+
+// String 返回已捕获输出的文本。
+func (b *limitedBuffer) String() string { return b.buffer.String() }
 
 func (b *limitedBuffer) Write(data []byte) (int, error) {
 	original := len(data)

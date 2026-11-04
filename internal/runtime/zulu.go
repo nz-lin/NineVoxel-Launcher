@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"example.com/ninevoxel/launcher/internal/platform"
 )
 
 const (
@@ -57,7 +59,7 @@ var zuluHTTPClientFactory = newZuluHTTPClient
 // newZuluHTTPClient 构造带白名单与超时的 HTTP 客户端。
 func newZuluHTTPClient() *http.Client {
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: platform.ProxyFunc(),
 		DialContext: (&net.Dialer{
 			Timeout:   adoptiumDialTimeout,
 			KeepAlive: 30 * time.Second,
