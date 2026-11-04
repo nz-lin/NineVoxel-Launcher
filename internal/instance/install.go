@@ -74,10 +74,6 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 			return err
 		}
 	}
-	game, err := s.gameDir(item)
-	if err != nil {
-		return err
-	}
 	for _, file := range prepared.Files {
 		if err := ctx.Err(); err != nil {
 			return errors.New("安装已中断，请重试")
@@ -86,7 +82,7 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 		if err != nil {
 			return err
 		}
-		target, err := managedPath(game, file.Target)
+		target, err := managedPath(s.root, file.Target)
 		if err != nil {
 			return err
 		}
@@ -95,51 +91,16 @@ func (s *InstanceService) installPreparedRange(ctx context.Context, item Instanc
 				return appErr
 			}
 		}
-		if file.Extract {
-			err = extractNatives(ctx, source, target, file.Exclude)
-		} else {
-			// 优先硬链接：多个实例共用同一份库与客户端 JAR 时只占一份磁盘。
-			err = materializeFile(ctx, source, target)
+		if !file.Extract {
+			// 除 natives 外的制品在下载阶段已落在最终布局，不存在需要安装的步骤。
+			return errors.New("安装计划包含无法处理的制品")
 		}
-		if err != nil {
+		if err := extractNatives(ctx, source, target, file.Exclude); err != nil {
 			return err
 		}
 	}
-	// Objects in the content-addressed cache must also exist at Minecraft's layout.
-	for i, object := range index.Objects {
-		if err := ctx.Err(); err != nil {
-			return errors.New("安装已中断，请重试")
-		}
-		relative, appErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, object.Hash)
-		if appErr != nil {
-			return appErr
-		}
-		source, err := managedPath(s.root, relative)
-		if err != nil {
-			return err
-		}
-		target, err := managedPath(game, "assets/objects/"+object.Hash[:2]+"/"+object.Hash)
-		if err != nil {
-			return err
-		}
-		if err := materializeFile(ctx, source, target); err != nil {
-			return err
-		}
-		if index.Virtual {
-			target, err := managedPath(game, "assets/"+object.LogicalName)
-			if err != nil {
-				return err
-			}
-			if err := materializeFile(ctx, source, target); err != nil {
-				return err
-			}
-		}
-		if i%100 == 0 {
-			if err := s.progress(item.ID, "", maxProgress*(0.85+0.14*float64(i+1)/float64(len(index.Objects))), prepared.JavaMajor); err != nil {
-				return err
-			}
-		}
-	}
+	// 资源对象下载后已经在 `assets/objects/` 的最终位置，无需再复制到别处。
+	// 旧式虚拟布局（`resources/`）在本启动器不支持，已在上面显式拒绝。
 	return s.progress(item.ID, "", 0.99*maxProgress, prepared.JavaMajor)
 }
 

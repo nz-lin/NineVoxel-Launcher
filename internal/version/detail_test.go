@@ -87,7 +87,7 @@ func libraryDocument(name, sha1 string, size int64) map[string]any {
 		"name": name,
 		"downloads": map[string]any{
 			"artifact": map[string]any{
-				"path": "org/example/" + name + ".jar",
+				"path": mavenPathFor(&installDownloadEntryJSON{}, name),
 				"sha1": sha1,
 				"size": size,
 				"url":  officialArtifactURL("libraries.minecraft.net", sha1),

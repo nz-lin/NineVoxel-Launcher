@@ -426,7 +426,7 @@ func TestBuildLaunchPlanClassPathOrder(t *testing.T) {
 		},
 	}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -463,7 +463,7 @@ func TestBuildLaunchPlanWarnsMissingLibraries(t *testing.T) {
 		Libraries:   []libraryJSON{{Name: "lib.b:beta:1.0"}},
 	}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -500,7 +500,7 @@ func TestBuildLaunchPlanEmptyClassPathIsError(t *testing.T) {
 
 	merged := &mergedVersion{ID: id, MainClass: "Main", ClientJarID: id}
 
-	_, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	_, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr == nil {
 		t.Fatal("classpath 为空期望返回错误")
 	}
@@ -516,7 +516,7 @@ func TestBuildLaunchPlanMissingMainClassIsError(t *testing.T) {
 
 	merged := &mergedVersion{ID: id, ClientJarID: id}
 
-	_, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	_, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr == nil {
 		t.Fatal("缺 mainClass 期望返回错误")
 	}
@@ -547,7 +547,7 @@ func TestBuildLaunchPlanNativesMissingBlocks(t *testing.T) {
 		}},
 	}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -607,7 +607,7 @@ func TestBuildLaunchPlanModernVersionKeepsNativesDirectoryNonEmpty(t *testing.T)
 		ClientJarID: id,
 	}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -649,7 +649,7 @@ func TestBuildLaunchPlanResolvesClientIDPlaceholders(t *testing.T) {
 		},
 	}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -688,7 +688,7 @@ func TestBuildLaunchPlanAllowsLongArguments(t *testing.T) {
 	// 构造一个远超上限的附加参数（不含 shell 元字符以便通过逐项校验）。
 	huge := "-Dpad=" + strings.Repeat("x", maxTotalArgumentBytes+1024)
 
-	plan, planErr := buildLaunchPlan(root, id, merged, []string{huge}, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, []string{huge}, nil)
 	if planErr != nil {
 		t.Fatalf("超长参数不应在计划层被拒绝，实际返回 %q: %s", planErr.Code, planErr.Message)
 	}
@@ -1440,7 +1440,7 @@ func TestBuildPlanIncludesDefaultResolutionWarning(t *testing.T) {
 
 	merged := &mergedVersion{ID: id, MainClass: "Main", ClientJarID: id}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -1466,7 +1466,7 @@ func TestBuildPlanRejectsInvalidResolutionOverride(t *testing.T) {
 
 	merged := &mergedVersion{ID: id, MainClass: "Main", ClientJarID: id}
 
-	_, planErr := buildLaunchPlan(root, id, merged, nil, []string{"--width=99999"})
+	_, planErr := buildLaunchPlan(root, root, id, merged, nil, []string{"--width=99999"})
 	if planErr == nil {
 		t.Fatal("超上限的分辨率期望返回错误")
 	}
@@ -1486,7 +1486,7 @@ func TestBuildPlanAllowsValidResolutionOverride(t *testing.T) {
 	merged := &mergedVersion{ID: id, MainClass: "Main", ClientJarID: id}
 
 	// 该用例聚焦分辨率覆盖，因此不声明 natives（避免 natives 缺失的 blocking 警告干扰判断）。
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, []string{"--width=1280", "--height=720"})
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, []string{"--width=1280", "--height=720"})
 	if planErr != nil {
 		t.Fatalf("合法分辨率覆盖期望通过，实际错误: %v", planErr)
 	}

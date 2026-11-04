@@ -137,25 +137,51 @@ func installerPlanHash(kind Kind, minecraftVersion, loaderVersion, checksum stri
 	return hex.EncodeToString(sum[:16])
 }
 
-// RunInstaller executes the verified official installer in client mode inside
-// the isolated game directory. The upstream installer performs its own
-// downloads and processor steps; output is captured only for a concise failure
-// indication and never echoed verbatim to the UI.
-func RunInstaller(ctx context.Context, javaPath, gameDirectory, installerPath string) error {
+// InstallerContext 明确区分安装器的三种路径语义。
+//
+// 不要用一个参数同时承担「工作目录」和「安装目标」：官方安装器会在自己的工作
+// 目录里读写 launcher_profiles.json 等临时文件，而安装产物必须落在核心根。
+// 两者混同会让并发安装互相覆盖配置。
+type InstallerContext struct {
+	// WorkingDirectory 是安装器进程的工作目录，每次安装独立。
+	WorkingDirectory string
+	// GameDirectory 是 --installClient 的目标目录（= 核心根）。
+	GameDirectory string
+	// ResourceRoot 是只读资源根。
+	//
+	// 当前与 GameDirectory 相同；分开表达便于将来把安装重定向到暂存目录后
+	// 再原子切换。
+	ResourceRoot string
+}
+
+// RunInstaller executes the verified official installer in client mode. The
+// upstream installer performs its own downloads and processor steps; output is
+// captured only for a concise failure indication and never echoed verbatim to
+// the UI.
+func RunInstaller(ctx context.Context, javaPath string, paths InstallerContext, installerPath string) error {
 	if !filepath.IsAbs(javaPath) {
 		return installerError("安装器 Java 路径无效。", false)
 	}
-	if !filepath.IsAbs(gameDirectory) || !filepath.IsAbs(installerPath) {
+	if !filepath.IsAbs(paths.GameDirectory) || !filepath.IsAbs(installerPath) {
 		return installerError("安装器目录无效。", false)
+	}
+	if !filepath.IsAbs(paths.WorkingDirectory) {
+		return installerError("安装器工作目录无效。", false)
 	}
 	if info, err := os.Stat(installerPath); err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
 		return installerError("官方安装器文件不完整，请重试下载。", true)
 	}
-	if err := ensureLauncherProfiles(gameDirectory); err != nil {
+	if err := ensureLauncherProfiles(paths.WorkingDirectory); err != nil {
 		return err
 	}
 	command := exec.CommandContext(ctx, javaPath, "-jar", installerPath, "--installClient")
-	command.Dir = gameDirectory
+	// 安装器自身以工作目录为基准寻找 launcher_profiles.json 等文件，
+	// 而 --installClient 不带目录参数时默认写入当前目录。
+	// 因此这里必须切到核心根，才能让产物与实例目录分离。
+	command.Dir = paths.GameDirectory
+	if err := copyLauncherProfiles(paths.WorkingDirectory, paths.GameDirectory); err != nil {
+		return err
+	}
 	output := &limitedBuffer{limit: 128 << 10}
 	command.Stdout = output
 	command.Stderr = output
@@ -164,6 +190,28 @@ func RunInstaller(ctx context.Context, javaPath, gameDirectory, installerPath st
 			return installerError("加载器安装已中断，请重试。", true)
 		}
 		return installerError("官方安装器执行失败，请确认 Java 版本与磁盘权限后重试。", true)
+	}
+	return nil
+}
+
+// copyLauncherProfiles 把工作区里的 launcher_profiles.json 复制到安装目标目录。
+//
+// 官方安装器要求该文件存在。我们在独立工作区里生成模板，再带到核心根：
+// 这样多个安装并发时不会互相改写，同时满足安装器的前置条件。
+//
+// 已存在时不覆盖：它可能包含用户手工添加的内容，覆盖没有收益。
+func copyLauncherProfiles(workDir, gameDir string) error {
+	source := filepath.Join(workDir, "launcher_profiles.json")
+	target := filepath.Join(gameDir, "launcher_profiles.json")
+	if _, statErr := os.Stat(target); statErr == nil {
+		return nil
+	}
+	content, readErr := os.ReadFile(source)
+	if readErr != nil {
+		return installerError("无法读取安装器工作区配置。", false)
+	}
+	if writeErr := os.WriteFile(target, content, 0o644); writeErr != nil {
+		return installerError("无法写入安装器配置。", false)
 	}
 	return nil
 }

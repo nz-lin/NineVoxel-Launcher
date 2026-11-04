@@ -62,7 +62,9 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	if err != nil {
 		return err
 	}
-	before, err := versionDirectorySet(game)
+	_ = game
+	// 安装产物写入共享核心，实例目录只保留可变状态。
+	before, err := versionDirectorySet(s.root)
 	if err != nil {
 		return err
 	}
@@ -76,10 +78,19 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	if err := s.progress(item.ID, "", 0.72, 0); err != nil {
 		return err
 	}
-	if err := executeLoaderInstaller(ctx, javaPath, game, installer.InstallerPath); err != nil {
+	workDir, workErr := installerWorkDir(s.root)
+	if workErr != nil {
+		return workErr
+	}
+	defer os.RemoveAll(workDir)
+	if err := executeLoaderInstaller(ctx, javaPath, loader.InstallerContext{
+		WorkingDirectory: workDir,
+		GameDirectory:    s.root,
+		ResourceRoot:     s.root,
+	}, installer.InstallerPath); err != nil {
 		return err
 	}
-	versionID, err := detectLoaderVersionID(game, kind, item.MCVersion, item.LoaderVersion, before)
+	versionID, err := detectLoaderVersionID(s.root, kind, item.MCVersion, item.LoaderVersion, before)
 	if err != nil {
 		return fmt.Errorf("%s 安装器未生成可用的版本目录：%w", strings.ToUpper(string(kind)), err)
 	}
@@ -91,6 +102,22 @@ func (s *InstanceService) installInstallerLoader(ctx context.Context, item Insta
 	}
 	s.removeObsoleteLoaderVersion(item, versionID)
 	return nil
+}
+
+// installerWorkDir 创建本次安装专用的临时工作区。
+//
+// 为什么不让安装器直接用核心根当工作目录：它会在工作目录里生成并改写
+// launcher_profiles.json。多个安装并发时，共享同一份配置会互相覆盖。
+func installerWorkDir(root string) (string, error) {
+	base := filepath.Join(root, "temp", "installers")
+	if mkErr := os.MkdirAll(base, 0o755); mkErr != nil {
+		return "", errors.New("无法创建安装器工作目录")
+	}
+	dir, tempErr := os.MkdirTemp(base, "install-")
+	if tempErr != nil {
+		return "", errors.New("无法创建安装器工作目录")
+	}
+	return dir, nil
 }
 
 func (s *InstanceService) setResolvedVersionID(instanceID, versionID string) error {

@@ -212,8 +212,15 @@ const (
 //
 // 由 `buildLaunchPlan` 组装；集中在一处便于替换表各项注明来源。
 type buildContext struct {
-	// gameRoot 为已归一化的游戏根目录（绝对路径，内部使用）。
+	// gameRoot 为已归一化的实例游戏目录（绝对路径，内部使用）。
+	//
+	// 游戏在这里读写可变状态：mods、saves、config、logs、options.txt。
 	gameRoot string
+
+	// resourceRoot 为共享核心根（绝对路径，内部使用）。
+	//
+	// libraries、assets、versions 都在这里；所有实例共用同一份，且安装后只读。
+	resourceRoot string
 
 	// versionID 为版本 id。
 	versionID string
@@ -271,15 +278,15 @@ func buildPlaceholderTable(ctx *buildContext) map[string]placeholderValue {
 	table["classpath"] = placeholderValue{value: buildClassPathString(ctx.classPathEntries), isPath: true}
 	// `${library_directory}` 被少数旧版 JVM 参数使用；指向 libraries 目录（不校验存在性）。
 	table["library_directory"] = placeholderValue{
-		value:  joinGamePath(ctx.gameRoot, dirLibraries),
+		value:  joinGamePath(ctx.resourceRoot, dirLibraries),
 		isPath: true,
 	}
 	// `${game_directory}` 无论缺失后果：游戏找不到存档与配置，表现为「全新安装」。
 	table["game_directory"] = placeholderValue{value: ctx.gameRoot, isPath: true}
 	// `${assets_root}` 缺失后果：游戏无声音与语言文件。
-	table["assets_root"] = placeholderValue{value: joinGamePath(ctx.gameRoot, dirAssets), isPath: true}
+	table["assets_root"] = placeholderValue{value: joinGamePath(ctx.resourceRoot, dirAssets), isPath: true}
 	// `${game_assets}` 是旧版（1.7 之前）写法，语义等同 assets_root。
-	table["game_assets"] = placeholderValue{value: joinGamePath(ctx.gameRoot, dirAssets), isPath: true}
+	table["game_assets"] = placeholderValue{value: joinGamePath(ctx.resourceRoot, dirAssets), isPath: true}
 
 	// 分隔符类：由平台决定，不写死字面量。
 	// `${classpath_separator}` 缺失后果：classpath 无法被正确切分。
@@ -1046,9 +1053,16 @@ const (
 // 成功情形也可能 `SafeToLaunch=false`：存在未解析占位符或 blocking 警告时，
 // 计划本身可展示，但不应交给进程层执行。
 //
+// 参数 gameRoot 是实例的游戏目录（可变状态：mods、saves、config、logs）；
+// resourceRoot 是共享核心根（libraries、assets、versions）。
+//
+// 两者都是**入口即校验的非空值**，本函数内部不会对空值做回退：双根模型一旦
+// 退化为「空则use同一个根」，实例目录与核心目录的边界就会在个别调用路径上
+// 悄悄消失，而这类问题只在缺少某个库时才暴露。
+//
 // 只读：不创建目录、不写文件、不解压。
-func buildLaunchPlan(root, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string) (*LaunchPlan, *Error) {
-	return buildLaunchPlanWithIdentity(root, versionID, merged,
+func buildLaunchPlan(gameRoot, resourceRoot, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string) (*LaunchPlan, *Error) {
+	return buildLaunchPlanWithIdentity(gameRoot, resourceRoot, versionID, merged,
 		additionalJvmArgs, additionalGameArgs, AccountIdentity{})
 }
 
@@ -1061,18 +1075,22 @@ func buildLaunchPlan(root, versionID string, merged *mergedVersion, additionalJv
 // `resolveAccountIdentity` 取得并校验过（至少含 Username 与 UUID），
 // 本函数不再做身份校验，只负责替换——保持「一个函数只做一件事」。
 //
-// 参数 root 为已归一化的游戏根；merged 为 P2-03 的继承合并结果；
-// additionalJvmArgs / additionalGameArgs 为可选附加参数（来自前端，需逐项校验）；
-// identity 为所选账号的启动身份（零值表示未选账号）。
+// 参数 gameRoot 为实例游戏目录；resourceRoot 为共享核心根（已归一化）；
+// merged 为 P2-03 的继承合并结果；additionalJvmArgs / additionalGameArgs 为
+// 可选附加参数（来自前端，需逐项校验）；identity 为所选账号的启动身份
+// （零值表示未选账号）。
 //
 // 失败情形与 `buildLaunchPlan` 完全相同（classpath 为空 / 附加参数非法）。
 // 只读：不创建目录、不写文件、不解压。
-func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string, identity AccountIdentity) (*LaunchPlan, *Error) {
+func buildLaunchPlanWithIdentity(gameRoot, resourceRoot, versionID string, merged *mergedVersion, additionalJvmArgs, additionalGameArgs []string, identity AccountIdentity) (*LaunchPlan, *Error) {
 	if merged == nil {
 		return nil, newInputError(ErrorCodeLaunchArgs, messageVersionJSONMissing)
 	}
 	if strings.TrimSpace(merged.MainClass) == "" {
 		return nil, newInputError(ErrorCodeLaunchArgs, messageVersionMainClassMissing)
+	}
+	if strings.TrimSpace(gameRoot) == "" || strings.TrimSpace(resourceRoot) == "" {
+		return nil, newInputError(ErrorCodeLaunchArgs, messageLaunchRootsMissing)
 	}
 
 	warnings := make([]ArgumentWarning, 0, 6)
@@ -1088,7 +1106,7 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 	missingLibraries := make([]string, 0, 8)
 
 	// 客户端 JAR：自身目录优先，缺失时按 inheritsFrom 回退父版本目录。
-	clientJarPath := resolveClientJarPath(root, merged)
+	clientJarPath := resolveClientJarPath(resourceRoot, merged)
 	if clientJarPath != "" {
 		classPathEntries = append(classPathEntries, clientJarPath)
 	}
@@ -1104,7 +1122,7 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 		if relative == "" {
 			continue
 		}
-		absolute, resolveErr := resolveInside(root, relative)
+		absolute, resolveErr := resolveInside(resourceRoot, relative)
 		if resolveErr != nil {
 			continue
 		}
@@ -1139,7 +1157,7 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 	// 值为空串会拼出 `/jna`、`/lwjgl` 这类指向盘符根目录的路径，比指向一个不存在的
 	// 常规目录更糟。因此默认给 `<游戏目录>/natives`（不创建、不解压），
 	// 声明了 natives 且目录存在时再改用版本目录下的绝对路径。
-	nativesDir := joinGamePath(root, dirNatives)
+	nativesDir := joinGamePath(resourceRoot, dirNatives)
 	needsNatives := false
 	for _, library := range merged.Libraries {
 		// 同样先按 rules 过滤：其他平台的 natives 库不该要求本平台具备。
@@ -1152,8 +1170,8 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 		}
 	}
 	if needsNatives {
-		if present := nativesPresent(root, merged.ID); present {
-			absolute, resolveErr := resolveInside(root, dirVersions+fileSeparatorSlash+merged.ID+fileSeparatorSlash+dirNatives)
+		if present := nativesPresent(resourceRoot, merged.ID); present {
+			absolute, resolveErr := resolveInside(resourceRoot, dirVersions+fileSeparatorSlash+merged.ID+fileSeparatorSlash+dirNatives)
 			if resolveErr == nil {
 				nativesDir = absolute
 			}
@@ -1171,7 +1189,8 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 	// identity 放进上下文而不是作为参数层层传递：替换表是**唯一**的取值来源，
 	// 让表构造时就能拿到身份，避免在展开参数时再写一套「身份覆盖」逻辑。
 	ctx := &buildContext{
-		gameRoot:         root,
+		gameRoot:         gameRoot,
+		resourceRoot:     resourceRoot,
 		versionID:        merged.ID,
 		versionType:      merged.Type,
 		mainClass:        merged.MainClass,
@@ -1248,13 +1267,13 @@ func buildLaunchPlanWithIdentity(root, versionID string, merged *mergedVersion, 
 	plan := &LaunchPlan{
 		// LaunchIDPlaceholder 留空：launchId 由 P2-06 分配，本卡不涉及进程。
 		LaunchIDPlaceholder:    "",
-		WorkingDirectory:       root,
+		WorkingDirectory:       gameRoot,
 		JVMMajorArgs:           jvmParts,
 		GameArguments:          gameParts,
 		ClassPathEntries:       classPathEntries,
 		MainClass:              merged.MainClass,
 		NativesDirectory:       nativesDir,
-		AssetsDirectory:        joinGamePath(root, dirAssets),
+		AssetsDirectory:        joinGamePath(resourceRoot, dirAssets),
 		AssetIndexID:           merged.AssetIndexID,
 		Warnings:               warnings,
 		UnresolvedPlaceholders: unresolved,
@@ -1525,7 +1544,7 @@ func previewLaunchPlan(rawGameDirectory, versionID string, additionalJvmArgs, ad
 	}
 
 	// 构建 LaunchPlan。
-	plan, planErr := buildLaunchPlan(root, versionID, outcome.merged, additionalJvmArgs, additionalGameArgs)
+	plan, planErr := buildLaunchPlan(root, selfContainedResourceRoot(root), versionID, outcome.merged, additionalJvmArgs, additionalGameArgs)
 	if planErr != nil {
 		preview := buildLaunchPlanPreview(nil, versionID)
 		preview.SafeToLaunch = false

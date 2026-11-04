@@ -41,6 +41,33 @@ const (
 	// DirVersions 是版本私有目录根（versions/<versionId>/）。
 	DirVersions = "versions"
 
+	// DirLibraries 是共享依赖库目录（Maven 布局）。
+	//
+	// 这是**最终位置**，不是缓存：下载产物直接落在 `libraries/<maven path>`，
+	// 不再经过内容寻址的中间层。游戏的 classpath 直接指向这里。
+	DirLibraries = "libraries"
+
+	// DirAssets 是共享游戏资源根目录。
+	DirAssets = "assets"
+
+	// DirAssetObjects 是资源对象目录（`assets/objects/<前两位>/<hash>`）。
+	DirAssetObjects = "assets/objects"
+
+	// DirAssetIndexes 是资源索引目录（`assets/indexes/<indexId>.json`）。
+	DirAssetIndexes = "assets/indexes"
+
+	// DirAssetLogConfigs 是日志配置目录（`assets/log_configs/<name>`）。
+	DirAssetLogConfigs = "assets/log_configs"
+
+	// DirCache 是可安全删除的缓存根目录。
+	//
+	// 与核心资源严格区分：这里的文件删掉只会让下次安装变慢，不会让已安装的
+	// 版本失效。官方安装器本体与元数据文档放在这里。
+	DirCache = "cache"
+
+	// DirCacheInstallers 是官方加载器安装器的缓存目录。
+	DirCacheInstallers = "cache/installers"
+
 	// DirLogs 是日志目录（P1 的应用日志与 P2 的游戏日志）。
 	DirLogs = "logs"
 )
@@ -377,6 +404,63 @@ func VersionRelPath(versionID, fileName string) (string, *Error) {
 		return "", err
 	}
 	return DirVersions + "/" + id + "/" + name, nil
+}
+
+// LibraryRelPath 生成依赖库在最终布局中的相对路径（`libraries/<maven path>`）。
+//
+// 参数 mavenPath 是 Maven 坐标对应的相对路径（如 `com/google/guava/1.0/x.jar`），
+// 来自版本 JSON 的 `downloads.artifact.path`；缺省时可由坐标推导。
+//
+// 让下载直接落在 Maven 布局而不是内容寻址目录，是为了去掉「缓存 + 复制」
+// 这一层：classpath 指向的位置就是文件存放的位置。
+func LibraryRelPath(mavenPath string) (string, *Error) {
+	cleaned, err := ValidateRelativePath(mavenPath)
+	if err != nil {
+		return "", err
+	}
+	return DirLibraries + "/" + cleaned, nil
+}
+
+// AssetObjectRelPath 生成资源对象在最终布局中的相对路径。
+//
+// 参数 hash 是对象的 SHA-1（十六进制小写）。资源对象天然按内容寻址，
+// 多个版本引用同一对象时路径相同，因此不需要额外去重。
+func AssetObjectRelPath(hash string) (string, *Error) {
+	normalized, err := normalizeHash(HashAlgorithmSHA1, hash)
+	if err != nil {
+		return "", err
+	}
+	return DirAssetObjects + "/" + normalized[:2] + "/" + normalized, nil
+}
+
+// AssetIndexRelPath 生成资源索引在最终布局中的相对路径。
+func AssetIndexRelPath(indexID string) (string, *Error) {
+	cleaned, err := validateSimpleName(indexID)
+	if err != nil {
+		return "", err
+	}
+	return DirAssetIndexes + "/" + cleaned + ".json", nil
+}
+
+// LogConfigRelPath 生成日志配置在最终布局中的相对路径。
+func LogConfigRelPath(name string) (string, *Error) {
+	cleaned, err := validateSimpleName(name)
+	if err != nil {
+		return "", err
+	}
+	return DirAssetLogConfigs + "/" + cleaned, nil
+}
+
+// InstallerCacheRelPath 生成官方安装器在缓存目录中的相对路径。
+//
+// 参数 sha1 是安装器文件的 SHA-1。放在缓存而不是核心：安装器只在安装时用一次，
+// 删掉不影响已安装的版本。
+func InstallerCacheRelPath(sha1 string) (string, *Error) {
+	normalized, err := normalizeHash(HashAlgorithmSHA1, sha1)
+	if err != nil {
+		return "", err
+	}
+	return DirCacheInstallers + "/" + normalized + ".jar", nil
 }
 
 // RuntimeRelPath 生成 Runtime 安装目录内文件的相对路径（`runtimes/<runtimeId>/<relPath>`）。

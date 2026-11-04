@@ -29,7 +29,7 @@ func assetTestSHA1(content []byte) string {
 func assetTestWriteObject(t *testing.T, dataRoot string, content []byte) (string, int64) {
 	t.Helper()
 	hash := assetTestSHA1(content)
-	relPath, pathErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, hash)
+	relPath, pathErr := artifact.AssetObjectRelPath(hash)
 	if pathErr != nil {
 		t.Fatalf("生成对象路径失败: %v", pathErr)
 	}
@@ -281,7 +281,7 @@ func TestLoadAssetIndexReadsFile(t *testing.T) {
 	hash := strings.Repeat("4", 40)
 	raw := assetBuildIndexJSON(t, map[string]assetIndexObjectEntry{"a.txt": assetEntry(hash, 3)}, false, false)
 
-	relPath, pathErr := artifact.IndexRelPath("1.21")
+	relPath, pathErr := artifact.AssetIndexRelPath("1.21")
 	if pathErr != nil {
 		t.Fatalf("生成索引路径失败: %v", pathErr)
 	}
@@ -314,7 +314,7 @@ func TestLoadAssetIndexRejectsMissingFile(t *testing.T) {
 // TestLoadAssetIndexRejectsOversizedFile 校验超过 64 MiB 的索引被拒绝。
 func TestLoadAssetIndexRejectsOversizedFile(t *testing.T) {
 	dataRoot := t.TempDir()
-	relPath, pathErr := artifact.IndexRelPath("1.21")
+	relPath, pathErr := artifact.AssetIndexRelPath("1.21")
 	if pathErr != nil {
 		t.Fatalf("生成索引路径失败: %v", pathErr)
 	}
@@ -388,7 +388,7 @@ func TestInspectAssetObjectStates(t *testing.T) {
 // mustObjectRelPath 返回对象在共享缓存中的相对路径（测试辅助）。
 func mustObjectRelPath(t *testing.T, hash string) string {
 	t.Helper()
-	relPath, pathErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, hash)
+	relPath, pathErr := artifact.AssetObjectRelPath(hash)
 	if pathErr != nil {
 		t.Fatalf("生成对象路径失败: %v", pathErr)
 	}
@@ -559,7 +559,7 @@ func TestAssetIndexPlanItem(t *testing.T) {
 	if item.ExpectedSize != 1234 || item.ExpectedSHA1 != hash {
 		t.Fatalf("期望值不符: %+v", item)
 	}
-	if item.TargetRelPath != "artifacts/indexes/1.21.json" {
+	if item.TargetRelPath != "assets/indexes/1.21.json" {
 		t.Fatalf("索引目标路径不符: %s", item.TargetRelPath)
 	}
 

@@ -98,13 +98,4 @@ export const instanceService = {
   async deleteGroup(name: string, moveTo = '') {
     return toGroupList(await call(() => InstanceService.DeleteInstanceGroup({ name, moveTo })))
   },
-  /**
-   * 把各实例中重复的库与资源替换为指向共享缓存的硬链接，回收磁盘空间。
-   *
-   * 幂等：已经是指向缓存的文件会被跳过。只处理 libraries/assets/versions，
-   * 不会改动 mods、saves、config 等用户数据。
-   */
-  async dedupStorage() {
-    return call(() => InstanceService.DedupInstanceStorage())
-  },
 }

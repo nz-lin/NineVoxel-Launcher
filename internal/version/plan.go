@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -301,7 +302,7 @@ func appendAssetIndexArtifact(plan *installPlan, merged *installMergedVersion) b
 		return false
 	}
 
-	relPath, pathErr := artifact.IndexRelPath(index.ID)
+	relPath, pathErr := artifact.AssetIndexRelPath(index.ID)
 	if pathErr != nil {
 		plan.Warnings = append(plan.Warnings, planWarning{
 			Code:    WarningAssetIndexMissing,
@@ -352,7 +353,7 @@ func appendLibraryArtifacts(plan *installPlan, merged *installMergedVersion, fac
 					Code:    WarningLibrarySkipped,
 					Message: fmt.Sprintf("库「%s」的下载信息不可用：%s", coordinate, reason),
 				})
-			} else if item, pathErr := objectPlanArtifact(string(artifact.KindLibrary), coordinate, merged.ID, lib.Downloads.Artifact); pathErr == nil {
+			} else if item, pathErr := mavenPlanArtifact(string(artifact.KindLibrary), coordinate, merged.ID, lib.Downloads.Artifact); pathErr == nil {
 				plan.Artifacts = append(plan.Artifacts, item)
 			} else {
 				plan.Warnings = append(plan.Warnings, planWarning{
@@ -381,7 +382,7 @@ func appendLibraryArtifacts(plan *installPlan, merged *installMergedVersion, fac
 			})
 			continue
 		}
-		item, pathErr := objectPlanArtifact(string(artifact.KindNative), coordinate+":"+classifier, merged.ID, &entry)
+		item, pathErr := mavenPlanArtifact(string(artifact.KindNative), coordinate+":"+classifier, merged.ID, &entry)
 		if pathErr != nil {
 			plan.Warnings = append(plan.Warnings, planWarning{
 				Code:    WarningNativeSkipped,
@@ -415,23 +416,74 @@ func appendLoggingArtifact(plan *installPlan, merged *installMergedVersion) {
 		})
 		return
 	}
-	item, pathErr := objectPlanArtifact("logging", "logConfig/"+file.ID, merged.ID, entry)
+	relPath, pathErr := artifact.LogConfigRelPath(file.ID)
 	if pathErr != nil {
 		plan.Warnings = append(plan.Warnings, planWarning{
 			Code:    WarningLibrarySkipped,
-			Message: fmt.Sprintf("日志配置「%s」的内容地址无法映射到制品路径，已跳过。", truncateForMessage(file.ID)),
+			Message: fmt.Sprintf("日志配置「%s」的目标路径非法，已跳过。", truncateForMessage(file.ID)),
 		})
 		return
 	}
-	plan.Artifacts = append(plan.Artifacts, item)
+	plan.Artifacts = append(plan.Artifacts, planArtifact{
+		Kind:          "logging",
+		LogicalKey:    "logConfig/" + file.ID,
+		Version:       merged.ID,
+		SourceID:      officialSourceID,
+		SourceURI:     entry.URL,
+		ExpectedSize:  entry.Size,
+		SHA1:          strings.ToLower(entry.SHA1),
+		TargetRelPath: relPath,
+		Immutable:     true,
+	})
+}
+
+// mavenPlanArtifact 用 Maven 布局路径构造一个依赖库制品。
+//
+// 下载直接落在 `libraries/<maven path>`：这是 classpath 实际引用的位置，
+// 不再经过内容寻址缓存后再复制一层。
+func mavenPlanArtifact(kind, logicalKey, versionID string, entry *installDownloadEntryJSON) (planArtifact, *artifact.Error) {
+	relPath, pathErr := artifact.LibraryRelPath(mavenPathFor(entry, logicalKey))
+	if pathErr != nil {
+		return planArtifact{}, pathErr
+	}
+	return planArtifact{
+		Kind:          kind,
+		LogicalKey:    logicalKey,
+		Version:       versionID,
+		SourceID:      officialSourceID,
+		SourceURI:     entry.URL,
+		ExpectedSize:  entry.Size,
+		SHA1:          strings.ToLower(entry.SHA1),
+		TargetRelPath: relPath,
+		Immutable:     true,
+	}, nil
+}
+
+// mavenPathFor 返回制品在 Maven 布局中的相对路径。
+//
+// 优先使用版本 JSON 声明的 `downloads.artifact.path`；旧版本或部分第三方库
+// 不声明该字段，此时按 Maven 坐标推导。推导失败返回空串，由调用方转成
+// 「目标路径非法」的可读告警而不是崩溃。
+func mavenPathFor(entry *installDownloadEntryJSON, coordinate string) string {
+	if declared := strings.TrimSpace(entry.Path); declared != "" {
+		return declared
+	}
+	parts := strings.Split(coordinate, ":")
+	if len(parts) < 3 {
+		return ""
+	}
+	fileName := parts[1] + "-" + parts[2]
+	if len(parts) > 3 && parts[3] != "" {
+		fileName += "-" + parts[3]
+	}
+	return path.Join(strings.ReplaceAll(parts[0], ".", "/"), parts[1], parts[2], fileName+".jar")
 }
 
 // objectPlanArtifact 用内容寻址路径构造一个制品。
 //
-// targetRelPath 由 artifact.ObjectRelPath 生成（sha1 前两位分桶），
-// 因此同一份内容在不同版本中落到同一路径，天然可去重。
+// 仅用于资源对象：它们天然按内容寻址，多个版本引用同一对象时路径相同。
 func objectPlanArtifact(kind, logicalKey, versionID string, entry *installDownloadEntryJSON) (planArtifact, *artifact.Error) {
-	relPath, pathErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, strings.ToLower(entry.SHA1))
+	relPath, pathErr := artifact.AssetObjectRelPath(strings.ToLower(entry.SHA1))
 	if pathErr != nil {
 		return planArtifact{}, pathErr
 	}

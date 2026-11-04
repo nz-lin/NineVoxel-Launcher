@@ -6,8 +6,6 @@ import (
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/download"
 	"fmt"
-	"path"
-	"strings"
 )
 
 // InstallFile maps a verified cache object to the standard Minecraft layout.
@@ -61,59 +59,40 @@ func PrepareInstallation(versionID string) (Installation, error) {
 	}
 	for _, item := range plan.Artifacts {
 		kind := download.TaskTypeLibrary
-		target := ""
 		switch item.Kind {
 		case "client":
 			kind = download.TaskTypeClientJar
-			target = "versions/" + versionID + "/" + merged.ClientJarID + ".jar"
 		case "asset":
 			kind = download.TaskTypeAssetIndex
-			target = "assets/indexes/" + result.AssetIndexID + ".json"
-		case "library":
-			for _, lib := range merged.Libraries {
-				if lib.Name == item.LogicalKey && lib.Downloads != nil && lib.Downloads.Artifact != nil {
-					target = "libraries/" + libraryInstallPath(lib.Name, lib.Downloads.Artifact.Path)
-					break
-				}
-			}
-		case "native":
-			target = "versions/" + versionID + "/natives"
-		case "logging":
-			target = "assets/log_configs/" + strings.TrimPrefix(item.LogicalKey, "logConfig/")
+		case "library", "native", "logging":
+			// 这三类直接落在最终布局，无需额外的安装步骤。
+		default:
+			return Installation{}, fmt.Errorf("未知的制品类型：%s", item.Kind)
 		}
-		if target == "" {
-			return Installation{}, fmt.Errorf("无法确定制品安装路径：%s", item.LogicalKey)
+
+		result.Plan.Items = append(result.Plan.Items, download.PlanItem{ArtifactID: item.LogicalKey, TaskType: kind, SourceURI: item.SourceURI, TargetRelPath: item.TargetRelPath, TargetKind: download.TargetKindShared, ExpectedSize: item.ExpectedSize, ExpectedSHA1: item.SHA1, ExpectedSHA256: item.SHA256})
+
+		// 只有 natives 需要安装步骤：下载的是压缩包，必须解压到版本目录。
+		// 其余制品下载完成后就已经位于 classpath 引用的位置，复制一遍纯属浪费。
+		if !item.Extract {
+			continue
 		}
-		if _, err := artifact.ValidateRelativePath(target); err != nil {
+		extractTarget := "versions/" + versionID + "/natives"
+		if _, err := artifact.ValidateRelativePath(extractTarget); err != nil {
 			return Installation{}, err
 		}
-		result.Plan.Items = append(result.Plan.Items, download.PlanItem{ArtifactID: item.LogicalKey, TaskType: kind, SourceURI: item.SourceURI, TargetRelPath: item.TargetRelPath, TargetKind: download.TargetKindShared, ExpectedSize: item.ExpectedSize, ExpectedSHA1: item.SHA1, ExpectedSHA256: item.SHA256})
-		result.Files = append(result.Files, InstallFile{Source: item.TargetRelPath, Target: target, Extract: item.Extract, Exclude: item.ExtractExclude, SHA1: item.SHA1, Size: item.ExpectedSize})
+		result.Files = append(result.Files, InstallFile{
+			Source:  item.TargetRelPath,
+			Target:  extractTarget,
+			Extract: true,
+			Exclude: item.ExtractExclude,
+			SHA1:    item.SHA1,
+			Size:    item.ExpectedSize,
+		})
 	}
 	if len(result.Plan.Items) == 0 {
 		return Installation{}, fmt.Errorf("安装计划为空")
 	}
-	for _, chainID := range merged.InheritChain {
-		if _, err := artifact.ValidateRelativePath(chainID); err != nil {
-			return Installation{}, fmt.Errorf("继承版本标识无效")
-		}
-		jsonRel := "versions/" + chainID + "/" + chainID + ".json"
-		result.Files = append(result.Files, InstallFile{Source: jsonRel, Target: jsonRel})
-	}
 	return result, nil
 }
 
-func libraryInstallPath(coordinate, declared string) string {
-	if declared != "" {
-		return declared
-	}
-	parts := strings.Split(coordinate, ":")
-	if len(parts) < 3 {
-		return "../invalid"
-	}
-	file := parts[1] + "-" + parts[2]
-	if len(parts) > 3 {
-		file += "-" + parts[3]
-	}
-	return path.Join(strings.ReplaceAll(parts[0], ".", "/"), parts[1], parts[2], file+".jar")
-}

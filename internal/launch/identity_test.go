@@ -254,7 +254,7 @@ func TestIdentityPlanReplacesPlaceholders(t *testing.T) {
 		XUID:        "2535412345678901",
 	}
 
-	plan, planErr := buildLaunchPlanWithIdentity(root, id, merged, nil, nil, identity)
+	plan, planErr := buildLaunchPlanWithIdentity(root, root, id, merged, nil, nil, identity)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -318,7 +318,7 @@ func TestIdentityPlanFallsBackPerField(t *testing.T) {
 		// AccessToken / UserType / XUID 均为空（离线账号没有这些值）。
 	}
 
-	plan, planErr := buildLaunchPlanWithIdentity(root, id, merged, nil, nil, identity)
+	plan, planErr := buildLaunchPlanWithIdentity(root, root, id, merged, nil, nil, identity)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}
@@ -355,7 +355,7 @@ func TestIdentityPlanKeepsOfflinePlaceholders(t *testing.T) {
 		GameArguments: identityGameArguments(),
 	}
 
-	plan, planErr := buildLaunchPlan(root, id, merged, nil, nil)
+	plan, planErr := buildLaunchPlan(root, root, id, merged, nil, nil)
 	if planErr != nil {
 		t.Fatalf("构建计划失败: %v", planErr)
 	}

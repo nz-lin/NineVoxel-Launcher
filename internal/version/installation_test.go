@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+// TestPrepareInstallationMapsStandardMinecraftLayout 验证制品直接落在最终布局。
+//
+// 下载目标就是 classpath 与实际读取位置，不再经过内容寻址缓存再复制一层；
+// prepared.Files 只保留需要额外处理（natives 解压）的条目。
 func TestPrepareInstallationMapsStandardMinecraftLayout(t *testing.T) {
 	setupPlanFixture(t)
 	prepared, err := PrepareInstallation("1.20.1")
@@ -17,22 +21,34 @@ func TestPrepareInstallationMapsStandardMinecraftLayout(t *testing.T) {
 		t.Fatalf("incomplete plan: %+v", prepared)
 	}
 	found := map[string]bool{}
+	for _, item := range prepared.Plan.Items {
+		target := item.TargetRelPath
+		if strings.Contains(target, "..") || strings.HasPrefix(target, "/") {
+			t.Fatalf("unsafe target %q", target)
+		}
+		if strings.HasPrefix(target, "artifacts/") {
+			t.Fatalf("制品不应落在中间缓存层: %q", target)
+		}
+		if strings.HasPrefix(target, "libraries/") {
+			found["library"] = true
+		}
+		if strings.HasPrefix(target, "assets/indexes/") {
+			found["index"] = true
+		}
+		if strings.HasSuffix(target, "1.20.1.jar") && strings.HasPrefix(target, "versions/") {
+			found["client"] = true
+		}
+	}
 	for _, file := range prepared.Files {
 		if strings.Contains(file.Target, "..") || strings.HasPrefix(file.Target, "/") {
 			t.Fatalf("unsafe target %q", file.Target)
 		}
-		if strings.HasPrefix(file.Target, "libraries/") {
-			found["library"] = true
-		}
-		if strings.HasPrefix(file.Target, "assets/indexes/") {
-			found["index"] = true
-		}
-		if strings.HasSuffix(file.Target, "1.20.1.jar") {
-			found["client"] = true
-		}
+		// 只有 natives 需要安装步骤：下载的是压缩包，必须解压到版本目录。
 		if file.Extract && strings.HasSuffix(file.Target, "/natives") {
 			found["native"] = true
+			continue
 		}
+		t.Fatalf("非 natives 制品不应产生安装步骤: %+v", file)
 	}
 	for _, kind := range []string{"client", "library", "index", "native"} {
 		if !found[kind] {

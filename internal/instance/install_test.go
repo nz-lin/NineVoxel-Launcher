@@ -67,19 +67,36 @@ func TestInstallAssemblesClientLibrariesAssetsAndNatives(t *testing.T) {
 	}
 	prepared := version.Installation{Plan: download.TransferPlan{VersionID: item.MCVersion, PlanHash: "fixture"}, AssetIndexID: "test-index", JavaMajor: 21}
 	for _, file := range files {
-		rel, appErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, fixtureHash(file.body))
+		rel, appErr := artifact.AssetObjectRelPath(fixtureHash(file.body))
 		if appErr != nil {
 			t.Fatal(appErr)
 		}
 		if bytes.Equal(file.body, index) {
-			rel = "artifacts/indexes/test-index.json"
+			rel = "assets/indexes/test-index.json"
+		}
+		if file.extract {
+			// natives 压缩包按 Maven 布局下载，再解压到版本目录。
+			rel = "libraries/org/example/native/1.0/native-1.0-natives-windows.jar"
 		}
 		fixtureWrite(t, filepath.Join(s.root, filepath.FromSlash(rel)), file.body)
-		prepared.Files = append(prepared.Files, version.InstallFile{Source: rel, Target: file.target, SHA1: fixtureHash(file.body), Size: int64(len(file.body)), Extract: file.extract})
+		// 只有 natives 需要安装步骤：下载的是压缩包，必须解压。
+		// 其余制品下载后已在 classpath 引用的位置，不再复制到实例目录。
+		if file.extract {
+			prepared.Files = append(prepared.Files, version.InstallFile{Source: rel, Target: file.target, SHA1: fixtureHash(file.body), Size: int64(len(file.body)), Extract: true})
+		}
 	}
 	metadata := []byte(`{"id":"1.21.4","mainClass":"net.minecraft.client.main.Main"}`)
-	fixtureWrite(t, filepath.Join(s.root, "versions", "1.21.4", "1.21.4.json"), metadata)
-	prepared.Files = append(prepared.Files, version.InstallFile{Source: "versions/1.21.4/1.21.4.json", Target: "versions/1.21.4/1.21.4.json"})
+	preparedFiles := []struct {
+		body []byte
+		rel  string
+	}{
+		{jar, "versions/1.21.4/1.21.4.jar"},
+		{library, "libraries/org/example/lib/1/lib-1.jar"},
+		{metadata, "versions/1.21.4/1.21.4.json"},
+	}
+	for _, file := range preparedFiles {
+		fixtureWrite(t, filepath.Join(s.root, filepath.FromSlash(file.rel)), file.body)
+	}
 	phases := 0
 	fakeRun := func(ctx context.Context, id string, plan download.TransferPlan, base, span float64) error {
 		phases++
@@ -106,22 +123,28 @@ func TestInstallAssemblesClientLibrariesAssetsAndNatives(t *testing.T) {
 	if phases != 2 {
 		t.Fatalf("expected artifacts and asset phases; got %d", phases)
 	}
-	game, err := s.gameDir(item)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 资源全部落在共享核心，实例目录不再保存任何游戏资源。
 	for relative, want := range map[string]string{
 		"versions/1.21.4/1.21.4.jar": string(jar), "libraries/org/example/lib/1/lib-1.jar": string(library),
 		"versions/1.21.4/natives/native.dll": "native", "assets/indexes/test-index.json": string(index),
 		"assets/objects/" + hash[:2] + "/" + hash: string(asset), "versions/1.21.4/1.21.4.json": string(metadata),
 	} {
-		actual, err := os.ReadFile(filepath.Join(game, filepath.FromSlash(relative)))
+		actual, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(relative)))
 		if err != nil || string(actual) != want {
-			t.Fatalf("layout %s: %q %v", relative, actual, err)
+			t.Fatalf("core layout %s: %q %v", relative, actual, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(game, "versions", "1.21.4", "natives", "META-INF", "signature")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(s.root, "versions", "1.21.4", "natives", "META-INF", "signature")); !os.IsNotExist(err) {
 		t.Fatal("native metadata was not excluded")
+	}
+	game, err := s.gameDir(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"libraries", "assets", "versions"} {
+		if _, statErr := os.Stat(filepath.Join(game, relative)); !os.IsNotExist(statErr) {
+			t.Fatalf("实例目录不应包含 %s：%v", relative, statErr)
+		}
 	}
 }
 

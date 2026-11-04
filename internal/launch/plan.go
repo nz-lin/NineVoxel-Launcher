@@ -254,7 +254,7 @@ func previewLaunchPlanForUser(rawGameDirectory, versionID string, additionalJvmA
 		return buildFailedPreview(versionID, code, code, outcome.reason, loadWarnings)
 	}
 
-	plan, planErr := buildLaunchPlan(root, versionID, outcome.merged, additionalJvmArgs, additionalGameArgs)
+	plan, planErr := buildLaunchPlan(root, selfContainedResourceRoot(root), versionID, outcome.merged, additionalJvmArgs, additionalGameArgs)
 	if planErr != nil {
 		// classpath 为空时用 D-18 的 CLASSPATH_EMPTY 作为展示码，其余沿用原错误码。
 		warningCode := planErr.Code

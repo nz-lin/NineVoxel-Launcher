@@ -114,12 +114,12 @@ func TestBuildInstallPlanCoversAllSources(t *testing.T) {
 	}
 
 	assetIndex := findPlanArtifact(t, plan, "asset", "assetIndex/")
-	if assetIndex.TargetRelPath != "artifacts/indexes/5.json" {
+	if assetIndex.TargetRelPath != "assets/indexes/5.json" {
 		t.Fatalf("资源索引目标路径错误: %q", assetIndex.TargetRelPath)
 	}
 
 	library := findPlanArtifact(t, plan, "library", "org.example:plain")
-	if library.TargetRelPath != "artifacts/objects/aa/"+sha1LibraryA {
+	if library.TargetRelPath != "libraries/org/example/plain/1.0/plain-1.0.jar" {
 		t.Fatalf("库目标路径应为内容寻址: %q", library.TargetRelPath)
 	}
 
@@ -133,12 +133,12 @@ func TestBuildInstallPlanCoversAllSources(t *testing.T) {
 	if len(native.ExtractExclude) != 2 {
 		t.Fatalf("extract.exclude 应原样保留，实际 %+v", native.ExtractExclude)
 	}
-	if native.TargetRelPath != "artifacts/objects/cc/"+sha1Native {
+	if native.TargetRelPath != "libraries/org/example/native/1.0/native-1.0-natives-windows.jar" {
 		t.Fatalf("本地库目标路径错误: %q", native.TargetRelPath)
 	}
 
 	logging := findPlanArtifact(t, plan, "logging", "logConfig/")
-	if logging.TargetRelPath != "artifacts/objects/dd/"+sha1LogConfig {
+	if logging.TargetRelPath != "assets/log_configs/client-1.12.xml" {
 		t.Fatalf("日志配置目标路径错误: %q", logging.TargetRelPath)
 	}
 

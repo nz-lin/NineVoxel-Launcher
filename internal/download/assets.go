@@ -351,7 +351,7 @@ func ParseAssetIndex(raw []byte, expected AssetIndexExpectation) (AssetIndex, *E
 // 路径固定为 `artifacts/indexes/<indexId>.json`（卡面第 2 条），
 // 由 `artifact.IndexRelPath` 生成，确保索引名不越界。
 func LoadAssetIndex(dataRoot string, indexID string) (AssetIndex, *Error) {
-	relPath, pathErr := artifact.IndexRelPath(indexID)
+	relPath, pathErr := artifact.AssetIndexRelPath(indexID)
 	if pathErr != nil {
 		return AssetIndex{}, newInputError(ErrorCodeAssetIndex, messageAssetIndexPathInvalid)
 	}
@@ -384,7 +384,7 @@ func LoadAssetIndex(dataRoot string, indexID string) (AssetIndex, *Error) {
 // `TargetRelPath` 用 `artifact.IndexRelPath` 生成，与 `LoadAssetIndex`
 // 的读取路径严格一致——否则会出现「下载到 A、校验读 B」的静默错位。
 func AssetIndexPlanItem(indexID string, sourceURI string, size int64, sha1 string) (PlanItem, *Error) {
-	relPath, pathErr := artifact.IndexRelPath(indexID)
+	relPath, pathErr := artifact.AssetIndexRelPath(indexID)
 	if pathErr != nil {
 		return PlanItem{}, newInputError(ErrorCodeAssetIndex, messageAssetIndexPathInvalid)
 	}
@@ -416,7 +416,7 @@ func AssetIndexPlanItem(indexID string, sourceURI string, size int64, sha1 strin
 // 大小不符时不再计算哈希：`VerifyFile` 本来也会先比大小，
 // 但显式短路能让大文件的失败判定在毫秒级完成。
 func InspectAssetObject(dataRoot string, hash string, size int64) (AssetObjectState, *Error) {
-	relPath, pathErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, hash)
+	relPath, pathErr := artifact.AssetObjectRelPath(hash)
 	if pathErr != nil {
 		return AssetObjectMissing, newInputError(ErrorCodeAssetIndex, messageAssetHashInvalid)
 	}
@@ -489,7 +489,7 @@ func ExpandAssetObjects(dataRoot string, index AssetIndex, options AssetExpandOp
 			}
 		}
 
-		relPath, pathErr := artifact.ObjectRelPath(artifact.HashAlgorithmSHA1, object.Hash)
+		relPath, pathErr := artifact.AssetObjectRelPath(object.Hash)
 		if pathErr != nil {
 			return AssetExpansion{}, newInputError(ErrorCodeAssetIndex, messageAssetHashInvalid)
 		}
@@ -544,7 +544,7 @@ func AssembleVirtualAssets(dataRoot string, targetDir string, index AssetIndex) 
 		return assembly, newInputError(ErrorCodeAssetLayout, messageAssetLayoutTargetInvalid)
 	}
 	// 共享缓存的对象目录：artifacts/objects/<前两位>/<hash>。
-	objectsRoot := filepath.Join(dataRoot, filepath.FromSlash(artifact.DirArtifactObjects))
+	objectsRoot := filepath.Join(dataRoot, filepath.FromSlash(artifact.DirAssetObjects))
 
 	// 按逻辑名排序：保证同样的索引得到同样的组装顺序与报告。
 	objects := append([]AssetObject(nil), index.Objects...)

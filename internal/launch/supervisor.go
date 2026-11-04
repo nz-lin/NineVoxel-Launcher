@@ -831,14 +831,19 @@ func buildPlanForLaunch(req StartLaunchRequest) (*LaunchPlan, *Error) {
 
 	var plan *LaunchPlan
 	var planErr *Error
+	// 共享核心根：libraries / assets / versions 都从这里读取。
+	resourceRoot, rootErr := resolveResourceRoot()
+	if rootErr != nil {
+		return nil, rootErr
+	}
 	// AccountIdentity 全部字段为字符串，可直接与零值比较；
 	// 若将来加入切片/映射字段，这里必须改成显式判断（见 identity.go）。
 	if identity == (AccountIdentity{}) {
 		// 未选账号：沿用 P2 的离线占位身份（兼容旧调用）。
-		plan, planErr = buildLaunchPlan(root, versionID, outcome.merged,
+		plan, planErr = buildLaunchPlan(root, resourceRoot, versionID, outcome.merged,
 			req.AdditionalJvmArgs, req.AdditionalGameArgs)
 	} else {
-		plan, planErr = buildLaunchPlanWithIdentity(root, versionID, outcome.merged,
+		plan, planErr = buildLaunchPlanWithIdentity(root, resourceRoot, versionID, outcome.merged,
 			req.AdditionalJvmArgs, req.AdditionalGameArgs, identity)
 	}
 	if planErr != nil {

@@ -16,7 +16,6 @@ import {
   Palette
 } from 'lucide-react';
 import { LauncherSettings, JavaRuntime } from '../types/launcher';
-import { instanceService } from '../services/instance';
 
 /** 全局默认最大分配内存的下限（MB）：低于 2 GB 的堆无法启动现代 Minecraft。 */
 const MIN_MEMORY_MB = 2048;
@@ -104,11 +103,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [localSettings, setLocalSettings] = useState<LauncherSettings>(settings);
   const [savedBadge, setSavedBadge] = useState(false);
 
-  // 磁盘回收：null 表示未执行，记录最近一次结果用于就地提示。
-  const [dedupBusy, setDedupBusy] = useState(false);
-  const [dedupSummary, setDedupSummary] = useState<string | null>(null);
-  const [dedupError, setDedupError] = useState<string | null>(null);
-
   // 滑块上限与刻度按真实物理内存计算，不再写死一个数字。
   const memoryCeilingMb = resolveMemoryCeilingMb(totalMemoryMb);
   const memoryTicks = buildMemoryTicks(memoryCeilingMb);
@@ -142,29 +136,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleSave = (updated: LauncherSettings) => {
     setLocalSettings(updated);
     onUpdateSettings(updated);
-  };
-
-  /**
-   * 把重复的库与资源替换为指向共享缓存的硬链接。
-   *
-   * 后端只处理 libraries/assets/versions，幂等；重复点击不会重复回收。
-   */
-  const handleDedupStorage = async () => {
-    setDedupBusy(true);
-    setDedupError(null);
-    setDedupSummary(null);
-    try {
-      const result = await instanceService.dedupStorage();
-      const savedMb = (result.savedBytes ?? 0) / 1024 / 1024;
-      setDedupSummary(
-        `已合并 ${result.linkedFiles} 个重复文件，释放 ${savedMb.toFixed(1)} MB` +
-        (result.failedFiles > 0 ? `（${result.failedFiles} 个文件被占用未处理）` : ''),
-      );
-    } catch (error) {
-      setDedupError(error instanceof Error ? error.message : '磁盘回收失败');
-    } finally {
-      setDedupBusy(false);
-    }
   };
 
   return (
@@ -373,31 +344,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <span className="text-[11px] text-slate-500 dark:text-neutral-500">独立沙盒目录结构</span>
           </div>
 
-          {/* 磁盘回收：多个实例共用同一份库与资源时，重复内容可以合并为硬链接。 */}
-          <div className="p-3 rounded-xl bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <div className="space-y-0.5">
-                <div className="text-xs font-semibold text-slate-800 dark:text-neutral-200">回收重复的磁盘占用</div>
-                <p className="text-[11px] text-slate-500 dark:text-neutral-400">
-                  把各实例中相同的依赖库与资源合并为指向共享缓存的硬链接。
-                  不会改动存档、模组与配置，可重复执行。
-                </p>
-              </div>
-              <button
-                onClick={handleDedupStorage}
-                disabled={dedupBusy}
-                className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${dedupBusy ? 'animate-spin' : ''}`} />
-                <span>{dedupBusy ? '正在合并…' : '立即回收'}</span>
-              </button>
-            </div>
-            {dedupSummary && (
-              <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-mono">{dedupSummary}</p>
-            )}
-            {dedupError && (
-              <p className="text-[11px] text-rose-600 dark:text-rose-400 font-mono">{dedupError}</p>
-            )}
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-neutral-950 border border-slate-200 dark:border-neutral-800 space-y-1 text-[11px] text-slate-500 dark:text-neutral-400">
+            <p>
+              游戏的依赖库与资源统一存放在核心目录，由所有实例共享；
+              实例目录只保留存档、模组与配置。
+            </p>
+            <p>
+              删除实例不会立即释放全部核心磁盘空间：暂时无人引用的依赖库与资源会保留下来，
+              供其他版本复用。
+            </p>
           </div>
         </div>
 
