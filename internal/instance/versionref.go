@@ -81,11 +81,21 @@ func (s *InstanceService) versionReferencedByOthers(versionID, exceptInstanceID 
 //
 // 只删除 `versions/<id>/`，不触碰共享的 libraries 与 assets：它们可能被其他
 // 版本复用，回收属于后续的垃圾回收能力。
+//
+// 两道保护，任一命中都不删：
+//   - 其他实例仍引用该版本（引用检查）；
+//   - 有游戏进程正在使用该版本（运行时租约）。
+//
+// 租约检查不能省：引用关系只说明「有实例配置指向它」，而运行中的游戏即使
+// 实例配置已经改掉，仍在从该目录加载 JAR。
 func (s *InstanceService) removeCoreVersionIfUnreferenced(versionID, exceptInstanceID string) bool {
 	if !safeVersionDirectoryName(versionID) {
 		return false
 	}
 	if s.versionReferencedByOthers(versionID, exceptInstanceID) {
+		return false
+	}
+	if s.versionInUseByRunningGame(versionID) {
 		return false
 	}
 	target, err := artifact.ResolveInsideRoot(s.root, "versions/"+versionID)

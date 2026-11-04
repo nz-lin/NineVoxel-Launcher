@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"example.com/ninevoxel/launcher/internal/core"
 	"example.com/ninevoxel/launcher/internal/events"
 	"example.com/ninevoxel/launcher/internal/logging"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -255,6 +256,12 @@ type launchRecord struct {
 	// startedAtMs 为进程创建成功时间；尚未创建时 0。
 	startedAtMs int64
 
+	// lease 为该版本运行时租约；为空表示未登记（数据根不可用或已释放）。
+	//
+	// 租约保护「游戏运行期间不删除该版本」：核心版本由所有实例共用，
+	// 删除正在使用的版本会让进程在加载 JAR 时失败。
+	lease core.Lease
+
 	// endedAtMs 为进程退出时间；尚未退出时 0。
 	endedAtMs int64
 
@@ -439,6 +446,55 @@ func (s *supervisor) expireStaleFinished(now time.Time) {
 	}
 }
 
+// launchLeases 管理「某个核心版本正在被游戏进程使用」的运行时租约。
+//
+// 与实例服务共用同一个数据根，因此租约表落在 `core-index/leases.json`，
+// 两个服务看到的是同一份记录。
+//
+// 惰性创建：启动服务可能在任何时刻被调用，而租约必须在进程创建**之前**登记，
+// 不能依赖某个初始化顺序。
+var (
+	launchLeaseOnce sync.Once
+	launchLeaseMgr  *core.LeaseManager
+)
+
+// currentLeaseManager 返回进程级租约管理器。
+func currentLeaseManager() *core.LeaseManager {
+	launchLeaseOnce.Do(func() {
+		root, err := resolveResourceRoot()
+		if err != nil {
+			// 数据根不可用时返回 nil，调用方据此跳过租约登记并记录告警；
+			// 直接拒绝启动会更糟——启动流程本身还会给出更准确的错误。
+			return
+		}
+		launchLeaseMgr = core.NewLeaseManager(root)
+	})
+	return launchLeaseMgr
+}
+
+// acquireVersionLease 为即将启动的版本登记运行时租约。
+//
+// 必须在 `StartGameProcess` **之前**调用：若先启动进程再登记，中间存在一个
+// 「进程已在运行但租约还没生效」的窗口，此时删除该版本会让游戏找不到 JAR。
+//
+// 返回的释放函数由 supervisor 在进程退出后调用（见 finalize）。
+func acquireVersionLease(versionID string, pid uint32, startMs int64) (core.Lease, *Error) {
+	manager := currentLeaseManager()
+	if manager == nil || strings.TrimSpace(versionID) == "" {
+		// 数据根不可用或版本未知：跳过租约，但只影响「删除保护」，
+		// 不影响本次启动本身。
+		return nil, nil
+	}
+	lease, err := manager.Acquire(versionID, core.LeaseRecord{
+		PID:            pid,
+		ProcessStartMs: startMs,
+	})
+	if err != nil {
+		return nil, newInputError(ErrorCodeLaunchState, err.Error())
+	}
+	return lease, nil
+}
+
 // StartLaunchProcess 执行一次完整的启动流程。
 //
 // 步骤与顺序（顺序本身是正确性要求）：
@@ -547,6 +603,22 @@ func StartLaunchProcess(req StartLaunchRequest) (LaunchAcceptedResult, *Error) {
 		StopGameLogChannel()
 		return failLaunch(record, startErr)
 	}
+
+	// 第五步半：登记运行时租约。
+	//
+	// 在进程创建之后、进入 running 之前登记：此时已有 PID 可用于崩溃恢复，
+	// 而游戏尚未开始加载 JAR。若这一步失败，必须回收已启动的进程，
+	// 否则会留下一个不受租约保护的游戏。
+	lease, leaseErr := acquireVersionLease(record.versionID,
+		uint32(process.Process.Pid), process.StartedAtMillis())
+	if leaseErr != nil {
+		StopGameLogChannel()
+		go globalSupervisor.finishRecord(record, process, StateFailed, StopReasonStartupFailed, StopResultKilled, true)
+		return failLaunch(record, leaseErr)
+	}
+	record.mu.Lock()
+	record.lease = lease
+	record.mu.Unlock()
 
 	// 第六步：进入 running，并启动退出监视。
 	record.mu.Lock()
@@ -695,6 +767,20 @@ func (s *supervisor) finalize(record *launchRecord, process *GameProcess) {
 	// 文件的 JVM 读不到参数。
 	if process != nil {
 		process.CleanupTempFiles()
+	}
+
+	// 第 2 步半：释放运行时租约。
+	//
+	// 必须在进程真正退出之后（本函数由 watchProcess 调用）：提前释放会让
+	// 「运行中删除该版本」重新变成可能。
+	if record != nil {
+		record.mu.Lock()
+		lease := record.lease
+		record.lease = nil
+		record.mu.Unlock()
+		if lease != nil {
+			lease.Release()
+		}
 	}
 
 	// 第 3 步：关闭 stdin 写端。此时进程已退出，关闭不会影响它。
@@ -1115,6 +1201,40 @@ func (s *supervisor) findRecordForStop(launchID string) *launchRecord {
 // 实现要点：本函数必须在应用退出流程中被**同步等待**完成，
 // 否则应用先退出、进程仍在跑，就成了孤儿。因此内部用 `WaitReads` 与
 // 终止流程的实际等待来保证「返回时进程已结束或已被杀」。
+// RecoverRunLeases 清理上次运行遗留的运行时租约。
+//
+// 启动器崩溃或系统重启后，磁盘上的租约不会被主动清除；而残留的租约会
+// 让对应用本永远「正在使用」，从而阻止删除与重建。应用启动时必须先调一次。
+//
+// 判定依据是进程是否仍存活且**启动时间一致**（PID 会被操作系统复用，
+// 只看 PID 会把别人的进程当成我们的游戏）。无法判定时按宽限期保留。
+func RecoverRunLeases() {
+	manager := currentLeaseManager()
+	if manager == nil {
+		return
+	}
+	report, err := manager.Recover(time.Now().UTC().UnixMilli())
+	if err != nil {
+		logger().Warn("清理残留运行时租约失败", logging.Fields{
+			Event:     "launch.lease.recover.failed",
+			ErrorCode: ErrorCodeLaunchState,
+		})
+		return
+	}
+	if len(report.Cleared) == 0 && len(report.Kept) == 0 && len(report.Uncertain) == 0 {
+		return
+	}
+	logger().Info("运行时租约恢复完成", logging.Fields{
+		Event: "launch.lease.recover",
+		Attributes: map[string]string{
+			"kept":      countAttribute(len(report.Kept)),
+			"cleared":   countAttribute(len(report.Cleared)),
+			"uncertain": countAttribute(len(report.Uncertain)),
+		},
+	})
+}
+
+// ShutdownActiveLaunch 请求停止当前活动的启动，并等待进程退出。
 func ShutdownActiveLaunch() {
 	globalSupervisor.mu.Lock()
 	record := globalSupervisor.active

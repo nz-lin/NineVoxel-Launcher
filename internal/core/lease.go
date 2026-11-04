@@ -146,6 +146,47 @@ func (m *LeaseManager) Active(versionID string) bool {
 	return exists
 }
 
+// ReadActiveLeases 直接读取磁盘上的租约表，返回版本 ID 集合。
+//
+// 与 Active 的区别：Active 读内存快照（由本进程登记或 Recover 填充），
+// 而本函数每次都读磁盘。**跨包只读查询必须用它**：实例侧从不登记租约，
+// 它的内存快照永远是空的，用 Active 会误判为「没有游戏在运行」。
+//
+// 参数 root 为核心根。文件不存在时返回空集合；读取失败返回错误，
+// 调用方应据此保守处理（按「仍在使用」处理）。
+func ReadActiveLeases(root string) (map[string]struct{}, error) {
+	absolute, resolveErr := artifact.ResolveInsideRoot(root, indexDirName+"/"+leaseFileName)
+	if resolveErr != nil {
+		return nil, errors.New("租约表路径无效")
+	}
+	content, err := os.ReadFile(absolute)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]struct{}{}, nil
+		}
+		return nil, errors.New("无法读取租约表")
+	}
+	if len(content) == 0 || len(content) > maxIndexBytes {
+		return nil, errors.New("租约表大小异常")
+	}
+
+	var table leaseTable
+	if unmarshalErr := json.Unmarshal(content, &table); unmarshalErr != nil {
+		return nil, errors.New("租约表格式损坏")
+	}
+	if table.SchemaVersion != leaseSchemaVersion {
+		return nil, errors.New("租约表版本不受支持")
+	}
+
+	result := make(map[string]struct{}, len(table.Leases))
+	for _, record := range table.Leases {
+		if record.VersionID != "" {
+			result[record.VersionID] = struct{}{}
+		}
+	}
+	return result, nil
+}
+
 // ActiveVersions 返回全部被占用的版本，按字典序排列。
 func (m *LeaseManager) ActiveVersions() []string {
 	m.mu.Lock()

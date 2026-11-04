@@ -272,6 +272,13 @@ func RegisterStartupEvents(wailsApp *application.App, onReady func()) {
 	// 使用 launch 包自己的发射器：生命周期的关联 ID 语义与日志/设置各自独立。
 	launch.BindSupervisorEmitter(launch.NewSupervisorEmitter(wailsApp))
 
+	// 清理上次运行遗留的运行时租约。
+	//
+	// 启动器崩溃或系统重启后，磁盘上的租约不会被主动清除；残留的租约会让
+	// 对应版本永远呈现「正在使用」，阻止删除与重建。必须在允许用户操作之前
+	// 完成一次恢复。
+	launch.RecoverRunLeases()
+
 	// 设置服务的发射器：`settings.changed.v1` 必须绑定应用实例才能推送。
 	//
 	// 这一行此前遗漏，表现为每次保存设置都在日志里打印
