@@ -86,12 +86,14 @@ wails3 task package               # 当前平台安装包
 - Windows：`%LocalAppData%\NineVoxel-Launcher`
 - Linux：`$XDG_DATA_HOME/NineVoxel-Launcher` 或 `~/.local/share/NineVoxel-Launcher`
 
-数据目录 `<AppRoot>/data`（SQLite `app.db`、`versions/`、`loaders/`、`libraries/`、`assets/`、`artifacts/`、`downloads/`、`runtimes/`）：
+数据目录 `<AppRoot>/data`（SQLite `db/app.db`、`versions/`、`loaders/`、`libraries/`、`assets/`、`artifacts/`、`downloads/`、`runtimes/`）：
 
 - 便携模式：`<exe 目录>/data`
 - macOS：`~/Library/Application Support/NineVoxel-Launcher/data`
 - Windows：`%LocalAppData%\NineVoxel-Launcher\data`
 - Linux：`$XDG_DATA_HOME/NineVoxel-Launcher/data` 或 `~/.local/share/NineVoxel-Launcher/data`
+
+旧版本把 `app.db` 放在 `data/` 顶层；新版本统一迁到 `data/db/app.db`，启动时自动搬迁主库、WAL/SHM 与迁移备份，`data/secrets/` 下的账号密钥位置保持不变。
 
 日志目录 `<AppRoot>/logs`（`launcher.log`、`app-YYYYMMDD[-序号].log`、`game-<launchId>-YYYYMMDD[-序号].log`）：
 

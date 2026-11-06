@@ -31,7 +31,8 @@ const (
 	dataSubDirName = "data"
 
 	// databaseFileName 是数据库文件名，由接口冻结清单 §8.9 冻结。
-	databaseFileName = "app.db"
+	// 位置规则（`<数据根>/db/app.db`）由 artifact.DatabasePath 唯一决定。
+	databaseFileName = artifact.DatabaseFileName
 
 	// tableNameAppSettings 是设置表的名称，与迁移 SQL 保持一致。
 	tableNameAppSettings = "app_settings"
@@ -96,24 +97,27 @@ const (
 //
 // 数据根以 artifact.DataRoot 为唯一权威：exe 同级 `data/` 已存在时优先使用
 // 便携目录；否则使用用户配置目录，用户目录不可写时再回退 exe 同级目录。
-// 这样 app.db 不会与实例、版本和下载缓存分裂到两个数据目录。
+// 文件位置由 artifact.DatabasePath 唯一决定（`<数据根>/db/app.db`），
+// 避免数据库与实例、版本、下载缓存分裂到两个数据目录。
 //
 // 可写性判定复用 platform.ProbeWritable，与 P1-01 的目录探测保持同一套语义
-// （真实创建临时文件，而不是只看目录是否存在）。
+// （真实创建临时文件，而不是只看目录是否存在）。探测目标是 `db/` 子目录，
+// 因此本函数会顺带创建它。
 func ResolveDatabasePath() DatabasePathStatus {
 	root, rootErr := artifact.DataRoot()
 	if rootErr != nil || root == "" {
 		return DatabasePathStatus{Kind: PathKindUnavailable}
 	}
 
-	// artifact.DataRoot 只做不创建目录的探测；这里创建数据根并再次确认可写，
-	// 因为 SQLite 无法在尚不存在的目录中创建 app.db。
-	if !platform.ProbeWritable(root) {
+	// artifact.DataRoot 只做不创建目录的探测；SQLite 无法在尚不存在的目录中
+	// 创建 app.db，因此这里创建并确认 `db/` 可写（ProbeWritable 会 MkdirAll）。
+	dbDir := filepath.Join(root, artifact.DirDatabase)
+	if !platform.ProbeWritable(dbDir) {
 		return DatabasePathStatus{Kind: PathKindUnavailable}
 	}
 
 	return DatabasePathStatus{
-		Path: filepath.Join(root, databaseFileName),
+		Path: filepath.Join(dbDir, databaseFileName),
 		Kind: databasePathKind(root),
 	}
 }
