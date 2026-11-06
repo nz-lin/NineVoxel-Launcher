@@ -17,13 +17,24 @@ const (
 	// DirArtifacts 是制品缓存根目录。
 	DirArtifacts = "artifacts"
 
-	// DirArtifactObjects 是共享内容寻址缓存目录。
+	// DirArtifactObjects 是共享内容寻址目录。
+	//
+	// 现状：运行时**只有加载器官方安装器**（Forge/NeoForge/Fabric installer）
+	// 经 ObjectRelPath 落在这里，按 SHA-1 命名。资产对象与依赖库都不来此处：
+	// 资产落在 DirAssetObjects，依赖库落在 DirLibraries。
+	// 早期设计曾把 library/native/asset 也规划到这里，该映射已经废弃，
+	// 仅 ResolveTarget 的兼容分支还保留（生产代码只用它解析 client）。
 	DirArtifactObjects = "artifacts/objects"
 
-	// DirArtifactIndexes 是资产索引缓存目录（artifacts/indexes/<indexId>.json）。
+	// DirArtifactIndexes 是遗留的资产索引缓存目录。
+	//
+	// 生产代码已统一写入 DirAssetIndexes（assets/indexes）；本常量与 IndexRelPath
+	// 仅为兼容旧规划保留，运行时不会被写入。
 	DirArtifactIndexes = "artifacts/indexes"
 
-	// DirArtifactMetadata 是元数据缓存目录（版本清单与版本 JSON）。
+	// DirArtifactMetadata 是遗留的元数据缓存目录。
+	//
+	// 生产代码当前没有调用 MetadataRelPath；保留常量只是为了不破坏旧引用。
 	DirArtifactMetadata = "artifacts/metadata"
 
 	// DirDownloads 是下载临时区根目录。
@@ -80,7 +91,16 @@ const (
 
 	// DirLogs 是日志目录（P1 的应用日志与 P2 的游戏日志）。
 	DirLogs = "logs"
+
+	// DirDatabase 是数据库目录（`db/`）。
+	//
+	// app.db 与迁移前备份都放在这里，避免散落在数据根顶层与 secrets/、versions/
+	// 等业务目录平级。数据库是进程级状态，不是某种游戏制品，因此不并入 artifacts/。
+	DirDatabase = "db"
 )
+
+// DatabaseFileName 是数据库文件名，由接口冻结清单 §8.9 冻结。
+const DatabaseFileName = "app.db"
 
 // 数据根解析用到的常量。
 const (
@@ -184,6 +204,21 @@ func DataRoot() (string, *Error) {
 	return ResolveDataRoot(collectDataRootInput())
 }
 
+// DatabasePath 返回默认数据库文件的绝对路径（`<数据根>/db/app.db`）。
+//
+// 这是**唯一**的数据库位置规则：settings、account、launch、runtime、instance、
+// download 六个服务都经由 internal/database 的共享连接使用它，不再各自拼接。
+// 本函数只回答位置，不创建目录；目录由 database 打开前按需创建。
+//
+// 返回路径仅供后端使用，不得返回前端（含绝对路径）。
+func DatabasePath() (string, *Error) {
+	root, err := DataRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, DirDatabase, DatabaseFileName), nil
+}
+
 // collectDataRootInput 采集解析数据根所需的运行环境事实。
 //
 // 采集失败（例如拿不到可执行文件位置）不视为错误，对应字段留空，
@@ -277,17 +312,18 @@ func isUsableDataRoot(dir string) bool {
 // ResolveTarget 把逻辑目标解析成**相对数据根**的确定路径（P3-03 卡面第 5 条）。
 //
 // 参数 kind 为制品类别；planRelativePath 为计划给出的相对路径片段
-// （例如 library 的 maven 相对路径 `com/mojang/.../foo.jar`、
-// client 的 `1.21/1.21.jar`、runtime 的 `jre-legacy/bin/java.exe`）。
+// （例如 client 的 `1.21/1.21.jar`、runtime 的 `jre-legacy/bin/java.exe`）。
 //
 // 返回值为 slash 形式的相对路径，**不是绝对路径**：
 // 绝对路径由调用方用 filepath.Join(DataRoot(), filepath.FromSlash(rel)) 拼接，
 // 这样测试才能跨机器断言，也避免路径拼接分散到各处。
 //
 // 规则写死（不允许调用方覆盖）：
-//   - library / native / asset → artifacts/objects/...（共享内容寻址）
 //   - client → versions/...（版本私有）
 //   - runtime → runtimes/...
+//   - library / native / asset → artifacts/objects/...
+//     **兼容分支**：生产代码已不再使用。依赖库走 LibraryRelPath（libraries/）、
+//     资产索引与对象走 Asset*RelPath（assets/），native 归档由核心清单管理。
 //   - mod / resource_pack / shader / plugin → 拒绝：P3 不写实例目录（决策 D-29）
 //
 // 任何越界、绝对路径、盘符、UNC、NUL、`..`、空相对路径一律返回 ARTIFACT_PATH_001。
@@ -309,6 +345,8 @@ func ResolveTarget(kind ArtifactKind, planRelativePath string) (string, *Error) 
 //
 // 该表是「路径规则表」在代码里的唯一实现：新增 kind 必须同时更新 doc.go 的表格，
 // 不允许在调用点各自拼接前缀。
+//
+// library / native / asset 的返回值为兼容分支，见 ResolveTarget 的说明。
 func targetRoot(kind ArtifactKind) (string, *Error) {
 	switch kind {
 	case KindLibrary, KindNative, KindAsset:
@@ -533,6 +571,10 @@ func LogConfigRelPath(name string) (string, *Error) {
 //
 // 参数 sha1 是安装器文件的 SHA-1。放在缓存而不是核心：安装器只在安装时用一次，
 // 删掉不影响已安装的版本。
+//
+// 说明：生产代码当前改用 ObjectRelPath 把安装器按 SHA-1 落在
+// `artifacts/objects/<前 2 位>/<sha1>`；本函数暂未被调用，保留以兼容后续
+// 「安装器缓存归位 cache/installers」的整改。
 func InstallerCacheRelPath(sha1 string) (string, *Error) {
 	normalized, err := normalizeHash(HashAlgorithmSHA1, sha1)
 	if err != nil {

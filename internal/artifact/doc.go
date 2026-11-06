@@ -11,34 +11,42 @@
 // 真正的目录创建与文件写入由 P3-06 在下载事务内完成；本包只定义「应该落在哪里」。
 // 唯一需要读取运行环境的函数是 DataRoot，它把判定逻辑抽成纯函数 ResolveDataRoot 以便测试。
 //
-// # 路径规则表（kind → 目标根 → 相对路径形态 → 是否共享）
+// # 路径规则表（生产代码实际使用的落盘位置）
 //
 // 相对路径一律用正斜杠（slash）形式表示，拼接成绝对路径前用 filepath.FromSlash 转换。
-// 「共享」指可进入内容寻址缓存（artifacts/objects 等），受 CanShare 的
-// 「immutable + verified」双条件约束（决策记录 D-29、D-27）。
+// 下表以运行时**实际写入**的调用链为准（2026-11 核对）：资产对象与索引只落 assets/，
+// 依赖库直达 Maven 布局，artifacts/objects 仅承载加载器官方安装器。
 //
-//	| kind                        | 目标根               | 相对路径形态                                   | 是否共享 |
-//	| --------------------------- | -------------------- | ---------------------------------------------- | -------- |
-//	| client                      | versions             | versions/<versionId>/<versionId>.jar           | 否       |
-//	| library                     | artifacts/objects    | artifacts/objects/<hash 前 2 位>/<hash>        | 是       |
-//	| native                      | artifacts/objects    | artifacts/objects/<hash 前 2 位>/<hash>        | 是       |
-//	| asset                       | artifacts/objects    | artifacts/objects/<hash 前 2 位>/<hash>        | 是       |
-//	| runtime                     | runtimes             | runtimes/<runtimeId>/...                       | 是       |
-//	| mod / resource_pack / ...   | 无（P3 拒绝）        | 实例级内容，P3 不写实例目录（D-29）            | 否       |
+//	| kind                        | 实际落点                                       | 生成函数               |
+//	| --------------------------- | ---------------------------------------------- | ---------------------- |
+//	| client                      | versions/<versionId>/<versionId>.jar           | ResolveTarget           |
+//	| library                     | libraries/<maven path>                         | LibraryRelPath          |
+//	| asset                       | assets/objects/<hash 前 2 位>/<hash>           | AssetObjectRelPath      |
+//	| asset index / log config    | assets/indexes|log_configs/...                 | AssetIndex/LogConfig    |
+//	| runtime                     | runtimes/<runtimeId>/...                       | RuntimeRelPath          |
+//	| 加载器官方安装器            | artifacts/objects/<sha1 前 2 位>/<sha1>        | ObjectRelPath           |
+//	| native（解压产物）           | instances/<id>/.minecraft/natives/             | 核心清单外，不属于本包 |
+//	| mod / resource_pack / ...   | 无（P3 拒绝）                                  | 实例级内容（D-29）      |
+//
+// ResolveTarget 对 library/native/asset 的 `artifacts/objects` 映射是兼容分支，
+// 生产代码不再使用；新增调用点必须走上面列出的专用函数。
 //
 // 非制品类的固定路径（同样相对数据根）：
 //
 //	| 用途            | 相对路径形态                                        |
 //	| --------------- | --------------------------------------------------- |
-//	| 资产索引缓存    | artifacts/indexes/<indexId>.json                    |
-//	| 元数据缓存      | artifacts/metadata/<fileName>                       |
+//	| 资产索引        | assets/indexes/<indexId>.json                       |
+//	| 日志配置        | assets/log_configs/<name>                           |
+//	| 元数据缓存      | artifacts/metadata/<fileName>（当前无调用）         |
 //	| 下载临时文件    | downloads/staging/<taskId>.part                    |
 //	| 损坏隔离        | downloads/quarantine/<hash 前 2 位>/<taskId>.bad   |
 //	| 日志            | logs/                                              |
+//	| 数据库与备份    | db/app.db、db/app.db.backup-*                      |
 //
 // # 内容寻址
 //
-// 共享对象路径固定为 artifacts/objects/<hash 前 2 位>/<hash>。
+// 资产对象路径固定为 assets/objects/<hash 前 2 位>/<hash>；加载器安装器沿用
+// artifacts/objects/<hash 前 2 位>/<hash>。
 // 资产（asset）以 SHA-1 作寻址键（决策 D-27：assetIndex 只提供 SHA-1，
 // 自行计算 SHA-256 会把同一资产分裂成两份），因此 ObjectRelPath 同时接受
 // sha1 与 sha256 两种算法，但**要求调用方显式声明**算法，严禁用 SHA-1 值冒充

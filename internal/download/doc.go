@@ -75,7 +75,7 @@
 //
 // # 三种资产布局
 //
-//   - 现代共享（默认）：对象写 `artifacts/objects/<hash[0:2]>/<hash>`，
+//   - 现代共享（默认）：对象写 `assets/objects/<hash[0:2]>/<hash>`，
 //     去重键是 SHA-1（D-27）。所有版本共用同一份内容。
 //   - virtual：在 `versions/<versionId>/virtual/<indexId>/<逻辑名>` 下按索引
 //     的逻辑名建目录树，优先硬链接、其次软链接、最后复制（卡面第 5 条）。
