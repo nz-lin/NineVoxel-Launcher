@@ -8,13 +8,16 @@
 package launch
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	"example.com/ninevoxel/launcher/internal/settings"
+	"example.com/ninevoxel/launcher/internal/database"
 )
 
 // setupProfileTestDB 把启动配置库指向当前用例的临时目录。
@@ -25,15 +28,23 @@ func setupProfileTestDB(t *testing.T) {
 	t.Helper()
 
 	dbPath := filepath.Join(t.TempDir(), "app.db")
-	originalPathFunc := profileDatabasePath
-	profileDatabasePath = func() settings.DatabasePathStatus {
-		return settings.DatabasePathStatus{Path: dbPath, Kind: settings.PathKindUserConfig}
+	originalProvider := profileDatabaseProvider
+	profileDatabaseProvider = func(ctx context.Context) (*sql.DB, error) {
+		db, err := database.Open(dbPath)
+		if err != nil {
+			return nil, err
+		}
+		if _, migrateErr := database.Migrate(ctx, db); migrateErr != nil {
+			_ = db.Close()
+			return nil, migrateErr
+		}
+		return db, nil
 	}
 	resetProfileDatabaseForTest()
 
 	t.Cleanup(func() {
 		resetProfileDatabaseForTest()
-		profileDatabasePath = originalPathFunc
+		profileDatabaseProvider = originalProvider
 	})
 }
 
@@ -418,14 +429,14 @@ func TestLaunchProfileMigrationVersion(t *testing.T) {
 
 // TestProfileDatabaseUnavailableDegrades 验证数据库路径不可用时不崩溃而是返回可降级错误。
 func TestProfileDatabaseUnavailableDegrades(t *testing.T) {
-	originalPathFunc := profileDatabasePath
-	profileDatabasePath = func() settings.DatabasePathStatus {
-		return settings.DatabasePathStatus{Kind: settings.PathKindUnavailable}
+	originalProvider := profileDatabaseProvider
+	profileDatabaseProvider = func(context.Context) (*sql.DB, error) {
+		return nil, errors.New("storage unavailable")
 	}
 	resetProfileDatabaseForTest()
 	t.Cleanup(func() {
 		resetProfileDatabaseForTest()
-		profileDatabasePath = originalPathFunc
+		profileDatabaseProvider = originalProvider
 	})
 
 	root := t.TempDir()

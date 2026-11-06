@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
@@ -67,6 +68,12 @@ type SQLiteStore struct {
 	//
 	// 该值**只用于进程内日志与备份**，不得通过服务方法返回给前端（含绝对路径）。
 	path string
+
+	// owned 表示连接是否归本存储所有。
+	//
+	// 共享池（database.Default）上的存储不得关闭连接，否则会拖垮其他服务；
+	// 只有 OpenSQLiteStoreAt 创建的独立连接才需要真正 Close。
+	owned bool
 }
 
 // DatabasePathStatus 描述数据库文件路径的解析结果。
@@ -145,8 +152,10 @@ func databasePathKind(root string) string {
 // 行为：
 //   - 解析路径失败 → 返回包装 ErrorCodePathInvalid 的错误；
 //   - 打开数据库失败 → 返回包装 ErrorCodeDatabaseOpen 的错误；
-//   - 迁移失败（含 checksum 不一致）→ 原样返回 database.Migrate 的错误（已带 DB_MIGRATION_001）。
+//   - 迁移失败（含 checksum 不一致）→ 原样返回 database.Default 的错误（已带 DB_MIGRATION_001）。
 //
+// 连接来自 database.Default 的进程级共享池：本函数不再自行 Open/Migrate，
+// 因此返回的 *SQLiteStore 关闭时不会关闭共享池（见 Close）。
 // 返回值中的 *SQLiteStore 在失败时为 nil，调用方应据此进入降级模式。
 func OpenSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 	status := ResolveDatabasePath()
@@ -154,19 +163,37 @@ func OpenSQLiteStore(ctx context.Context) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("%s: 数据目录不可用，无法定位数据库文件", ErrorCodePathInvalid)
 	}
 
-	db, err := database.Open(status.Path)
+	db, err := database.Default(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%s: 打开设置数据库失败: %w", ErrorCodeDatabaseOpen, err)
 	}
 
-	// 迁移必须在任何读写之前完成：表不存在时任何查询都会失败。
-	if _, err := database.Migrate(ctx, db); err != nil {
-		// 迁移错误已由 database 包带上 DB_MIGRATION_001，直接关闭连接并向上传递。
-		_ = db.Close()
-		return nil, err
+	return &SQLiteStore{db: db, path: status.Path}, nil
+}
+
+// OpenSQLiteStoreAt 打开指定路径的数据库并执行迁移。
+//
+// 与 OpenSQLiteStore 的差别：连接归调用方（或测试用例）所有，Close 会真正关闭它。
+// 生产代码只应通过 OpenSQLiteStore 使用共享池；本函数用于测试与离线工具。
+func OpenSQLiteStoreAt(ctx context.Context, path string) (*SQLiteStore, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("%s: 数据库路径不能为空", ErrorCodePathInvalid)
+	}
+	// SQLite 不会创建父目录：独立连接的调用方（测试/离线工具）通常只给路径。
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("%s: 创建数据库目录失败: %w", ErrorCodeDatabaseOpen, err)
 	}
 
-	return &SQLiteStore{db: db, path: status.Path}, nil
+	db, err := database.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: 打开设置数据库失败: %w", ErrorCodeDatabaseOpen, err)
+	}
+	if _, migrateErr := database.Migrate(ctx, db); migrateErr != nil {
+		_ = db.Close()
+		return nil, migrateErr
+	}
+
+	return &SQLiteStore{db: db, path: path, owned: true}, nil
 }
 
 // Path 返回数据库文件路径。
@@ -264,11 +291,13 @@ ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at_ms =
 	return nil
 }
 
-// Close 关闭数据库连接。
+// Close 释放底层资源。
 //
-// 关闭失败不作为错误上报：进程即将退出，句柄会被系统回收。
+// 共享池上的存储（OpenSQLiteStore）不拥有连接，Close 是空操作；
+// 独立连接（OpenSQLiteStoreAt）会真正关闭。关闭失败不作为错误上报：
+// 进程即将退出时句柄会被系统回收。
 func (s *SQLiteStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || !s.owned {
 		return nil
 	}
 	return s.db.Close()

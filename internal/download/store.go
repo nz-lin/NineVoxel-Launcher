@@ -13,10 +13,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 
 	"example.com/ninevoxel/launcher/internal/database"
-	"example.com/ninevoxel/launcher/internal/settings"
 )
 
 // TaskStore 是任务持久化接口。
@@ -200,8 +200,11 @@ func (s *SQLiteTaskStore) LoadAll(ctx context.Context) ([]Task, error) {
 }
 
 // Close 关闭底层连接。
+//
+// 生产路径的连接来自 database.Default 的进程级共享池，此处不得关闭；
+// 只有测试/独立连接才真正释放（与 settings、account 的 owned 约定一致）。
 func (s *SQLiteTaskStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || database.IsDefault(s.db) {
 		return nil
 	}
 	return s.db.Close()
@@ -271,34 +274,19 @@ func (s *memoryTaskStore) Close() error {
 // 每个调用点，会污染对外方法签名，而 Wails 绑定要求签名稳定。
 var taskStoreFactory = openTaskStoreFromDataRoot
 
-// openTaskStoreFromDataRoot 按与设置模块一致的数据目录打开任务库并执行迁移。
+// openTaskStoreFromDataRoot 获取进程级共享数据库连接并构造任务存储。
 //
-// 迁移失败时返回 *Error（DB_MIGRATION_001），由调用方降级为内存存储。
+// 连接与迁移由 database.Default 统一完成：下载模块不再自行解析路径或
+// 执行迁移。失败时返回 *Error（打开失败 DB_OPEN_*、迁移失败 DB_MIGRATION_001），
+// 由调用方降级为内存存储。
 func openTaskStoreFromDataRoot(ctx context.Context) (TaskStore, *Error) {
-	status := databasePathResolver()
-	if status == "" {
-		return nil, newSystemError(ErrorCodeDatabaseOpen, messageDatabaseUnavailable, false)
-	}
-	db, openErr := database.Open(status)
+	db, openErr := database.Default(ctx)
 	if openErr != nil {
-		return nil, newSystemError(ErrorCodeDatabaseOpen, messageDatabaseUnavailable, false)
-	}
-	if _, migrateErr := database.Migrate(ctx, db); migrateErr != nil {
-		_ = db.Close()
-		return nil, newSystemError(ErrorCodeDatabaseMigration, messageDatabaseUnavailable, false)
+		code := ErrorCodeDatabaseOpen
+		if strings.Contains(openErr.Error(), database.MigrationErrorCode) {
+			code = ErrorCodeDatabaseMigration
+		}
+		return nil, newSystemError(code, messageDatabaseUnavailable, false)
 	}
 	return NewSQLiteTaskStore(db), nil
-}
-
-// databasePathResolver 返回应用数据库文件路径；测试中替换为临时路径。
-var databasePathResolver = resolveDefaultDatabasePath
-
-// resolveDefaultDatabasePath 复用 P1 已有的数据库路径策略。
-//
-// 与 P2 的启动配置（internal/launch/profile.go）保持同一套规则：
-// 用户配置目录优先、便携版 exe 同级 data/ 兜底，两处不能各写一套，
-// 否则同一个应用会分裂出两个 app.db。settings 包不依赖本包，
-// 因此这里 import settings 不构成包级循环。
-func resolveDefaultDatabasePath() string {
-	return settings.ResolveDatabasePath().Path
 }

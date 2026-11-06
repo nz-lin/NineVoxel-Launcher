@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"example.com/ninevoxel/launcher/internal/app"
+	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/events"
 	"example.com/ninevoxel/launcher/internal/launch"
 	"example.com/ninevoxel/launcher/internal/logging"
@@ -112,6 +113,14 @@ func main() {
 	// 迁到 XDG_DATA_HOME。必须在读取主题/设置之前完成，否则会新建空数据库。
 	if err := platform.MigrateLegacyAppData(); err != nil {
 		log.Fatalf("迁移应用数据目录失败：%v", err)
+	}
+
+	// 数据库连接治理：在装配任何服务之前打开进程级共享池并完成迁移。
+	// 各服务不再各自打开 app.db；失败时只记录日志，由各服务按既有策略降级，
+	// 不阻塞窗口（设置/账号/实例会如实提示不可用）。
+	// 这一步同时触发旧布局搬迁（<数据根>/app.db → <数据根>/db/app.db）。
+	if _, dbErr := database.Default(context.Background()); dbErr != nil {
+		log.Printf("数据库不可用，相关功能将降级：%v", dbErr)
 	}
 
 	// 注册正式事件协议的载荷类型，供绑定生成器生成前端类型定义（P1-06 迁移）。

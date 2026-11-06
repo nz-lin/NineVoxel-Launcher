@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/download"
 )
 
@@ -183,7 +185,7 @@ type adoptiumTestFixture struct {
 	events        []recordedRuntimeEvent
 	mirrorEnabled bool
 	oldDataRoot   func() (string, *AppError)
-	oldDBPath     func() string
+	oldDBProvider func(context.Context) (*sql.DB, error)
 	oldProbeList  func() (RuntimeList, *AppError)
 	oldProgress   func(taskID, state string, progress float64, errorCode string)
 	oldClient     func() *http.Client
@@ -206,7 +208,7 @@ func newAdoptiumTestFixture(t *testing.T, server *adoptiumTestServer) *adoptiumT
 		dataRoot:      dataRoot,
 		mirrorEnabled: false,
 		oldDataRoot:   runtimeDataRoot,
-		oldDBPath:     runtimeDatabasePathResolver,
+		oldDBProvider: runtimeDatabaseProvider,
 		oldProbeList:  runtimeLocalProbeList,
 		oldProgress:   runtimeProgressSink,
 		oldClient:     adoptiumHTTPClientFactory,
@@ -216,7 +218,18 @@ func newAdoptiumTestFixture(t *testing.T, server *adoptiumTestServer) *adoptiumT
 	resetRuntimeDatabaseForTest(t)
 
 	runtimeDataRoot = func() (string, *AppError) { return dataRoot, nil }
-	runtimeDatabasePathResolver = func() string { return filepath.Join(root, "app.db") }
+	dbPath := filepath.Join(root, "app.db")
+	runtimeDatabaseProvider = func(ctx context.Context) (*sql.DB, error) {
+		db, openErr := database.Open(dbPath)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if _, migrateErr := database.Migrate(ctx, db); migrateErr != nil {
+			_ = db.Close()
+			return nil, migrateErr
+		}
+		return db, nil
+	}
 	runtimeLocalProbeList = func() (RuntimeList, *AppError) { return RuntimeList{}, nil }
 	runtimeProgressSink = func(taskID, state string, progress float64, errorCode string) {
 		fixture.events = append(fixture.events, recordedRuntimeEvent{
@@ -230,7 +243,7 @@ func newAdoptiumTestFixture(t *testing.T, server *adoptiumTestServer) *adoptiumT
 
 	t.Cleanup(func() {
 		runtimeDataRoot = fixture.oldDataRoot
-		runtimeDatabasePathResolver = fixture.oldDBPath
+		runtimeDatabaseProvider = fixture.oldDBProvider
 		runtimeLocalProbeList = fixture.oldProbeList
 		runtimeProgressSink = fixture.oldProgress
 		adoptiumHTTPClientFactory = fixture.oldClient

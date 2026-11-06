@@ -15,6 +15,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha1"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"testing"
 
 	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/download"
 )
 
@@ -68,7 +70,7 @@ type runtimeInstallFixture struct {
 	docPayload []byte
 
 	oldDataRoot     func() (string, *AppError)
-	oldDBPath       func() string
+	oldDBProvider   func(context.Context) (*sql.DB, error)
 	oldFetcher      runtimeDocumentFetcherFunc
 	oldTransfer     func(stagingRoot string) download.TransferFunc
 	oldProgressSink func(taskID, state string, progress float64, errorCode string)
@@ -104,7 +106,7 @@ func newRuntimeInstallFixture(t *testing.T, files map[string]fakeRuntimeFile) *r
 		dbPath:          filepath.Join(root, "app.db"),
 		files:           files,
 		oldDataRoot:     runtimeDataRoot,
-		oldDBPath:       runtimeDatabasePathResolver,
+		oldDBProvider:   runtimeDatabaseProvider,
 		oldFetcher:      runtimeDocumentFetcher,
 		oldTransfer:     runtimeTransferFactory,
 		oldProgressSink: runtimeProgressSink,
@@ -115,7 +117,17 @@ func newRuntimeInstallFixture(t *testing.T, files map[string]fakeRuntimeFile) *r
 	fixture.allPayload = buildAllManifestPayload(t, fixture.docPayload, runtimeTestComponent, runtimeTestVersionName)
 
 	runtimeDataRoot = func() (string, *AppError) { return dataRoot, nil }
-	runtimeDatabasePathResolver = func() string { return fixture.dbPath }
+	runtimeDatabaseProvider = func(ctx context.Context) (*sql.DB, error) {
+		db, openErr := database.Open(fixture.dbPath)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if _, migrateErr := database.Migrate(ctx, db); migrateErr != nil {
+			_ = db.Close()
+			return nil, migrateErr
+		}
+		return db, nil
+	}
 	runtimeDocumentFetcher = func(_ context.Context, rawURL string, _ int) ([]byte, *AppError) {
 		switch rawURL {
 		case runtimeAllManifestURL:
@@ -145,7 +157,7 @@ func newRuntimeInstallFixture(t *testing.T, files map[string]fakeRuntimeFile) *r
 
 	t.Cleanup(func() {
 		runtimeDataRoot = fixture.oldDataRoot
-		runtimeDatabasePathResolver = fixture.oldDBPath
+		runtimeDatabaseProvider = fixture.oldDBProvider
 		runtimeDocumentFetcher = fixture.oldFetcher
 		runtimeTransferFactory = fixture.oldTransfer
 		runtimeProgressSink = fixture.oldProgressSink

@@ -21,7 +21,6 @@ import (
 	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/logging"
-	"example.com/ninevoxel/launcher/internal/settings"
 )
 
 // runtimeRow 是 `java_runtimes` 表的一行。
@@ -78,12 +77,12 @@ var (
 	runtimeDBErr *AppError
 )
 
-// runtimeDatabasePathResolver 返回应用数据库路径；测试替换为临时路径。
+// runtimeDatabaseProvider 返回数据库连接；生产路径使用进程级共享池。
 //
-// 复用 P1 的数据库路径策略（用户配置目录优先、便携版 exe 同级 data/ 兜底），
-// 与 settings、download 两个模块保持同一个 app.db，不另起第二个库。
-var runtimeDatabasePathResolver = func() string {
-	return settings.ResolveDatabasePath().Path
+// runtime 不再自行解析路径、打开连接或执行迁移；测试通过替换本变量
+// 指向临时数据库，避免触碰真实用户数据目录。
+var runtimeDatabaseProvider = func(ctx context.Context) (*sql.DB, error) {
+	return database.Default(ctx)
 }
 
 // runtimeLocalProbeList 是本机探测入口；测试替换为空实现。
@@ -92,25 +91,15 @@ var runtimeDatabasePathResolver = func() string {
 // 测试环境里不允许执行真实 Java 进程（卡面约束）。
 var runtimeLocalProbeList = ListRuntimes
 
-// runtimeDatabase 返回数据库句柄，必要时打开并执行迁移。
+// runtimeDatabase 返回数据库句柄（首次调用时从共享池获取）。
 //
-// 迁移在打开时执行而不是在 bootstrap 里：`java_runtimes` 表由本卡的 000004 迁移
-// 建立，安装流程第一次落库前必须保证表存在；放在这里可以避免「服务注册顺序」
-// 影响建表时机。
+// 迁移已完成于 database.Default：`java_runtimes` 表由 000004 迁移建立，
+// 共享池在 bootstrap 阶段就完成迁移，安装流程第一次落库前表一定存在。
+// 连接归共享池所有，本包不得关闭它。
 func runtimeDatabase() (*sql.DB, *AppError) {
 	runtimeDBOnce.Do(func() {
-		path := strings.TrimSpace(runtimeDatabasePathResolver())
-		if path == "" {
-			runtimeDBErr = newSystemError(ErrorCodeRuntimeInstall, messageRuntimeDatabaseUnavailable, false)
-			return
-		}
-		db, openErr := database.Open(path)
+		db, openErr := runtimeDatabaseProvider(context.Background())
 		if openErr != nil {
-			runtimeDBErr = newSystemError(ErrorCodeRuntimeInstall, messageRuntimeDatabaseUnavailable, false)
-			return
-		}
-		if _, migrateErr := database.Migrate(context.Background(), db); migrateErr != nil {
-			_ = db.Close()
 			runtimeDBErr = newSystemError(ErrorCodeRuntimeInstall, messageRuntimeDatabaseUnavailable, false)
 			return
 		}

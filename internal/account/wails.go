@@ -14,8 +14,11 @@ package account
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
+	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/events"
 	"example.com/ninevoxel/launcher/internal/logging"
 
@@ -67,25 +70,39 @@ func accountEmitter() *events.Emitter {
 	return accountEmitterInst
 }
 
-// accountKeyPath 返回凭证加密密钥文件路径（与 app.db 同级的 secrets/ 目录）。
-func accountKeyPath(dbPath string) string {
-	return filepath.Join(filepath.Dir(dbPath), "secrets", "account.key")
+// accountKeyPath 返回凭证加密密钥文件路径。
+//
+// 密钥固定放在 `<数据根>/secrets/account.key`，**不跟随 app.db 所在目录**：
+// 数据库搬迁到 db/ 后，密钥位置必须保持稳定，否则旧账号会全部解密失败。
+func accountKeyPath() (string, *Error) {
+	root, rootErr := artifact.DataRoot()
+	if rootErr != nil || strings.TrimSpace(root) == "" {
+		return "", newSystemError(ErrorCodeStorage, "数据目录不可用，无法定位账号密钥")
+	}
+	return filepath.Join(root, "secrets", "account.key"), nil
 }
 
 // sharedAccountService 返回包级账号服务单例，必要时完成初始化。
 func sharedAccountService() (*Service, *Error) {
 	accountServiceOnce.Do(func() {
-		dbPath, pathErr := DefaultDatabasePath()
+		keyPath, pathErr := accountKeyPath()
 		if pathErr != nil {
 			accountServiceErr = pathErr
 			return
 		}
-		cipher, cipherErr := OpenCipher(accountKeyPath(dbPath))
+		cipher, cipherErr := OpenCipher(keyPath)
 		if cipherErr != nil {
 			accountServiceErr = cipherErr
 			return
 		}
-		store, storeErr := OpenSQLiteStore(dbPath, cipher)
+
+		// 连接来自进程级共享池：账号模块不再自行打开/迁移 app.db。
+		db, dbErr := database.Default(context.Background())
+		if dbErr != nil {
+			accountServiceErr = newSystemError(ErrorCodeStorage, "账号数据库不可用，请检查数据目录权限")
+			return
+		}
+		store, storeErr := OpenSQLiteStoreWithDB(db, cipher)
 		if storeErr != nil {
 			accountServiceErr = storeErr
 			return

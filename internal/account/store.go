@@ -3,7 +3,7 @@
 // 职责边界：
 //   - 连接建立与迁移全部复用 internal/database（ADR-002 的唯一实现），
 //     本文件不自己拼 DSN、不自己执行迁移；
-//   - 数据库路径复用 internal/settings.ResolveDatabasePath（接口冻结清单 §8.9）；
+//   - 数据库路径复用 artifact.DatabasePath（接口冻结清单 §8.9）；
 //   - 凭证的加解密全部委托 Cipher（cipher.go），本文件只负责把密文 BLOB 读写,
 //     不接触明文 token 的存储细节。
 //
@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"example.com/ninevoxel/launcher/internal/artifact"
 	"example.com/ninevoxel/launcher/internal/database"
-	"example.com/ninevoxel/launcher/internal/settings"
 )
 
 const (
@@ -68,6 +68,12 @@ type sqliteStore struct {
 
 	// cipher 负责凭证列的加解密；构造 Store 时必须提供。
 	cipher *Cipher
+
+	// owned 表示连接是否归本存储所有。
+	//
+	// 共享池（database.Default）上的存储不得关闭连接；只有 OpenSQLiteStore
+	// 打开的独立连接才需要真正释放。
+	owned bool
 }
 
 // 编译期断言：sqliteStore 必须实现 Store。
@@ -103,19 +109,33 @@ func OpenSQLiteStore(path string, cipher *Cipher) (Store, *Error) {
 		return nil, newSystemError(ErrorCodeStorage, "账号数据库迁移失败，请检查数据目录权限")
 	}
 
+	return &sqliteStore{db: db, cipher: cipher, owned: true}, nil
+}
+
+// OpenSQLiteStoreWithDB 用调用方提供的连接构造账号存储。
+//
+// 用于生产路径：连接来自 database.Default 的进程级共享池，本存储不拥有它，
+// Close 不会关闭共享池。迁移已由 Default 完成，这里不重复执行。
+func OpenSQLiteStoreWithDB(db *sql.DB, cipher *Cipher) (Store, *Error) {
+	if cipher == nil {
+		return nil, newSystemError(ErrorCodeCrypto, "凭证加密尚未初始化，无法打开账号存储")
+	}
+	if db == nil {
+		return nil, newSystemError(ErrorCodeStorage, "账号数据库连接为空，无法打开账号存储")
+	}
 	return &sqliteStore{db: db, cipher: cipher}, nil
 }
 
-// DefaultDatabasePath 返回 app.db 的绝对路径（复用 settings 的解析规则）。
+// DefaultDatabasePath 返回 app.db 的绝对路径（复用 artifact 的路径规则）。
 //
-// 两处候选目录（用户配置目录 / exe 同级目录）都不可用时返回 ErrorCodeStorage。
+// 数据根不可用或路径非法时返回 ErrorCodeStorage。
 // 返回的路径包含本机绝对路径，**只允许在后端使用**，不得返回前端。
 func DefaultDatabasePath() (string, *Error) {
-	status := settings.ResolveDatabasePath()
-	if status.Path == "" {
+	path, pathErr := artifact.DatabasePath()
+	if pathErr != nil || strings.TrimSpace(path) == "" {
 		return "", newSystemError(ErrorCodeStorage, "数据目录不可用，无法定位账号数据库")
 	}
-	return status.Path, nil
+	return path, nil
 }
 
 // List 返回全部账号（含解密后的凭证），按「选中 → 最近使用 → 创建时间」排序。
@@ -388,9 +408,10 @@ func (s *sqliteStore) Touch(ctx context.Context, id string, atMs int64) error {
 
 // Close 释放数据库连接池。
 //
+// 共享池上的存储（OpenSQLiteStoreWithDB）不拥有连接，Close 是空操作；
 // 重复调用安全（database/sql 的 Close 幂等）；nil 接收者也安全返回 nil。
 func (s *sqliteStore) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || !s.owned {
 		return nil
 	}
 	if err := s.db.Close(); err != nil {

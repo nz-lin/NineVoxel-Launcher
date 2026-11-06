@@ -24,6 +24,9 @@ Build frontend assets before root Go checks: `main.go` embeds `frontend/dist`, w
 
 The shared game core lives under `artifact.DataRoot()`:
 
+- `db/app.db` is the single SQLite database (settings, accounts, launch profiles,
+  download tasks, runtimes, instance index). It is opened once per process through
+  `database.Default`; do not open additional pools or re-run migrations in services.
 - `libraries/`, `assets/`, `versions/` (official Minecraft versions), `loaders/`
   (launcher-generated loader versions) and `core-index/` are shared by every instance.
 - Instance folders contain only mutable state (mods, saves, config, logs, natives) plus

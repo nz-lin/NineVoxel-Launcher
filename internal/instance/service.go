@@ -126,11 +126,16 @@ type InstanceService struct {
 	installLocks *installLockTable
 	mu           sync.Mutex
 	db           *sql.DB
-	root         string
-	ctx          context.Context
-	cancel       context.CancelFunc
-	workers      sync.WaitGroup
-	closed       bool
+	// dbProvider 返回实例数据库连接；生产路径为 database.Default 的共享池。
+	//
+	// 为 nil 时按 s.root 打开独立数据库，仅供既有测试用例隔离使用；
+	// 生产装配（NewWailsService）必须注入共享池，避免第二个连接池。
+	dbProvider func(context.Context) (*sql.DB, error)
+	root       string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	workers    sync.WaitGroup
+	closed     bool
 	// Installer injection keeps persistence tests offline.
 	installer func(context.Context, Instance) error
 	// installCancels / installDone 用于在删除实例时停止正在进行的安装。
@@ -140,7 +145,9 @@ type InstanceService struct {
 
 var openInstanceDirectory = func(target string) error { return platform.Current.Directory.OpenDirectory(target) }
 
-func NewWailsService() application.Service { return application.NewService(&InstanceService{}) }
+func NewWailsService() application.Service {
+	return application.NewService(&InstanceService{dbProvider: database.Default})
+}
 
 func (s *InstanceService) openLocked() error {
 	if s.closed {
@@ -164,25 +171,44 @@ func (s *InstanceService) openLocked() error {
 	if err := os.MkdirAll(s.root, 0755); err != nil {
 		return errors.New("无法创建实例数据目录")
 	}
-	db, err := database.Open(filepath.Join(s.root, "app.db"))
-	if err != nil {
-		return errors.New("无法打开实例数据库")
-	}
-	if _, err = database.Migrate(context.Background(), db); err != nil {
-		db.Close()
-		return errors.New("实例数据库迁移失败")
+
+	// 生产路径：使用进程级共享池（连接与迁移已在 bootstrap 完成）。
+	// 测试路径（dbProvider == nil）：按服务自身的 root 打开独立库，便于用例隔离。
+	var db *sql.DB
+	var err error
+	if s.dbProvider != nil {
+		db, err = s.dbProvider(context.Background())
+		if err != nil {
+			return errors.New("无法打开实例数据库")
+		}
+	} else {
+		db, err = database.Open(filepath.Join(s.root, "app.db"))
+		if err != nil {
+			return errors.New("无法打开实例数据库")
+		}
+		if _, err = database.Migrate(context.Background(), db); err != nil {
+			db.Close()
+			return errors.New("实例数据库迁移失败")
+		}
 	}
 	s.db = db
+	// closeOwnedDB 只在连接为独立库时真正关闭，避免共享池被提前关掉。
+	closeOwnedDB := func() {
+		if db != nil && !database.IsDefault(db) {
+			_ = db.Close()
+		}
+	}
+
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 	if err := s.reconcileLocked(); err != nil {
-		db.Close()
+		closeOwnedDB()
 		s.db = nil
 		s.cancel()
 		return err
 	}
 	items, err := s.listLocked()
 	if err != nil {
-		db.Close()
+		closeOwnedDB()
 		s.db = nil
 		s.cancel()
 		return err
@@ -192,7 +218,7 @@ func (s *InstanceService) openLocked() error {
 			item.InstallationState = "failed"
 			item.InstallationError = "上次安装已中断，请重试安装。"
 			if err := s.saveLocked(item); err != nil {
-				db.Close()
+				closeOwnedDB()
 				s.db = nil
 				s.cancel()
 				return err
@@ -200,7 +226,7 @@ func (s *InstanceService) openLocked() error {
 		}
 	}
 	if err := s.ensureGroupsLocked(); err != nil {
-		db.Close()
+		closeOwnedDB()
 		s.db = nil
 		s.cancel()
 		return err
@@ -218,7 +244,7 @@ func (s *InstanceService) ServiceShutdown() error {
 	s.workers.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.db != nil {
+	if s.db != nil && !database.IsDefault(s.db) {
 		return s.db.Close()
 	}
 	return nil

@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"testing"
@@ -286,7 +287,9 @@ func TestMirrorEnabledSettingPersistsThroughSQLiteStore(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store, err := OpenSQLiteStore(ctx)
+	// 用独立连接而不是共享池：本用例要断言落盘路径，且不能把临时路径
+	// 变成整个进程后续测试的默认数据库。
+	store, err := OpenSQLiteStoreAt(ctx, filepath.Join(tempDir, "db", "app.db"))
 	if err != nil {
 		t.Fatalf("打开设置存储失败: %v", err)
 	}

@@ -21,7 +21,8 @@ import (
 // 数据库打不开、读取失败、值不认识时一律返回 ThemeSystem（跟随系统），
 // 这样窗口至少会与系统外观一致，不会出现明显的冲突。
 //
-// 该函数自己打开并关闭一次数据库连接，不依赖设置服务是否已经启动。
+// 该函数复用进程级共享连接（database.Default），不关闭连接池：提前 Close
+// 会让随后初始化的设置服务拿到已关闭的池。
 // 调用方应在窗口创建之前调用。
 func LoadThemePreference(ctx context.Context) string {
 	if ctx == nil {
@@ -32,10 +33,6 @@ func LoadThemePreference(ctx context.Context) string {
 	if err != nil || store == nil {
 		return ThemeSystem
 	}
-	// 读完立即关闭：这里只做一次性的早期读取，不应该长期占用数据库连接。
-	defer func() {
-		_ = store.Close()
-	}()
 
 	stored, err := store.Load(ctx)
 	if err != nil {

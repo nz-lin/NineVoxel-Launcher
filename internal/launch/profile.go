@@ -27,7 +27,6 @@ import (
 
 	"example.com/ninevoxel/launcher/internal/database"
 	"example.com/ninevoxel/launcher/internal/logging"
-	"example.com/ninevoxel/launcher/internal/settings"
 )
 
 // 启动配置库的包级连接状态。
@@ -48,41 +47,27 @@ var (
 	profileOpened bool
 )
 
-// profileDatabasePath 解析启动配置库的文件路径。
+// profileDatabaseProvider 返回启动配置库连接。
 //
-// 复用 P1-04 的 ResolveDatabasePath（与设置服务共用同一个 app.db），
-// 这样用户只会有一个数据库文件；该变量可被测试替换，以便隔离到临时目录。
-var profileDatabasePath = func() settings.DatabasePathStatus {
-	return settings.ResolveDatabasePath()
+// 生产路径使用进程级共享池（database.Default）：launch 不再自行解析路径、
+// 打开连接或执行迁移；测试通过替换本变量指向临时数据库。
+var profileDatabaseProvider = func(ctx context.Context) (*sql.DB, error) {
+	return database.Default(ctx)
 }
 
-// openProfileDatabase 打开启动配置库并执行迁移。
+// openProfileDatabase 返回共享连接。
 //
-// 返回值：成功时返回连接与 nil；失败时返回 nil 与 LAUNCH_PROFILE_001 的可降级错误。
-// 失败不 panic、不中断应用启动（任务卡第 61 条：迁移失败必须降级）。
+// 失败时按稳定错误码区分「迁移失败」（DB_MIGRATION_001）与「存储不可用」，
+// 不 panic、不中断应用启动（任务卡第 61 条：迁移失败必须降级）。
+// 连接归共享池所有，调用方不得关闭。
 func openProfileDatabase() (*sql.DB, *Error) {
-	status := profileDatabasePath()
-	if status.Kind == settings.PathKindUnavailable || strings.TrimSpace(status.Path) == "" {
-		return nil, newSystemError(ErrorCodeLaunchProfile, messageProfileStorageUnavailable)
-	}
-
-	db, err := database.Open(status.Path)
+	db, err := profileDatabaseProvider(context.Background())
 	if err != nil {
-		return nil, newSystemError(ErrorCodeLaunchProfile, messageProfileStorageUnavailable)
-	}
-
-	// 迁移与设置服务共用同一套版本表：重复调用是幂等的（已应用的迁移不会重跑）。
-	if _, migrateErr := database.Migrate(context.Background(), db); migrateErr != nil {
-		_ = db.Close()
-		// 迁移失败沿用 database 包的稳定错误码 DB_MIGRATION_001（任务卡第 61 条），
-		// 让前端能把「数据库迁移失败」和普通的配置读写失败区分开；
-		// 无论哪种情况都不 panic，应用照常启动，只是本次运行无法保存启动配置。
-		if strings.Contains(migrateErr.Error(), database.MigrationErrorCode) {
+		if strings.Contains(err.Error(), database.MigrationErrorCode) {
 			return nil, newSystemError(database.MigrationErrorCode, messageProfileMigrationFailed)
 		}
 		return nil, newSystemError(ErrorCodeLaunchProfile, messageProfileStorageUnavailable)
 	}
-
 	return db, nil
 }
 
@@ -104,11 +89,12 @@ func profileDatabase() (*sql.DB, *Error) {
 // resetProfileDatabaseForTest 关闭并重置启动配置库连接。
 //
 // 仅供本包测试使用：让每个用例都能指向自己的 t.TempDir() 数据库。
+// 共享池不会被关闭（测试注入的连接则由用例自己释放）。
 func resetProfileDatabaseForTest() {
 	profileMutex.Lock()
 	defer profileMutex.Unlock()
 
-	if profileDB != nil {
+	if profileDB != nil && !database.IsDefault(profileDB) {
 		_ = profileDB.Close()
 	}
 	profileDB = nil
